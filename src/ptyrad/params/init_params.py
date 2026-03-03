@@ -909,6 +909,35 @@ class InitParams(BaseModel):
         it will not match with high-precision quantitative electron diffraction simulation with 1-Ang-slice.
     """
 
+    # Simu params
+    simu_Npix: Optional[int] = Field(ge=1, default=None, description="Simulated diffraction pattern pixel number (square detector)")
+    """
+    Simulated diffraction pattern pixel number. Can be equal or larger than ``meas_Npix``.
+    
+    Only supports square detector (ky = kx) for simplicity.
+    
+    **Example:**
+
+    .. code-block:: yaml
+        
+        'simu_Npix': 128
+
+    """
+
+    simu_match_mode: Optional[Literal['crop', 'resample']] = Field(default=None, description="Matching mode for exp and simu diffraction patterns")
+    """
+    Matching mode for exp and simu diffraction patterns.
+    
+    This will crop or resample the simulated diffraction pattern so that it matches the dimension of experimental patterns.
+    
+    **Example:**
+
+    .. code-block:: yaml
+        
+        'simu_match_mode': 'crop''
+
+    """
+
     # Preprocessing
     meas_permute: Optional[List[int]] = Field(default=None, description="Permutation for diffraction patterns")
     """
@@ -1844,6 +1873,17 @@ class InitParams(BaseModel):
             for field in ['probe_kv', 'probe_conv_angle', 'probe_aberrations']:
                 setattr(self, field, None)
 
+        return self
+    
+    @model_validator(mode='after')
+    def validate_simu_npix(self):
+
+        if self.simu_Npix is not None and self.simu_Npix < self.meas_Npix:
+            raise ValueError(
+                f"simu_Npix ({self.simu_Npix}) cannot be smaller than "
+                f"meas_Npix ({self.meas_Npix}). It must be equal or larger."
+            )
+            
         return self
     
     @model_validator(mode="after")

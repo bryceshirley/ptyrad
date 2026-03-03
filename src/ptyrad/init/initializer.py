@@ -154,14 +154,6 @@ class Initializer:
         """
         logger.info("### Setting up calibration ###")
 
-        calib_dict  = self.init_params['meas_calibration']
-        calib_mode  = calib_dict['mode'] # One of 'dx', 'dk', 'kMax', 'da', 'angleMax', 'RBF', 'n_alpha', or 'fitRBF'
-        calib_value = calib_dict.get('value') # fitRBF doesn't need a value here
-        Npix        = self.init_params_original.get('meas_Npix') # Load the original Npix because init_params['meas_Npix'] could have been modified in init_measurements
-        conv_angle  = self.init_params.get('probe_conv_angle')
-        illum_type  = self.init_params.get('probe_illum_type') or 'electron'
-        logger.info(f"meas_calibration mode = '{calib_mode}', value = {calib_value}") # No need to add :.4f to value because it could be None, also it's user input so won't have too many digits
-        
         # Load the meas_raw_avg first to ensure measurement is initialized
         try: 
             meas_raw_avg = self.init_variables['meas_raw_avg'] # This is the averaged measurements with only simple permuting/reshaping/flipping
@@ -170,6 +162,18 @@ class Initializer:
             logger.info(" ")
             self.init_measurements()
             meas_raw_avg = self.init_variables['meas_raw_avg']
+        
+        calib_dict      = self.init_params['meas_calibration']
+        calib_mode      = calib_dict['mode'] # One of 'dx', 'dk', 'kMax', 'da', 'angleMax', 'RBF', 'n_alpha', or 'fitRBF'
+        calib_value     = calib_dict.get('value') # fitRBF doesn't need a value here
+        meas_Npix       = self.init_params_original.get('meas_Npix') # Load the original Npix because init_params['meas_Npix'] could have been modified in init_measurements
+        if self.init_params['simu_Npix'] is None:
+            self.init_params['simu_Npix'] = deepcopy(self.init_params['meas_Npix']) # Use the updated meas_Npix if simu_Npix isn't set
+        simu_Npix       = self.init_params['simu_Npix']
+        simu_match_mode = self.init_params.get('simu_match_mode')
+        conv_angle      = self.init_params.get('probe_conv_angle')
+        illum_type      = self.init_params.get('probe_illum_type') or 'electron'
+        logger.info(f"meas_calibration mode = '{calib_mode}', value = {calib_value}") # No need to add :.4f to value because it could be None, also it's user input so won't have too many digits
         
         if illum_type == 'electron':
             # Get wavelength
@@ -181,8 +185,8 @@ class Initializer:
             logger.info("Using loaded raw averaged measurement (before crop/pad/resample) to fit RBF as a part of the meas calibration")
             fitRBF = guess_radius_of_bright_field_disk(meas_raw_avg, thresh=calib_dict.get('thresh', 0.5))
             
-            logger.info(f"Radius of fitted bright field disk (RBF) = {fitRBF:.2f} px with Npix = {meas_raw_avg.shape[-1]}")
-            logger.info(f"Suggested probe_mask_k radius (RBF*2/Npix) > {(fitRBF * 2 / Npix):.4f}")
+            logger.info(f"Radius of fitted bright field disk (RBF) = {fitRBF:.2f} px with meas_Npix = {meas_raw_avg.shape[-1]}")
+            logger.info(f"Suggested probe_mask_k radius (RBF*2/Npix) > {(fitRBF * 2 / meas_Npix):.4f}")
             
             logger.info("Fitting raw averaged measurement with center, radius, and Gaussian blur std as a sanity check")
             logger.info("Note that the fitted Gaussian blur std (detector blur) would be affected by overlapping Bragg disks")
@@ -190,11 +194,11 @@ class Initializer:
             
             # Actually calculating dx for each calib_mode
             if calib_mode == 'fitRBF':
-                dx = Initializer._infer_dx_from_params(**{'RBF': fitRBF, 'Npix': Npix, 'wavelength': wavelength, 'conv_angle': conv_angle})
+                dx = Initializer._infer_dx_from_params(**{'RBF': fitRBF, 'Npix': meas_Npix, 'wavelength': wavelength, 'conv_angle': conv_angle})
             else:
-                dx = Initializer._infer_dx_from_params(**{calib_mode: calib_value, 'Npix': Npix, 'wavelength': wavelength, 'conv_angle': conv_angle})
+                dx = Initializer._infer_dx_from_params(**{calib_mode: calib_value, 'Npix': meas_Npix, 'wavelength': wavelength, 'conv_angle': conv_angle})
                 if calib_mode != 'RBF': 
-                    inferRBF = conv_angle / 1e3 * Npix * dx / wavelength # We can still infer RBF using the user provided calib value
+                    inferRBF = conv_angle / 1e3 * meas_Npix * dx / wavelength # We can still infer RBF using the user provided calib value
                     logger.info(f"Using init_params, the inferred RBF (conv_angle / 1e3 * Npix * dx / wavelength) = {inferRBF:.2f} px with Npix = {meas_raw_avg.shape[-1]}")
 
             if calib_mode in ['fitRBF', 'RBF']:
@@ -214,7 +218,7 @@ class Initializer:
             
             # Infer dx calibration from provided values
             dx = Initializer._infer_dx_from_params(**{calib_mode: calib_value,
-                                        'Npix': Npix,
+                                        'Npix': meas_Npix,
                                         'wavelength': wavelength})
             
         else:
@@ -232,7 +236,7 @@ class Initializer:
             if crop_ranges[-1] is not None and len(crop_ranges[-1]) == 2:
                 kx_i, kx_f = crop_ranges[-1]
                 Npix_new = kx_f - kx_i
-                dx = dx * Npix / Npix_new
+                dx = dx * meas_Npix / Npix_new
                 Npix_is_modified = True
                 Npix_modified = Npix_new
                 logger.info(f"Update dx to {dx:.4f} {unit_str} due to meas_crop, Npix = {Npix_modified}")
@@ -246,8 +250,8 @@ class Initializer:
             padding_type = pad_cfg['padding_type']
             target_Npix = pad_cfg['target_Npix']
             if Npix_is_modified:
-                Npix = Npix_modified
-            dx = dx * Npix / target_Npix
+                meas_Npix = Npix_modified
+            dx = dx * meas_Npix / target_Npix
             logger.info(f"Update dx to {dx:.4f} {unit_str} due to meas_pad (mode = {mode}, padding_type = {padding_type}), Npix = {target_Npix}")
             if illum_type == 'electron':
                 logger.info(f"Suggested probe_mask_k radius (RBF*2/Npix) changes to > {(fitRBF * 2 / target_Npix):.4f}")
@@ -262,6 +266,12 @@ class Initializer:
             logger.info(f"Update fitRBF to {fitRBF_modified:.4f} due to meas_resample (mode = {mode}, scale_factors = {scale_factors}), Npix = {final_Npix}")
             if illum_type == 'electron':
                 logger.info(f"Suggested probe_mask_k radius (RBF*2/Npix) changes to > {(fitRBF_modified * 2 / final_Npix):.4f}")
+        
+        # Handle dx changes related to simu_match_mode == 'crop'
+        final_meas_Npix = self.init_params['meas_Npix']
+        if simu_match_mode == 'crop' and simu_Npix != final_meas_Npix:
+            dx = dx * final_meas_Npix / simu_Npix
+            logger.info(f"Update dx to {dx:.4f} {unit_str} due to simu_match_mode = {simu_match_mode}, simu_Npix = {simu_Npix}")
                     
         # Set the final dx for internal calibration, this dx would be used for probe, pos, object_extent, H
         self.init_params['probe_dx'] = dx
@@ -275,9 +285,9 @@ class Initializer:
         
         # Note that the self.init_params can be modified by _meas_crop and other methods
         # So this method is called after the entire init_measurements is done
-        # Keep in mind that crop could modify dx, Npix, scans
-        # pad could modify dx, Npix
-        # resample would only modify Npix
+        # Keep in mind that crop could modify dx, meas_Npix, scans
+        # pad could modify dx, meas_Npix
+        # resample would only modify meas_Npix
         
         probe_illum_type = self.init_params.get('probe_illum_type') or 'electron'
         if  probe_illum_type == 'electron':
@@ -285,15 +295,17 @@ class Initializer:
             wavelength  = get_wavelength_ang(voltage) # wavelength in Ang
             unit_str    = 'Ang'
             conv_angle  = self.init_params['probe_conv_angle']
-            Npix        = self.init_params['meas_Npix']
+            meas_Npix   = self.init_params['meas_Npix']
+            simu_Npix   = self.init_params['simu_Npix']
+            simu_match_mode = self.init_params['simu_match_mode'] 
             N_scan_slow = self.init_params['pos_N_scan_slow']
             N_scan_fast = self.init_params['pos_N_scan_fast']
             N_scans     = N_scan_slow * N_scan_fast
             dx          = self.init_params['probe_dx']
-            dk          = 1 / (dx * Npix)
-            kMax        = Npix * dk / 2
+            dk          = 1 / (dx * simu_Npix)
+            kMax        = simu_Npix * dk / 2
             da          = dk * wavelength * 1e3
-            angleMax    = Npix * da / 2
+            angleMax    = simu_Npix * da / 2
             inferRBF    = conv_angle / da 
             n_alpha     = angleMax / conv_angle
             
@@ -302,7 +314,7 @@ class Initializer:
             logger.info(f'  kv          = {voltage} kV')    
             logger.info(f'  wavelength  = {wavelength:.4f} Ang')
             logger.info(f'  conv_angle  = {conv_angle} mrad')
-            logger.info(f'  Npix        = {Npix} px')
+            logger.info(f'  Npix        = {simu_Npix} px')
             logger.info(f'  dk          = {dk:.4f} Ang^-1')
             logger.info(f'  kMax        = {kMax:.4f} Ang^-1')
             logger.info(f'  da          = {da:.4f} mrad')
@@ -311,7 +323,7 @@ class Initializer:
             logger.info(f'  n_alpha     = {n_alpha:.4f} (# conv_angle)')
             logger.info(f'  dx          = {dx:.4f} Ang, Nyquist-limited dmin = 2*dx = {2*dx:.4f} Ang')
             logger.info(f'  Rayleigh-limited resolution  = {(0.61*wavelength/conv_angle*1e3):.4f} Ang (0.61*lambda/alpha for focused probe )')
-            logger.info(f'  Real space probe extent = {dx*Npix:.4f} Ang')
+            logger.info(f'  Real space probe extent = {dx*simu_Npix:.4f} Ang')
 
         elif probe_illum_type == 'xray':
             energy      = self.init_params['beam_kev']
@@ -321,13 +333,14 @@ class Initializer:
             N_scan_slow = self.init_params['probe_N_scan_slow']
             N_scan_fast = self.init_params['probe_N_scan_fast']
             N_scans     = N_scan_slow * N_scan_fast
-            Npix        = self.init_params['meas_Npix']
+            meas_Npix   = self.init_params['meas_Npix']
+            simu_Npix   = self.init_params['simu_Npix']
             dRn         = self.init_params['probe_dRn']
             Rn          = self.init_params['probe_Rn']
             D_H         = self.init_params['probe_D_H']
             D_FZP       = self.init_params['probe_D_FZP']
             Ls          = self.init_params['probe_Ls']
-            dk          = 1/(dx*Npix)
+            dk          = 1/(dx*simu_Npix)
             
             logger.info("Derived values given input init_params:")
             logger.info(f'  x-ray beam energy  = {energy} keV')    
@@ -337,7 +350,7 @@ class Initializer:
             logger.info(f'  D_H                = {D_H} m')
             logger.info(f'  D_FZP              = {D_FZP} m')
             logger.info(f'  Ls                 = {Ls} m')
-            logger.info(f'  Npix               = {Npix} px')
+            logger.info(f'  Npix               = {simu_Npix} px')
             logger.info(f'  dx                 = {dx} m')
         
         else:
@@ -353,8 +366,10 @@ class Initializer:
         self.init_variables['probe_illum_type'] = probe_illum_type
         self.init_variables['lambd']            = wavelength # Ang for electron, m for x-ray
         self.init_variables['length_unit']      = unit_str
-        self.init_variables['Npix']             = Npix
-        self.init_variables['probe_shape']      = np.array([Npix, Npix]).astype(float) # Keep this at float for later init_pos
+        self.init_variables['meas_Npix']        = meas_Npix
+        self.init_variables['simu_Npix']        = simu_Npix
+        self.init_variables['simu_match_mode']  = simu_match_mode
+        self.init_variables['probe_shape']      = np.array([simu_Npix, simu_Npix]).astype(float) # Keep this at float for later init_pos
         self.init_variables['N_scan_slow']      = N_scan_slow
         self.init_variables['N_scan_fast']      = N_scan_fast
         self.init_variables['N_scans']          = N_scans
@@ -547,7 +562,8 @@ class Initializer:
         
         # Check the consistency of init params with the initialized variables
         init_params  = self.init_params
-        Npix        = init_params['meas_Npix']
+        meas_Npix    = init_params['meas_Npix']
+        simu_Npix    = init_params['simu_Npix']
         Nlayer      = init_params['obj_Nlayer']
         N_scans     = init_params['pos_N_scans']
         N_scan_slow = init_params['pos_N_scan_slow']
@@ -562,6 +578,7 @@ class Initializer:
         omode_occu       = self.init_variables['omode_occu'] 
         H                = self.init_variables['H']
         obj_tilts        = self.init_variables['obj_tilts']
+        simu_match_mode  = self.init_variables['simu_match_mode'] 
         if self.init_variables.get('on_the_fly_meas_padded') is not None:
             target_Npix  = self.init_variables['on_the_fly_meas_padded'].shape[-1]
         else:
@@ -575,16 +592,18 @@ class Initializer:
         # We could duplicate some of them at the specific section to catch them early
         
         # Check DP shape
-        if Npix == meas.shape[-2] == meas.shape[-1] == probe.shape[-2] == probe.shape[-1] == H.shape[-2] == H.shape[-1]:
-            logger.info(f"Npix, DP measurements, probe, and H shapes are consistent as '{Npix}'")
-        elif Npix == target_Npix == probe.shape[-2] == probe.shape[-1] == H.shape[-2] == H.shape[-1]:
-            logger.info(f"Npix, DP measurements, probe, and H shapes will be consistent as '{Npix}' during on-the-fly measurement padding")
-        elif Npix == floor(meas.shape[-2]*scale_factors[-2]) == floor(meas.shape[-1]*scale_factors[-1]) == probe.shape[-2] == probe.shape[-1] == H.shape[-2] == H.shape[-1]:
-            logger.info(f"Npix, DP measurements, probe, and H shapes will be consistent as '{Npix}' during on-the-fly measurement resampling")
-        elif Npix == floor(target_Npix*scale_factors[-2]) == floor(target_Npix*scale_factors[-1]) == probe.shape[-2] == probe.shape[-1] == H.shape[-2] == H.shape[-1]:
-            logger.info(f"Npix, DP measurements, probe, and H shapes will be consistent as '{Npix}' during on-the-fly measurement padding and then resampling")
+        if meas_Npix == simu_Npix == meas.shape[-2] == meas.shape[-1] == probe.shape[-2] == probe.shape[-1] == H.shape[-2] == H.shape[-1]:
+            logger.info(f"meas_Npix, simu_Npix, DP measurements, probe, and H shapes are consistent as '{meas_Npix}'")
+        elif meas_Npix == simu_Npix == target_Npix == probe.shape[-2] == probe.shape[-1] == H.shape[-2] == H.shape[-1]:
+            logger.info(f"meas_Npix, simu_Npix, DP measurements, probe, and H shapes will be consistent as '{meas_Npix}' during on-the-fly measurement padding")
+        elif meas_Npix == simu_Npix == floor(meas.shape[-2]*scale_factors[-2]) == floor(meas.shape[-1]*scale_factors[-1]) == probe.shape[-2] == probe.shape[-1] == H.shape[-2] == H.shape[-1]:
+            logger.info(f"meas_Npix, simu_Npix, DP measurements, probe, and H shapes will be consistent as '{meas_Npix}' during on-the-fly measurement resampling")
+        elif meas_Npix == simu_Npix == floor(target_Npix*scale_factors[-2]) == floor(target_Npix*scale_factors[-1]) == probe.shape[-2] == probe.shape[-1] == H.shape[-2] == H.shape[-1]:
+            logger.info(f"meas_Npix, simu_Npix,, DP measurements, probe, and H shapes will be consistent as '{meas_Npix}' during on-the-fly measurement padding and then resampling")
+        elif simu_Npix == probe.shape[-2] == probe.shape[-1] == H.shape[-2] == H.shape[-1]:
+            logger.info(f"simu_Npix,, probe, and H shapes are consistent as '{simu_Npix}', and PtyRAD will {simu_match_mode} the simulated measurement to match meas_Npix ({meas_Npix}) during forward pass'")
         else:
-            raise ValueError(f"Found inconsistency between Npix({Npix}), DP measurements({meas.shape[-2:]}), probe({probe.shape[-2:]}), and H({H.shape[-2:]}) shape")
+            raise ValueError(f"Found inconsistency between meas_Npix({meas_Npix}), simu_Npix ({simu_Npix}), DP measurements({meas.shape[-2:]}), probe({probe.shape[-2:]}), and H({H.shape[-2:]}) shape")
 
         # Check scan pattern
         if N_scans == len(meas) == N_scan_slow*N_scan_fast == len(crop_pos) == len(probe_pos_shifts):
@@ -607,9 +626,9 @@ class Initializer:
         if (crop_pos.min(0) < 0).any():
             raise ValueError(f"Found invalid crop position. crop_pos.min(0) {crop_pos.min(0)} must be equal or larger than 0. Please check your position and object initialization.")
         
-        if (crop_pos.max(0) + Npix - obj.shape[-2:] > 0).any():
-            raise ValueError(f"Found invalid crop position. crop_pos.max(0) {crop_pos.max(0)} + Npix ({Npix}) = {crop_pos.max(0) + Npix} must be equal or smaller than object canvas lateral size (Ny, Nx) = {obj.shape[-2:]}. Please check your position and object initialization.")
-        logger.info(f"crop positions (yx_min={crop_pos.min(0)}, yx_max={crop_pos.max(0)+Npix}) are well contained inside object canvas (Ny,Nx) = {obj.shape[-2:]}.")
+        if (crop_pos.max(0) + simu_Npix - obj.shape[-2:] > 0).any():
+            raise ValueError(f"Found invalid crop position. crop_pos.max(0) {crop_pos.max(0)} + simu_Npix ({simu_Npix}) = {crop_pos.max(0) + simu_Npix} must be equal or smaller than object canvas lateral size (Ny, Nx) = {obj.shape[-2:]}. Please check your position and object initialization.")
+        logger.info(f"crop positions (yx_min={crop_pos.min(0)}, yx_max={crop_pos.max(0)+simu_Npix}) are well contained inside object canvas (Ny,Nx) = {obj.shape[-2:]}.")
         
         # Check obj tilts
         if len(obj_tilts) in [1, N_scans]:
@@ -744,7 +763,7 @@ class Initializer:
             if ext == '.raw' and meas_params.get('shape') is None:
                 logger.info(f"WARNING: Couldn't find the 'shape' in 'meas_params' with file type = '{ext}'.")
                 logger.info("It is strongly recommended to provide an explicit shape to better load from .raw files")
-                logger.info("PtyRAD will still try to load the dataset based on the provided 'init_params', but you may consider setting 'shape': (N_scans, Npix, Npix) inside your 'meas_params' dict.")
+                logger.info("PtyRAD will still try to load the dataset based on the provided 'init_params', but you may consider setting 'shape': (N_scans, meas_Npix, meas_Npix) inside your 'meas_params' dict.")
                 meas_params['shape'] = (self.init_params['pos_N_scans'],
                                         self.init_params['meas_Npix'],
                                         self.init_params['meas_Npix'])
@@ -780,11 +799,11 @@ class Initializer:
         
         # Shape check after flipT (`meas` corresponds to the freshly loaded dataset before anything that could change its shape)
         N_scans = self.init_params_original['pos_N_scans']
-        Npix = self.init_params_original['meas_Npix']
-        if meas.ndim != 3 or meas.shape[0] != N_scans or meas.shape[1:] != (Npix, Npix):
+        meas_Npix = self.init_params_original['meas_Npix']
+        if meas.ndim != 3 or meas.shape[0] != N_scans or meas.shape[1:] != (meas_Npix, meas_Npix):
             raise ValueError(
-                f"Shape mismatch after loading and processing the measurements: expected measurements shape = (N_scans={N_scans}, Npix={Npix}, Npix={Npix}), "
-                f"but got {meas.shape}. PtyRAD allows you to directly preprocess your loaded measurements with `meas_permute` and `meas_reshape` specified in params files to make it (N_scans, Npix(ky), Npix(kx)). "
+                f"Shape mismatch after loading and processing the measurements: expected measurements shape = (N_scans={N_scans}, meas_Npix={meas_Npix}, meas_Npix={meas_Npix}), "
+                f"but got {meas.shape}. PtyRAD allows you to directly preprocess your loaded measurements with `meas_permute` and `meas_reshape` specified in params files to make it (N_scans, meas_Npix(ky), meas_Npix(kx)). "
                 f"Please read the comments in demo YAML params files or the documentation for more information about how to set `meas_permute` and `meas_reshape`."
             )
         
@@ -885,7 +904,7 @@ class Initializer:
         logger.info(f"Cropped measurements have shape (N_slow, N_fast, ky, kx) = {meas.shape}")
 
         # Update self.init_params
-        logger.info("Update (Npix, N_scans, N_scan_slow, N_scan_fast) after the measurements cropping")
+        logger.info("Update (meas_Npix, N_scans, N_scan_slow, N_scan_fast) after the measurements cropping")
         self.init_params['meas_Npix'] = meas.shape[-1]
         self.init_params['pos_N_scans'] = meas.shape[0] * meas.shape[1]
         self.init_params['pos_N_scan_slow'] = meas.shape[0]
@@ -1100,8 +1119,8 @@ class Initializer:
             raise ValueError(f"meas_pad does not support mode = '{mode}', please choose from 'on_the_fly', 'precompute', or null")
 
         # Update iself.init_params similar to _meas_crop
-        logger.info("Update Npix after the measurements padding")
-        self.init_params['meas_Npix'] = meas_padded.shape[-1] # This will update Npix to target_Npix no matter what mode is used
+        logger.info("Update meas_Npix after the measurements padding")
+        self.init_params['meas_Npix'] = meas_padded.shape[-1] # This will update meas_Npix to target_Npix no matter what mode is used
 
         return meas
 
@@ -1117,7 +1136,7 @@ class Initializer:
         # Validate required fields
         try:
             mode = resample_cfg['mode']
-            Npix = self.init_params['meas_Npix']
+            meas_Npix = self.init_params['meas_Npix']
             scale_factors = resample_cfg['scale_factors']
         except KeyError as e:
             raise KeyError(f"Missing required configuration field: {e}")
@@ -1141,20 +1160,20 @@ class Initializer:
         if mode == 'precompute':
             zoom_factors = np.array([1.0, *scale_factors]) # scipy.ndimage.zoom applies to all axes.
             meas = zoom(meas, zoom_factors, order=1) # bilinear (order=1) could prevent overshooting. Resampling would change the meas.sum(), but we have normalization at the end of the process.
-            Npix = meas.shape[-1] # Update Npix
+            meas_Npix = meas.shape[-1] # Update meas_Npix
             self.init_variables['on_the_fly_meas_scale_factors'] = None
 
         elif mode == 'on_the_fly':
-            # Don't change `meas`, just update Npix
-            Npix = floor(Npix * scale_factors[-1]) # To match the rounding logic with torch.nn.functional.interpolate()
+            # Don't change `meas`, just update meas_Npix
+            meas_Npix = floor(meas_Npix * scale_factors[-1]) # To match the rounding logic with torch.nn.functional.interpolate()
             self.init_variables['on_the_fly_meas_scale_factors'] = scale_factors
 
         else:
             raise ValueError(f"meas_resample does not support mode = '{mode}', please choose from 'on_the_fly', 'precompute', or null")
 
         # Update self.init_params similar to _meas_crop
-        self.init_params['meas_Npix'] = Npix
-        logger.info(f"Update Npix into '{Npix}' after the measurements resampling")
+        self.init_params['meas_Npix'] = meas_Npix
+        logger.info(f"Update meas_Npix into '{meas_Npix}' after the measurements resampling")
         logger.info(f"Resampled measurements have shape (N_scans, ky, kx) = {meas.shape}")
 
         return meas
@@ -1445,14 +1464,14 @@ class Initializer:
         if probe_illum_type == 'electron':
             probe = make_stem_probe(kv=init_params['probe_kv'], 
                                     conv_angle=init_params['probe_conv_angle'], 
-                                    Npix=init_params['meas_Npix'], 
+                                    Npix=init_params['simu_Npix'], 
                                     dx=init_params['probe_dx'], # dx = 1/(dk*Npix). Unit in angstrom. This entry is automatically generated inside Initializer.init_calibration().
                                     aberrations=init_params['probe_aberrations'], 
                                     )[None, ...]
 
         elif probe_illum_type == 'xray':
             probe = make_fzp_probe(beam_kev=init_params['beam_kev'],
-                                   Npix=init_params['meas_Npix'],
+                                   Npix=init_params['simu_Npix'],
                                    dx=init_params['probe_dx'],
                                    Ls=init_params['probe_Ls'],
                                    Rn=init_params['probe_Rn'],

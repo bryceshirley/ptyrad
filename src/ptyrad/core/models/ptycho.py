@@ -9,11 +9,13 @@ import logging
 import torch
 import torch.nn as nn
 from torch.fft import fft2, ifft2
+from torch.nn.functional import interpolate
 from torchvision.transforms.functional import gaussian_blur
 
 from ptyrad.core.forward import multislice_forward
 from ptyrad.core.functional import imshift_batch, torch_phasor
 from ptyrad.io.dataloader import MeasDataLoader
+from ptyrad.utils.image_proc import center_crop
 
 # The obj_ROI_grid is modified from precalculation to on-the-fly generation for memory consumption
 # It has very little performance impact but saves lots of memory for large 4D-STEM data
@@ -117,13 +119,16 @@ class PtychoModel(torch.nn.Module):
             self.register_buffer      ('dx',              torch.tensor(init_variables['dx'],               dtype=torch.float32, device=device))# Saving this for reference
             self.register_buffer      ('dk',              torch.tensor(init_variables['dk'],               dtype=torch.float32, device=device))# Saving this for reference
             self.register_buffer      ('lambd',           torch.tensor(init_variables['lambd'],            dtype=torch.float32, device=device))
-            
+
             self.random_seed            = init_variables['random_seed']                                                           # Saving this for reference
             self.length_unit            = init_variables['length_unit']                                                           # Saving this for reference
             self.scan_affine            = init_variables['scan_affine']                                                           # Saving this for reference
             self.tilt_obj               = bool(self.lr_params['obj_tilts']        != 0 or torch.any(self.opt_obj_tilts))          # Set tilt_obj to True if lr_params['obj_tilts'] is not 0 or we have any none-zero tilt values
             self.shift_probes           = bool(self.lr_params['probe_pos_shifts'] != 0)                                           # Set shift_probes to True if lr_params['probe_pos_shifts'] is not 0
             self.change_thickness       = bool(self.lr_params['slice_thickness']  != 0)
+            self.meas_Npix              = init_variables['meas_Npix']
+            self.simu_Npix              = init_variables['simu_Npix']
+            self.simu_match_mode        = init_variables['simu_match_mode']
             self.probe_int_sum          = self.get_complex_probe_view().abs().pow(2).sum() # This is only used for the `fix_probe_int`
             self.loss_iters             = []
             self.iter_times             = []
@@ -273,6 +278,7 @@ class PtychoModel(torch.nn.Module):
         logger.info(f"Preload data              : {self.preload_data}")
         logger.info(f"On-the-fly meas padding   : {True if self.meas_loader.meas_padded is not None else False}")
         logger.info(f"On-the-fly meas resample  : {True if self.meas_loader.meas_scale_factors is not None else False}")
+        logger.info(f"On-the-fly simu match mode: {self.simu_match_mode}")
         logger.info(" ")
     
     def get_obj_patches(self, indices):
@@ -403,7 +409,7 @@ class PtychoModel(torch.nn.Module):
         """Clear temporary attributes like cached object patches."""
         self._current_object_patches = None    
         
-    def forward(self, indices):
+    def forward(self, indices, return_raw=False):
         """ Doing the forward pass and get an output diffraction pattern for each input index """
         # The indices are passed in as an array and representing the whole batch
         # Note that detector blur is a physical process and should be included in the forward method
@@ -416,5 +422,16 @@ class PtychoModel(torch.nn.Module):
         
         # Keep the object_patches for later object-specific loss
         self._current_object_patches = (obja_patches, objp_patches)
+        
+        if return_raw:
+            return dp_fwd
+        
+        # Match the simulated pattern with measured pattern
+        if self.simu_match_mode == 'crop':
+            return center_crop(dp_fwd, crop_height=self.meas_Npix, crop_width=self.meas_Npix)
+        
+        if self.simu_match_mode == 'resample':
+            int_rescale_factor = (self.meas_Npix / self.simu_Npix ) ** 2 # Rescale to keep meas int the same
+            return interpolate(dp_fwd.unsqueeze(1), size=[self.meas_Npix, self.meas_Npix], mode='bilinear').squeeze(1) / int_rescale_factor # interpolate takes (N,C,H,W) as input and asks for [H', W'] for sizes
         
         return dp_fwd

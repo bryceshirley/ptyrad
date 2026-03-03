@@ -272,7 +272,7 @@ def center_crop(image, crop_height, crop_width, offset = (0,0)):
         raise ValueError("Crop size must be smaller than the input image size.")
 
     start_y = (height - crop_height) // 2 + offset[0]
-    start_x = (width - crop_width) // 2 + offset[0]
+    start_x = (width - crop_width) // 2 + offset[1]
 
     return image[..., start_y:start_y + crop_height, start_x:start_x + crop_width]
 
