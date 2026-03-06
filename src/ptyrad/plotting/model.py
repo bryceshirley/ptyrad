@@ -49,7 +49,7 @@ def plot_summary(output_path, model, niter, indices, init_variables, selected_fi
         n = int(len(indices)**0.5)
         n2 = int(len(indices))
         plot_indices = indices[np.int32([n2/2+n/4, n2/2+3*n/4])] # The idea is to get 2 regions of (N/2)x(N/2) that are +-N/4 from the center of the FOV.
-        fig_forward = plot_forward_pass(model, plot_indices, 0.5, show_fig=False, pass_fig=True)
+        fig_forward = plot_forward_pass(model, plot_indices, 0.5, plot_raw=False, show_fig=False, pass_fig=True)
         fig_forward.suptitle(f"Forward pass at iter {niter}", fontsize=24)
         if show_fig:
             fig_forward.show()
@@ -127,7 +127,7 @@ def plot_summary(output_path, model, niter, indices, init_variables, selected_fi
     # Close figures after saving
     plt.close('all')
     
-def plot_forward_pass(model, indices, dp_power, show_fig=True, pass_fig=False):
+def plot_forward_pass(model, indices, dp_power, plot_raw=False, show_fig=True, pass_fig=False):
     """ Plot the forward pass for the input torch model """
     # The input is expected to be torch object and the attributes are all torch tensors and will be converted to numpy
     
@@ -140,7 +140,7 @@ def plot_forward_pass(model, indices, dp_power, show_fig=True, pass_fig=False):
     with torch.no_grad():
         probes      = model.get_probes(indices)
         probes_int  = probes.abs().pow(2).sum(1)
-        model_DP    = model(indices, return_raw=False) # We can return the raw simulated DP for debugging and development
+        model_DP    = model(indices, return_raw=plot_raw) # We can return the raw simulated DP for debugging and development
         obj_patches = model.get_obj_patches(indices) # The cache would be cleared right after the mini-batch update so we have to re-calculate it here
         omode_occu  = model.omode_occu
         measured_DP = model.get_measurements(indices)

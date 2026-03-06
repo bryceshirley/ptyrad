@@ -305,7 +305,7 @@ def plot_slice_thickness(dz_iters, last_n_iters=10, show_fig=True, pass_fig=Fals
     if pass_fig:
         return fig
 
-def plot_probe_modes(init_probe=None, opt_probe=None, amp_or_phase='amplitude', real_or_fourier='real', phase_cmap=None, amplitude_cmap=None, show_fig=True, pass_fig=False):
+def plot_probe_modes(init_probe=None, opt_probe=None, amp_or_phase='amplitude', real_or_fourier='real', phase_cmap=None, amplitude_cmap=None, dpi=200, show_fig=True, pass_fig=False):
     # The input probes are expected to be numpy array
     # This is for visualization so each mode has its own colorbar.
     # See the actual probe amplitude output for absolute scale visualizaiton
@@ -369,7 +369,7 @@ def plot_probe_modes(init_probe=None, opt_probe=None, amp_or_phase='amplitude', 
     
     # Actual plotting
     plt.ioff() # Temporaily disable the interactive plotting mode
-    fig, axs = plt.subplots(rows, n_modes, figsize=(n_modes*2.5, rows*3))
+    fig, axs = plt.subplots(rows, n_modes, figsize=(n_modes*2.5, rows*3), dpi=dpi)
     
     # Normalize axs shapes
     axs = np.asarray(axs)

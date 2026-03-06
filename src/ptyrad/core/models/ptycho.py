@@ -384,15 +384,32 @@ class PtychoModel(torch.nn.Module):
         
         return probe_prop
     
-    def get_forward_meas(self, obja_patches, objp_patches, probes, propagators):
+    def get_forward_pattern(self, obja_patches, objp_patches, probes, propagators):
+        # Returns the diffraction pattern at simulation precision before being corrupted by the detector
+        # In the future we may add a switch for different forward methods
         
         dp_fwd = multislice_forward(obja_patches, objp_patches, probes, propagators, omode_occu=self.omode_occu)
-        
-        if self.detector_blur_std is not None and self.detector_blur_std != 0:
-            kernel_size = max(5, 2*round(3*self.detector_blur_std)+1) # Kernel size would have minimum 5, and scale with 6sigma+1
-            dp_fwd = gaussian_blur(dp_fwd, kernel_size=kernel_size, sigma=self.detector_blur_std)
             
         return dp_fwd
+
+    def get_detector_pattern(self, dp):
+        # Returns the 'measured' diffraction pattern after being corrupted by the projection / detection related transformations, 
+        # like shifting, elliptical distortion, cropping / downsampling, and PSF
+        
+        # Match the geometry (sampling and extent) of simulated pattern with measured pattern
+        if self.simu_match_mode == 'crop':
+            dp = center_crop(dp, crop_height=self.meas_Npix, crop_width=self.meas_Npix)
+        
+        if self.simu_match_mode == 'resample':
+            scale_factor = (self.meas_Npix / self.simu_Npix ) # Used to rescale to keep meas int the same
+            dp = interpolate(dp.unsqueeze(1), size=[self.meas_Npix, self.meas_Npix], mode='bilinear').squeeze(1) / scale_factor**2 # interpolate takes (N,C,H,W) as input and asks for [H', W'] for sizes
+        
+        # Note that detector blur is always applied at the same sampling with actual measured data
+        if self.detector_blur_std is not None and self.detector_blur_std != 0:
+            kernel_size = max(5, 2*round(3*self.detector_blur_std)+1) # Kernel size would have minimum 5, and scale with 6sigma+1
+            dp = gaussian_blur(dp, kernel_size=kernel_size, sigma=self.detector_blur_std)
+
+        return dp
 
     @torch.compiler.disable
     def get_measurements(self, indices=None):
@@ -412,26 +429,17 @@ class PtychoModel(torch.nn.Module):
     def forward(self, indices, return_raw=False):
         """ Doing the forward pass and get an output diffraction pattern for each input index """
         # The indices are passed in as an array and representing the whole batch
-        # Note that detector blur is a physical process and should be included in the forward method
-        # It's a design choice to put it here, instead of putting it under optimization.py
 
         obja_patches, objp_patches = self.get_obj_patches(indices)
         probes                     = self.get_probes(indices)
         propagators                = self.get_propagators(indices)
-        dp_fwd                     = self.get_forward_meas(obja_patches, objp_patches, probes, propagators)
+        dp_fwd                     = self.get_forward_pattern(obja_patches, objp_patches, probes, propagators)
+        dp_det                     = self.get_detector_pattern(dp_fwd)
         
         # Keep the object_patches for later object-specific loss
         self._current_object_patches = (obja_patches, objp_patches)
         
         if return_raw:
             return dp_fwd
-        
-        # Match the simulated pattern with measured pattern
-        if self.simu_match_mode == 'crop':
-            return center_crop(dp_fwd, crop_height=self.meas_Npix, crop_width=self.meas_Npix)
-        
-        if self.simu_match_mode == 'resample':
-            int_rescale_factor = (self.meas_Npix / self.simu_Npix ) ** 2 # Rescale to keep meas int the same
-            return interpolate(dp_fwd.unsqueeze(1), size=[self.meas_Npix, self.meas_Npix], mode='bilinear').squeeze(1) / int_rescale_factor # interpolate takes (N,C,H,W) as input and asks for [H', W'] for sizes
-        
-        return dp_fwd
+        else:
+            return dp_det
