@@ -13,7 +13,7 @@ def near_field_evolution(Npix_shape, dx, dz, lambd):
 
     This function calculates the exact wave propagator in Fourier space, often 
     referred to in literature as the Angular Spectrum Method, rather than the 
-    paraxial Fresnel approximation. The transfer function is defined as:
+    paraxial approximation. The transfer function is defined as:
 
     .. math::
 
@@ -31,13 +31,14 @@ def near_field_evolution(Npix_shape, dx, dz, lambd):
         Npix_shape (tuple of int): The dimensions of the 2D grid in pixels, 
             typically given as :math:`(N_y, N_x)`.
         dx (float): The real-space pixel size (assumed isotropic in :math:`x` and :math:`y`).
-        dz (float): The propagation distance (e.g., slice thickness) along the 
-            optical axis.
+        dz (float, list, or numpy.ndarray): The propagation distance(s) along the 
+            optical axis. Can be a single scalar or a 1D array of distances.
         lambd (float): The wavelength of the electron or illumination wave.
 
     Returns:
-        numpy.ndarray: A 2D complex array of shape :math:`(N_y, N_x)` representing the 
-        propagation transfer function in :math:`k`-space.
+        numpy.ndarray: A complex array representing the propagation transfer function 
+        in :math:`k`-space. If `dz` is a scalar, returns a 2D array of shape :math:`(N_y, N_x)`. 
+        If `dz` is an array of length :math:`N_z`, returns a 3D array of shape :math:`(N_z, N_y, N_x)`.
     """
 
     ygrid = (np.arange(-Npix_shape[0] // 2, Npix_shape[0] // 2) + 0.5) / Npix_shape[0]
@@ -48,6 +49,25 @@ def near_field_evolution(Npix_shape, dx, dz, lambd):
     ky = 2 * np.pi * ygrid / dx
     kx = 2 * np.pi * xgrid / dx
     Ky, Kx = np.meshgrid(ky, kx, indexing="ij")
-    H = ifftshift(np.exp(1j * dz * np.sqrt(k ** 2 - Kx ** 2 - Ky ** 2))) # H has zero frequency at the corner in k-space
+    
+    # Add +0j to safely handle evanescent waves (where kx^2 + ky^2 > k^2) for defensive programming (nearly impossible in electron microscopy)
+    kz = np.sqrt(k ** 2 - Kx ** 2 - Ky ** 2 + 0j) 
 
+    # Handle scalar vs array for dz
+    is_scalar = np.isscalar(dz) or (isinstance(dz, np.ndarray) and dz.ndim == 0)
+    dz_arr = np.atleast_1d(dz)
+    
+    # Reshape dz for broadcasting: turns (N_z,) into (N_z, 1, 1)
+    dz_arr = dz_arr[:, None, None]
+    
+    # Compute H: broadcasts (N_z, 1, 1) * (N_y, N_x) -> (N_z, N_y, N_x)
+    H = np.exp(1j * dz_arr * kz)
+    
+    # Final H has zero frequency at the corner in k-space
+    H = ifftshift(H, axes=(-2, -1)) 
+
+    # Return a 2D array if the input was a scalar, otherwise return the 3D stack
+    if is_scalar:
+        return H[0]
+    
     return H

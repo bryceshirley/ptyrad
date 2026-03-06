@@ -524,6 +524,9 @@ def make_output_folder(
         if constraint_params["probe_mask_k"]["start_iter"] is not None:
             parts.append(f"pmk{round(constraint_params['probe_mask_k']['radius'], 2)}")
 
+        if constraint_params["probe_mask_r"]["start_iter"] is not None:
+            parts.append(f"pmr{round(constraint_params['probe_mask_r']['radius'], 2)}")
+
     # Attach loss params (optional)
     if "loss" in recon_dir_affixes:
         loss_map = {

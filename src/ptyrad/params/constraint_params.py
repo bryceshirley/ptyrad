@@ -29,6 +29,22 @@ class ProbeMaskK(BaseModel):
     power_thresh: float = Field(default=0.95, ge=0.0, le=1.0, description="Power threshold for probe modes")
 
 
+class ProbeMaskR(BaseModel):
+    model_config = {"extra": "forbid"}
+    
+    start_iter: Optional[int] = Field(default=None, ge=1, description="Start iteration of applying real-space probe mask")
+    step: Optional[int] = Field(default=1, ge=1, description="Interval of iterations of applying real-space probe mask")
+    end_iter: Optional[int] = Field(default=None, ge=1, description="End iteration of applying real-space probe mask")
+    radius: float = Field(default=0.95, ge=0.0, description="Radius of super-Gaussian mask in relative window raidus units")
+    order: int = Field(default=6, ge=0.0, description="Order of super-Gaussian mask, usually 4-6 is enough for a flat top and smooth transition")
+    power_thresh: float = Field(default=0.95, ge=0.0, le=1.0, description="Power threshold for probe modes")
+    z_range: List[float] = Field(
+        default=[-500, 500],
+        min_items=2,
+        max_items=2,
+        description="Min and max range for focal plane search along Z-direction in Angstroms")
+    z_steps: int = Field(default=101, ge=1, description="Number of steps for focal plane search along Z-direction")
+
 class FixProbeInt(BaseModel):
     model_config = {"extra": "forbid"}
     
@@ -202,6 +218,25 @@ class ConstraintParams(BaseModel):
     'power_thresh' is used to specify how far into the pmode should be masked. 
     If 'power_thresh': 0.95, the k-space mask would be applied from strongest probe modes to the one that adds uo to 95% total intensity. 
     This promotes a more physical mixed-probe while keeping a small fraction of probe modes to absorb unexpected errors.
+    """
+    
+    probe_mask_r: ProbeMaskR = Field(default_factory=ProbeMaskR, description="Real-space probe mask")
+    """
+    Apply a real-space super-Gaussian (similar to a top-hat) probe mask that apodize (i.e., windowing) the real space probe.
+    This is useful for mitigating the real space corner / edge artifact, 
+    or the checkerboard artifact in k-space probe amplitude that comes from resampling model DP when simu_Npix > meas_Npix.
+    Use 'radius' and 'order' to adjust the shape of the super-Gaussian mask.
+    To prevent cutting off probe when it's defocused, we roll the probe back to focal plane and apply the mask there, 
+    and then propagate the probe back to its original defocus. 
+    'z_range' and 'z_steps' are used to assign the search space for focal plane, typically a +-50 nm with 1 nm step (i.e., 101 steps) is enough. 
+    'power_thresh' is used to specify how far into the pmode should be masked. 
+    If 'power_thresh': 0.95, the k-space mask would be applied from strongest probe modes to the one that adds uo to 95% total intensity. 
+    This promotes a more physical mixed-probe while keeping a small fraction of probe modes to absorb unexpected errors.    
+    Because windowing in real-space is equivalent to blurring in the k-space, this mitigates the corner and edge artifact intensities in probe window, 
+    while also simultaneously blur the k-space probe slightly.
+    A signal can not be perfectly bounded in both real and Fourier domains, since probe is physically bounded by probe-forming-aperture in k-space,
+    the real-space probe is mathematically infinitely wide and probe tails never decays to 0.
+    Therefore, this constraint will ALWAYS cut off some probe tails and may inadvertently cause more artifacts, use it with caution.
     """
     
     fix_probe_int: FixProbeInt = Field(

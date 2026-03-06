@@ -14,10 +14,12 @@ from ptyrad.core.functional import (
     approx_torch_quantile,
     dct_2d,
     fftshift2,
+    find_probe_focus_dz,
     gaussian_blur_1d,
     idct_2d,
     ifftshift2,
     make_sigmoid_mask,
+    make_super_gaussian_mask,
     near_field_evolution_torch,
 )
 
@@ -56,15 +58,6 @@ class CombinedConstraint(torch.nn.Module):
             return False
         return (niter - start) % step == 0
 
-    def apply_ortho_pmode(self, model, niter):
-        ''' Apply orthogonality constraint to probe modes '''
-        
-        if self._should_apply_at_iter('ortho_pmode', niter):
-            model.opt_probe.copy_(torch.view_as_real(orthogonalize_modes_vec(model.get_complex_probe_view(), sort=True))) # Note that model stores the complex probe as a (pmode, Ny, Nx, 2) float tensor (real view) so we need to do some real-complex view conversion.
-            probe_int = model.get_complex_probe_view().abs().pow(2)
-            probe_pow = (probe_int.sum((1,2))/probe_int.sum()).detach().cpu().numpy().round(3)
-            logger.debug(f"Apply ortho pmode constraint at iter {niter}, relative pmode power = {probe_pow}, probe int sum = {probe_int.sum():.4f}")
-
     def apply_probe_mask_k(self, model, niter):
         ''' Apply probe amplitude constraint in Fourier space '''
         # Note that this will change the total probe intensity, please use this with `fix_probe_int`
@@ -87,10 +80,68 @@ class CombinedConstraint(torch.nn.Module):
             mask[:pmode_index+1] = mask_value
             probe_k = fftshift2 (fft2(ifftshift2(probe), norm='ortho')) # probe_k at center for later masking
             probe_r = fftshift2(ifft2(ifftshift2(mask * probe_k),  norm='ortho')) # probe_r at center. Note that the norm='ortho' is explicitly specified but not needed for a round-trip
-            probe_int = model.get_complex_probe_view().abs().pow(2)
             # Re-sort the probe modes, note that the masked strong modes might be swapping order with unmasked weak modes
             model.opt_probe.copy_(torch.view_as_real(sort_by_mode_int(probe_r)))
-            logger.debug(f"Apply Fourier-space probe amplitude constraint at iter {niter}, pmode_index = {pmode_index} when power_thresh = {power_thresh}, probe int sum = {probe_int.sum():.4f}")
+            probe_int = model.get_complex_probe_view().abs().pow(2)
+            logger.debug(f"Apply Fourier-space probe amplitude constraint at iter {niter}, pmode_index = {pmode_index} when power_thresh = {power_thresh}. Current probe int sum = {probe_int.sum():.4f}")
+
+    def apply_probe_mask_r(self, model, niter):
+        ''' Apply probe amplitude constraint in Real space '''
+        # Note that this will change the total probe intensity, please use this with `fix_probe_int`
+        # Although the mask wouldn't change during the iteration, making a mask takes only ~0.5us on CPU so really no need to pre-calculate it
+        # The sandwitch fftshift(fft(ifftshift(probe))) is needed to properly handle the complex probe without serrated phase
+        # fft2 is for real->fourier, while fftshift2 is for corner->center
+        
+        if self._should_apply_at_iter('probe_mask_r', niter):
+            params = self.constraint_params['probe_mask_r']
+            relative_radius   = params.get('radius', 0.95)
+            order             = params.get('order', 6) # Using order for Super-Gaussian
+            power_thresh      = params.get('power_thresh', 0.95)
+            z_range = params.get('z_range', [-500, 500])
+            z_steps = params.get('z_steps', 101)
+            
+            probe = model.get_complex_probe_view()
+            probe = sort_by_mode_int(probe)
+            Npix = probe.size(-1)
+            
+            # 1. Determine which modes to mask (based on power threshold)
+            powers = probe.abs().pow(2).sum((-2,-1)) / probe.abs().pow(2).sum()
+            powers_cumsum = powers.cumsum(0)
+            pmode_index = (powers_cumsum > power_thresh).nonzero()[0].item() # This gives the pmode index that the cumulative power along mode dimension is greater than the power_thresh and should have mask extend to this index
+            
+            # 2. Make mask
+            mask = torch.ones_like(probe, dtype=torch.float32, device=model.device)
+            mask_value = make_super_gaussian_mask(Npix, relative_radius, order=order, device=model.device)
+            mask[:pmode_index+1] = mask_value
+            
+            # 3. Find the focal plane and get the forward and backward propagator, note that forward means "to focal plane", and backward is "reset"
+            best_dz = find_probe_focus_dz(probe[0], model.dx, model.lambd, z_range, z_steps) # Feed the strongest pmode
+            H_fwd = near_field_evolution_torch(probe.shape[-2:], model.dx, best_dz, model.lambd, dtype=probe.dtype, device=model.device)
+            H_bwd = torch.conj(H_fwd)
+            
+            # 4. Roll the probe to focal plane, mask, and then roll back
+            probe_focused = ifft2(fft2(probe) * H_fwd)
+            probe_masked = mask * probe_focused
+            probe_final = ifft2(fft2(probe_masked) * H_bwd)
+            
+            # 5. Update the probe and report debug info
+            # Re-sort the probe modes, note that the masked strong modes might be swapping order with unmasked weak modes
+            model.opt_probe.copy_(torch.view_as_real(sort_by_mode_int(probe_final)))
+            probe_int = model.get_complex_probe_view().abs().pow(2)
+            logger.debug(f"Apply Real-space probe amplitude constraint at iter {niter}, " \
+                         f"pmode_index = {pmode_index} when power_thresh = {power_thresh}. " \
+                         f"Focal plane found at {best_dz} Ang with z_range = {z_range}. " \
+                         f"Mask with raidus = {relative_radius} and order = {order}. " \
+                         f"Current probe int sum = {probe_int.sum():.4f}")
+    
+    def apply_ortho_pmode(self, model, niter):
+        ''' Apply orthogonality constraint to probe modes '''
+        
+        if self._should_apply_at_iter('ortho_pmode', niter):
+            model.opt_probe.copy_(torch.view_as_real(orthogonalize_modes_vec(model.get_complex_probe_view(), sort=True))) # Note that model stores the complex probe as a (pmode, Ny, Nx, 2) float tensor (real view) so we need to do some real-complex view conversion.
+            probe_int = model.get_complex_probe_view().abs().pow(2)
+            probe_pow = (probe_int.sum((1,2))/probe_int.sum()).detach().cpu().numpy().round(3)
+            logger.debug(f"Apply ortho pmode constraint at iter {niter}, relative pmode power = {probe_pow}, probe int sum = {probe_int.sum():.4f}")
     
     def apply_fix_probe_int(self, model, niter):
         ''' Apply probe intensity constraint '''
@@ -329,8 +380,9 @@ class CombinedConstraint(torch.nn.Module):
         
         with torch.no_grad():
             # Probe constraints
-            self.apply_ortho_pmode   (model, niter)
             self.apply_probe_mask_k  (model, niter)
+            self.apply_probe_mask_r  (model, niter)
+            self.apply_ortho_pmode   (model, niter)
             self.apply_fix_probe_int (model, niter)
             # Object constraints
             self.apply_obj_rblur     (model, niter)

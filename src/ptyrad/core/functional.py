@@ -274,7 +274,7 @@ def gaussian_blur_1d(tensor, kernel_size=5, sigma=0.5):
 
     return F.conv2d(t_padded, weight).squeeze(1).reshape(omode, z, H, W)
 
-# This is currently used in core/constraints.py > kr_filter, probe_mask_k
+# This is currently used in core/constraints.py > kr_filter, probe_mask_k, probe_mask_r
 def make_sigmoid_mask(Npix: int, relative_radius: float = 2/3, relative_width: float = 0.2, center: Optional[Tuple[float, float]] = None):
     """
     Create a 2D circular mask with a sigmoid transition.
@@ -319,6 +319,48 @@ def make_sigmoid_mask(Npix: int, relative_radius: float = 2/3, relative_width: f
     sigmoid_mask = scaled_sigmoid(kR, offset=Npix * relative_radius / 2, scale=relative_width * Npix)
 
     return sigmoid_mask
+
+def make_super_gaussian_mask(Npix, relative_radius=0.95, order=6, device='cuda'):
+    """
+    Creates a 2D Super-Gaussian flat-top mask.
+    order=1 is a standard Gaussian. order=4 to 6 gives a nice flat top with smooth edges.
+    """
+    # Create coordinate grid from -1 to 1
+    grid = torch.linspace(-1, 1, Npix, device=device)
+    Y, X = torch.meshgrid(grid, grid, indexing='ij')
+    R = torch.sqrt(X**2 + Y**2)
+    
+    # Scale R so that relative_radius maps to the standard deviation width
+    # We add a small epsilon to avoid divide-by-zero if radius is weird
+    mask = torch.exp(-0.5 * (R / (relative_radius + 1e-8)) ** (2 * order))
+    return mask
+
+def find_probe_focus_dz(probe, dx, lambd, z_range_ang=(-500, 500), z_steps=101):
+    """
+    Performs a line search along z to find the focal plane using the L4 norm (sharpness).
+    Returns the optimal dz in Angstroms, positive value corresponds to forward propagation.
+    """
+    device = probe.device
+    Npix_shape = probe.shape[-2:]
+    
+    # Generate the dz search array
+    z_arr = torch.linspace(z_range_ang[0], z_range_ang[1], z_steps, device=device)
+    
+    # Get the propagator stack: shape (N_z, Ny, Nx)
+    H_stack = near_field_evolution_torch(Npix_shape, dx, z_arr, lambd, dtype=probe.dtype, device=device)
+    
+    # Propagate the dominant probe mode to all z slices simultaneously
+    # probe is (Ny, Nx), H_stack is (N_z, Ny, Nx), both broadcast to (N_z, Ny, Nx)
+    probe_z_stack = torch.fft.ifft2(torch.fft.fft2(probe) * H_stack)
+    
+    # Calculate sharpness (L4 norm)
+    # Summing over the spatial dimensions (-2, -1) gives a sharpness value for each z slice
+    sharpness = probe_z_stack.abs().pow(4).sum(dim=(-2, -1))
+    
+    # Find the index of maximum sharpness
+    best_idx = torch.argmax(sharpness)
+    
+    return z_arr[best_idx].item()
 
 # This is currently used in core/constraints.py > kr_thrsh
 def dct_2d(x: torch.Tensor) -> torch.Tensor:
@@ -414,7 +456,26 @@ def near_field_evolution_torch(Npix_shape, dx, dz, lambd, dtype=torch.complex64,
     ky = 2 * torch.pi * ygrid / dx
     kx = 2 * torch.pi * xgrid / dx
     Ky, Kx = torch.meshgrid(ky, kx, indexing="ij")
-    H = ifftshift2(torch.exp(1j * dz * torch.sqrt(k ** 2 - Kx ** 2 - Ky ** 2)), ) # H has zero frequency at the corner in k-space
+    
+    # Cast to complex to safely handle evanescent waves (where kx^2 + ky^2 > k^2) for defensive programming (technically impossible in electron microscopy)
+    kz = torch.sqrt((k ** 2 - Kx ** 2 - Ky ** 2).to(dtype))
+
+    # Safely handle scalar vs list vs array vs tensor for dz
+    dz_tensor = torch.as_tensor(dz, device=device)
+    is_scalar = dz_tensor.ndim == 0
+    
+    # Ensure it's at least 1D, then reshape for broadcasting: turns (N_z,) into (N_z, 1, 1)
+    dz_arr = torch.atleast_1d(dz_tensor)[:, None, None]
+    
+    # Compute H: broadcasts (N_z, 1, 1) * (N_y, N_x) -> (N_z, N_y, N_x)
+    H = torch.exp(1j * dz_arr * kz)
+    
+    # Final H has zero frequency at the corner in k-space
+    H = ifftshift2(H)
+
+    # Return a 2D array if the input was a scalar, otherwise return the 3D stack
+    if is_scalar:
+        return H[0].to(dtype)
 
     return H.to(dtype)
 
