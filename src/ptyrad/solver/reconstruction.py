@@ -373,15 +373,26 @@ def recon_loop(model, init, params, optimizer, loss_fn, constraint_fn, indices, 
     grad_accumulation = recon_params['BATCH_SIZE'].get("grad_accumulation", 1)
     selected_figs     = recon_params['selected_figs']
     compiler_configs  = parse_torch_compile_configs(recon_params['compiler_configs'])
+
+    # Check on DDP and compiler_configs['fullgraph']
+    is_distributed = (acc.num_processes > 1) if acc else isinstance(model, torch.nn.parallel.DistributedDataParallel)
+    if is_distributed and compiler_configs.get('fullgraph', False):
+        logger.warning("WARNING: DDP Multi-GPU detected, forcefully setting 'fullgraph=False' because DDP requires intentional graph breaks.")
+        compiler_configs['fullgraph'] = False
+    
+    # Duplicate a compiler configs for optimizer because optimizer.step can't be compiled with fullgraph=True by design
+    optim_compiler_configs = compiler_configs.copy()
+    optim_compiler_configs['fullgraph'] = False
     
     # Use the method on the wrapped model (DDP) if it exists
     model_instance = model.module if hasattr(model, "module") else model
     
     logger.info("### Start the PtyRAD iterative ptycho reconstruction ###")
     
-    # Initialize the compute_loss_fn
-    compute_loss_fn = compute_loss 
-    
+    # Initialize the compute_loss_fn and optimizer.step
+    compute_loss_fn = compute_loss
+    optim_step_fn = optimizer.step
+
     # Optimization loop
     for niter in range(1,NITER+1):
         
@@ -395,7 +406,7 @@ def recon_loop(model, init, params, optimizer, loss_fn, constraint_fn, indices, 
             compute_loss_fn = torch.compile(compute_loss, **compiler_configs)
             
             if not isinstance(optimizer, torch.optim.LBFGS): # Only compile first-order optimizers (like Adam), L-BFGS relies on dynamic closures that cannot be safely traced.
-                optimizer.step = torch.compile(optimizer.step, **compiler_configs)
+                optimizer.step = torch.compile(optim_step_fn, **optim_compiler_configs)
         
         batch_losses = recon_step(batches, grad_accumulation, model, optimizer, loss_fn, constraint_fn, niter, acc=acc, compute_loss_fn=compute_loss_fn)
         
