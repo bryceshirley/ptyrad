@@ -126,6 +126,13 @@ class ReconParams(BaseModel):
     For extremely large object (or with a lot of object modes), you'll need to reduce batch size to save GPU memory, 
     or use `grad_accumulation` to split a batch into multiple sub-batches for 1 update.
     """
+
+    PARALLEL: bool = Field(default=False, description="Whether to use parallel in z for multislice ptychography")
+    """
+    Set to true to use parallel in z for multislice ptychography, which is a technique that allows the simultaneous update of multiple slices in the z direction.
+    This can speed up the reconstruction for multislice ptychography, especially when the number of slices is large.
+    However, the parallel in z technique may lead to higher memory usage and might not be compatible with all optimization algorithms.
+    """
     
     GROUP_MODE: Literal["random", "sparse", "compact"] = Field(
         default="random", description="Spatial distribution of probe positions in a batch"

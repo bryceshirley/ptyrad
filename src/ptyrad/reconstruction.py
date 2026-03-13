@@ -132,7 +132,7 @@ class PtyRADSolver(object):
         logger = self.logger
         
         # Create the model and optimizer, prepare indices, batches, and output_path
-        model         = PtychoAD(self.init.init_variables, params['model_params'], device=device, verbose=self.verbose)
+        model         = PtychoAD(self.init.init_variables, params['model_params'], parallel=params['recon_params']['PARALLEL'], device=device, verbose=self.verbose)
         optimizer     = create_optimizer(model.optimizer_params, model.optimizable_params)
         
         if not self.use_acc_device:
@@ -1102,7 +1102,7 @@ def optuna_objective(trial, params, init, loss_fn, constraint_fn, device='cuda',
         init.init_variables['obj_tilts'] = obj_tilts # No need to update init_params['tilt_params'] because the pass-in value is only used when `tilt_params = 'custom'`
    
     # Create the model and optimizer, prepare indices, batches, and output_path
-    model         = PtychoAD(init.init_variables, params['model_params'], device=device, verbose=verbose)
+    model         = PtychoAD(init.init_variables, params['model_params'],parallel=params['recon_params']['PARALLEL'], device=device, verbose=verbose)
     optimizer     = create_optimizer(model.optimizer_params, model.optimizable_params, verbose=verbose)
     indices, batches, output_path = prepare_recon(model, init, params)
       
