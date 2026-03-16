@@ -12,7 +12,6 @@ import torch.nn as nn
 from torch.fft import fft2, ifft2
 from torchvision.transforms.functional import gaussian_blur
 
-from ptyrad.forward import multislice_forward_model_vec_all
 from ptyrad.utils import imshift_batch, torch_phasor, vprint
 
 # The obj_ROI_grid is modified from precalculation to on-the-fly generation for memory consumption
@@ -79,6 +78,8 @@ class PtychoAD(torch.nn.Module):
             self.verbose = verbose
             self.detector_blur_std = model_params["detector_blur_std"]
             self.obj_preblur_std = model_params["obj_preblur_std"]
+            self.solver_type = model_params.get("solver_type", "multislice")
+            self.born_iterations = model_params.get("born_iterations", 1)
             if init_variables.get("on_the_fly_meas_padded", None) is not None:
                 self.meas_padded = torch.tensor(
                     init_variables["on_the_fly_meas_padded"], dtype=torch.float32, device=device
@@ -361,6 +362,9 @@ class PtychoAD(torch.nn.Module):
         vprint(
             f"On-the-fly meas resample  : {True if self.meas_scale_factors is not None else False}"
         )
+        vprint(f"Solver type               : {self.solver_type}")
+        if self.solver_type == "born":
+            vprint(f"Born iterations           : {self.born_iterations}")
         vprint(" ")
 
     def get_obj_ROI(self, indices):
@@ -500,9 +504,22 @@ class PtychoAD(torch.nn.Module):
         return probe_prop
 
     def get_forward_meas(self, object_patches, probes, propagators):
-        dp_fwd = multislice_forward_model_vec_all(
-            object_patches, probes, propagators, omode_occu=self.omode_occu
-        )
+        if self.solver_type == "born":
+            from ptyrad.forward import multislice_forward_model_vec_all_born
+
+            dp_fwd = multislice_forward_model_vec_all_born(
+                object_patches,
+                probes,
+                propagators,
+                omode_occu=self.omode_occu,
+                n_max=self.born_iterations,
+            )
+        else:
+            from ptyrad.forward import multislice_forward_model_vec_all
+
+            dp_fwd = multislice_forward_model_vec_all(
+                object_patches, probes, propagators, omode_occu=self.omode_occu
+            )
 
         if self.detector_blur_std is not None and self.detector_blur_std != 0:
             dp_fwd = gaussian_blur(dp_fwd, kernel_size=5, sigma=self.detector_blur_std)
