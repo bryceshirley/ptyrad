@@ -114,6 +114,28 @@ class ModelParams(BaseModel):
 
     model_config = {"extra": "forbid"}
 
+    solver_type: str = Field(
+        default="multislice",
+        description="Type of solver to use for forward model: 'multislice' or 'born'",
+    )
+    """
+    The solver type determines which forward model implementation to use:
+    - 'multislice': Standard multislice algorithm
+    - 'born': Born approximation with configurable iterations
+    """
+
+    born_iterations: int = Field(
+        default=1,
+        ge=1,
+        description="Number of Born iterations to use when solver_type='born'",
+    )
+    """
+    When using the Born approximation solver, this controls the number of iterations:
+    - 1: First-order Born approximation (single scattering)
+    - >1: Higher-order Born approximation (multiple scattering)
+    - =Nz: Full multislice equivalent
+    """
+
     obj_preblur_std: float | None = Field(
         default=None,
         ge=0.0,
