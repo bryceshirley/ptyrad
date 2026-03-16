@@ -30,7 +30,7 @@ echo params_path = ${PARAMS_PATH}
 
 ## Assuming you are under `ptyrad/` root and calling `sbatch scripts/slurm_run_ptyrad.sub`
 ## Change directory to ptyrad/demo/ so the relative path of data location specified in params.yml is correct
-cd demo/; pwd; 
+cd demo/; pwd;
 
 ## Execute the ptyrad CLI command `ptyrad run`
 ptyrad run --params_path "${PARAMS_PATH}" --jobid "${JOBID:-0}" 2>&1
@@ -39,4 +39,3 @@ ptyrad run --params_path "${PARAMS_PATH}" --jobid "${JOBID:-0}" 2>&1
 (The *reconstuction mode* is solely configured by the params file by setting `if_hypertune: false`.)
 
 > 💡 This is the same example as `ptyrad/scripts/slurm_run_ptyrad.sub`.
-

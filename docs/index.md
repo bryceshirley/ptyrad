@@ -3,7 +3,7 @@
 ::::{grid} 1 1 2 2
 :gutter: 2
 
-:::{grid-item-card} 
+:::{grid-item-card}
 :link: reference:overview
 :link-type: ref
 :text-align: center

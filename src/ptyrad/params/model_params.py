@@ -1,16 +1,16 @@
-from typing import Any, Dict, Optional, Union
+import pathlib
+from typing import Any
 
 import torch.optim
-from pydantic import BaseModel, Field, FilePath, field_validator, model_validator, model_serializer
-import pathlib
+from pydantic import BaseModel, Field, FilePath, field_validator, model_serializer, model_validator
 
 
 class OptimizerParams(BaseModel):
     model_config = {"extra": "forbid"}
-    
+
     name: str = Field(default="Adam", description="Optimizer name")
-    configs: Dict[str, Any] = Field(default_factory=dict, description="Optimizer configurations")
-    load_state: Optional[FilePath] = Field(
+    configs: dict[str, Any] = Field(default_factory=dict, description="Optimizer configurations")
+    load_state: FilePath | None = Field(
         default=None, description="Path str of a PtyRAD model file to load previous optimizer state"
     )
 
@@ -21,35 +21,35 @@ class OptimizerParams(BaseModel):
         if not hasattr(torch.optim, v) or not callable(getattr(torch.optim, v)):
             raise ValueError(f"Optimizer name '{v}' is not a valid PyTorch optimizer")
         return v
-    
+
     @model_serializer
     def serialize_model(self):
         """Custom serializer to convert pathlib.Path back to str."""
         data = self.__dict__.copy()
-        if data.get('load_state') is not None and isinstance(data['load_state'], pathlib.Path):
-            data['load_state'] = str(data['load_state'])
+        if data.get("load_state") is not None and isinstance(data["load_state"], pathlib.Path):
+            data["load_state"] = str(data["load_state"])
         return data
 
 
 class UpdateParams(BaseModel):
     model_config = {"extra": "forbid"}
-    
-    obja: Dict[str, Union[int, float, None]] = Field(
+
+    obja: dict[str, int | float | None] = Field(
         default={"start_iter": 1, "lr": 5.0e-4}, description="Object amplitude update params"
     )
-    objp: Dict[str, Union[int, float, None]] = Field(
+    objp: dict[str, int | float | None] = Field(
         default={"start_iter": 1, "lr": 5.0e-4}, description="Object phase update params"
     )
-    obj_tilts: Dict[str, Union[int, float, None]] = Field(
+    obj_tilts: dict[str, int | float | None] = Field(
         default={"start_iter": None, "lr": 0.0}, description="Object tilts update params"
     )
-    slice_thickness: Dict[str, Union[int, float, None]] = Field(
+    slice_thickness: dict[str, int | float | None] = Field(
         default={"start_iter": None, "lr": 0.0}, description="Slice thickness update params"
     )
-    probe: Dict[str, Union[int, float, None]] = Field(
+    probe: dict[str, int | float | None] = Field(
         default={"start_iter": 1, "lr": 1.0e-4}, description="Probe update params"
     )
-    probe_pos_shifts: Dict[str, Union[int, float, None]] = Field(
+    probe_pos_shifts: dict[str, int | float | None] = Field(
         default={"start_iter": 1, "lr": 5.0e-4},
         description="Sub-pixel probe position shifts update params",
     )
@@ -58,7 +58,7 @@ class UpdateParams(BaseModel):
         "obja", "objp", "obj_tilts", "slice_thickness", "probe", "probe_pos_shifts", mode="after"
     )
     @classmethod
-    def validate_update_params(cls, v: Dict[str, Any], field) -> Dict[str, Any]:
+    def validate_update_params(cls, v: dict[str, Any], field) -> dict[str, Any]:
         """Validate start_iter and lr for update parameters."""
         start_iter = v.get("start_iter")
         lr = v.get("lr", 0.0)
@@ -113,26 +113,25 @@ class ModelParams(BaseModel):
     """
 
     model_config = {"extra": "forbid"}
-    
-    
-    obj_preblur_std: Optional[float] = Field(
+
+    obj_preblur_std: float | None = Field(
         default=None,
         ge=0.0,
         description="Gaussian blur std for object before forward pass. unit: px (real space)",
     )
     """
-    This applies Gaussian blur to the object before simulating diffraction patterns. 
-    Since the gradient would flow to the original "object" before blurring, it's essentially deconvolving the object with a Gaussian kernel of specified std. 
+    This applies Gaussian blur to the object before simulating diffraction patterns.
+    Since the gradient would flow to the original "object" before blurring, it's essentially deconvolving the object with a Gaussian kernel of specified std.
     This sort of deconvolution can generate sharp features, but the usage is not easily justifiable so treat it carefully as a visualization exploration
     """
 
-    detector_blur_std: Optional[float] = Field(
+    detector_blur_std: float | None = Field(
         default=None,
         ge=0.0,
         description="Gaussian blur std for simulated diffraction patterns. unit: px (k-space)",
     )
     """
-    This applies Gaussian blur to the forward model simulated diffraction patterns to emulate the PSF of high-energy electrons on detector for experimental data. 
+    This applies Gaussian blur to the forward model simulated diffraction patterns to emulate the PSF of high-energy electrons on detector for experimental data.
     Typical value is 0-1 px (std) based on the acceleration voltage
     """
 
@@ -140,10 +139,10 @@ class ModelParams(BaseModel):
         default_factory=OptimizerParams, description="Optimizer configuration"
     )
     """
-    Support all PyTorch optimizer. 
-    The suggested optimizer is 'Adam' with default configs (null). 
-    You can load the previous optimizer state by passing the path of `model.hdf5` to `load_state`, this way you can continue previous reconstruciton smoothly without abrupt gradients. 
-    (Because lots of the optimizers are adaptive and have history-dependent learning rate manipulation, so loading the optimizer state is necessary if you want to continue the previous optimization trajectory). 
+    Support all PyTorch optimizer.
+    The suggested optimizer is 'Adam' with default configs (null).
+    You can load the previous optimizer state by passing the path of `model.hdf5` to `load_state`, this way you can continue previous reconstruciton smoothly without abrupt gradients.
+    (Because lots of the optimizers are adaptive and have history-dependent learning rate manipulation, so loading the optimizer state is necessary if you want to continue the previous optimization trajectory).
     However, the optimizer state must be coming from previous reconstructions with the same set of optimization variables with identical size of the dimensions otherwise it won't run.
     """
 

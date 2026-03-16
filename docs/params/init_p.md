@@ -21,7 +21,7 @@ init_params : {
     'probe_pmode_max'        : 6,
     'probe_pmode_init_pows'  : [0.02],
     'obj_omode_max'          : 1,
-    'obj_omode_init_occu'    : {'occu_type': 'uniform', 'init_occu': null}, 
+    'obj_omode_init_occu'    : {'occu_type': 'uniform', 'init_occu': null},
     'obj_Nlayer'             : 6,
     'obj_slice_thickness'    : 2,
     # Preprocessing

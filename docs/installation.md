@@ -50,7 +50,7 @@ Although `pytorch-gpu -c conda-forge` should automatically detect a compatible C
 ```bash
 conda install ptyrad pytorch pytorch-cuda=11.8 -c nvidia -c pytorch -c conda-forge
 ```
-The `pytorch-cuda=11.8` specifies the CUDA runtime version and you can modify the `pytorch-cuda=X.Y` if your machine supports newer CUDA runtime. Run `nvidia-smi` in your terminal to see the maximum supported CUDA runtime version. 
+The `pytorch-cuda=11.8` specifies the CUDA runtime version and you can modify the `pytorch-cuda=X.Y` if your machine supports newer CUDA runtime. Run `nvidia-smi` in your terminal to see the maximum supported CUDA runtime version.
 
 However, note that **PyTorch's official Anaconda channel (`-c pytorch`) is deprecated since PyTorch 2.6** according to the [PyTorch team announcement](https://github.com/pytorch/pytorch/issues/138506), so the maximum version of PyTorch you can get will be 2.5.1 via this command. You have to use `-c conda-forge` to get newer PyTorch if you still want to use `conda`.
 

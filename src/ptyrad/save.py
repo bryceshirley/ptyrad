@@ -4,16 +4,17 @@ Saving functions for PtyRAD outputs including model, arrays, params files, etc.
 """
 
 import os
-from typing import Any, Dict
+from typing import Any
 
 import h5py
 import numpy as np
 import torch
 from tifffile import imwrite
 
-from ptyrad.utils import get_time, normalize_by_bit_depth, safe_filename, vprint, expand_presets
+from ptyrad.utils import expand_presets, get_time, normalize_by_bit_depth, safe_filename, vprint
 
 ###### These are data saving functions ######
+
 
 def write_tif(file_path, data):
     """
@@ -22,6 +23,7 @@ def write_tif(file_path, data):
     imwrite(file_path, data, imagej=True)
     vprint(f"Success! Saved data to .tif file: {file_path}")
 
+
 def write_npy(file_path, data):
     """
     Save an array as a NumPy .npy file.
@@ -29,15 +31,25 @@ def write_npy(file_path, data):
     np.save(file_path, data)
     vprint(f"Success! Saved data to .npy file: {file_path}")
 
+
 def write_hdf5(file_path, data, dataset_name="meas", **kwargs):
     """
     Save an array as an HDF5 file.
     """
-    with h5py.File(file_path, "w") as hf: # 'w' will override if the file already exists
+    with h5py.File(file_path, "w") as hf:  # 'w' will override if the file already exists
         hf.create_dataset(dataset_name, data=data, compression="gzip", **kwargs)
     vprint(f"Success! Saved data as '{dataset_name}' to .hdf5 file: {file_path}")
 
-def save_array(data, file_dir='', file_name='ptyrad_init_meas', file_format="hdf5", output_shape=None, append_shape=True, **kwargs):
+
+def save_array(
+    data,
+    file_dir="",
+    file_name="ptyrad_init_meas",
+    file_format="hdf5",
+    output_shape=None,
+    append_shape=True,
+    **kwargs,
+):
     """
     Save an ND array to the specified file format.
 
@@ -56,7 +68,7 @@ def save_array(data, file_dir='', file_name='ptyrad_init_meas', file_format="hdf
             data = data.reshape(output_shape)
         except ValueError as e:
             vprint(f"WARNING: {e}, the data shape is preserved as {data.shape}")
-            
+
     # Append shape to the filename if enabled
     if append_shape:
         shape_str = "_".join(map(str, data.shape))
@@ -66,10 +78,10 @@ def save_array(data, file_dir='', file_name='ptyrad_init_meas', file_format="hdf
     file_format = file_format.lower()
     file_path = os.path.join(file_dir, f"{file_name}.{file_format}")
     vprint(f"Saving array with shape = {data.shape} and dtype = {data.dtype}")
-    
+
     if os.path.isfile(file_path):
         vprint(f"file path = '{file_path}' already exists, the file will be overwritten.")
-    
+
     if file_format in ["tif", "tiff"]:
         write_tif(file_path, data)
     elif file_format == "npy":
@@ -79,69 +91,75 @@ def save_array(data, file_dir='', file_name='ptyrad_init_meas', file_format="hdf
         write_hdf5(file_path, data, **kwargs)
     else:
         raise ValueError(f"Unsupported file format: {file_format}")
-    
+
+
 ###### These are results saving functions ######
 
+
 def make_save_dict(output_path, model, params, optimizer, niter, indices, batch_losses):
-    ''' Make a dict to save relevant paramerers '''
-    
+    """Make a dict to save relevant paramerers"""
+
     avg_losses = {name: np.mean(values) for name, values in batch_losses.items()}
     avg_iter_t = np.mean(model.iter_times)
-    
-    # While it might seem redundant to save bothe `params` and lots of `model_attributes`,    
+
+    # While it might seem redundant to save bothe `params` and lots of `model_attributes`,
     # one should note that `params` only stores the initial value from params files,
     # the actual values used for reconstuction such as N_scan_slow, N_scan_fast, dx, dk, Npix, N_scans could be different from initial value due to the meas_crop, meas_resample
     # the model behavior and learning rates could also be different from the initial params dict if the user
     # run the reconstuction with manually modified `model_params` in the detailed walkthrough notebook
-    
+
     # Postprocess the opt_probe back to complex view
     optimizable_tensors = {}
     for name, tensor in model.optimizable_tensors.items():
         optimizable_tensors[name] = tensor.detach().clone()
-        if name == 'probe':
-            optimizable_tensors['probe'] = model.get_complex_probe_view().detach().clone()
-    
+        if name == "probe":
+            optimizable_tensors["probe"] = model.get_complex_probe_view().detach().clone()
+
     from ptyrad import __version__ as ptyrad_version
-        
+
     save_dict = {
-                'ptyrad_version'        : ptyrad_version,
-                'output_path'           : output_path,
-                'optimizable_tensors'   : optimizable_tensors,
-                'optim_state_dict'      : optimizer.state_dict() if 'optim_state' in params['recon_params']['save_result'] else None,
-                'params'                : params, 
-                'model_attributes': # Have to do this explicit saving because I want specific fields but don't want the enitre model with grids and other redundant info
-                    {'detector_blur_std': model.detector_blur_std,
-                     'obj_preblur_std'  : model.obj_preblur_std,
-                     'start_iter'       : model.start_iter,
-                     'lr_params'        : model.lr_params,
-                     'omode_occu'       : model.omode_occu,
-                     'H'                : model.H,
-                     'N_scan_slow'      : model.N_scan_slow,
-                     'N_scan_fast'      : model.N_scan_fast,
-                     'crop_pos'         : model.crop_pos,
-                     'slice_thickness'  : model.slice_thickness,
-                     'dx'               : model.dx,
-                     'dk'               : model.dk,
-                     'scan_affine'      : model.scan_affine,
-                     'tilt_obj'         : model.tilt_obj,
-                     'shift_probes'     : model.shift_probes,
-                     'probe_int_sum'    : model.probe_int_sum
-                     },
-                'random_seed'           : model.random_seed,
-                'loss_iters'            : model.loss_iters,
-                'iter_times'            : model.iter_times,
-                'dz_iters'              : model.dz_iters,
-                'avg_iter_t'            : avg_iter_t,
-                'niter'                 : niter,
-                'indices'               : indices,
-                'batch_losses'          : batch_losses,
-                'avg_losses'            : avg_losses
-                }
-    
+        "ptyrad_version": ptyrad_version,
+        "output_path": output_path,
+        "optimizable_tensors": optimizable_tensors,
+        "optim_state_dict": optimizer.state_dict()
+        if "optim_state" in params["recon_params"]["save_result"]
+        else None,
+        "params": params,
+        "model_attributes":  # Have to do this explicit saving because I want specific fields but don't want the enitre model with grids and other redundant info
+        {
+            "detector_blur_std": model.detector_blur_std,
+            "obj_preblur_std": model.obj_preblur_std,
+            "start_iter": model.start_iter,
+            "lr_params": model.lr_params,
+            "omode_occu": model.omode_occu,
+            "H": model.H,
+            "N_scan_slow": model.N_scan_slow,
+            "N_scan_fast": model.N_scan_fast,
+            "crop_pos": model.crop_pos,
+            "slice_thickness": model.slice_thickness,
+            "dx": model.dx,
+            "dk": model.dk,
+            "scan_affine": model.scan_affine,
+            "tilt_obj": model.tilt_obj,
+            "shift_probes": model.shift_probes,
+            "probe_int_sum": model.probe_int_sum,
+        },
+        "random_seed": model.random_seed,
+        "loss_iters": model.loss_iters,
+        "iter_times": model.iter_times,
+        "dz_iters": model.dz_iters,
+        "avg_iter_t": avg_iter_t,
+        "niter": niter,
+        "indices": indices,
+        "batch_losses": batch_losses,
+        "avg_losses": avg_losses,
+    }
+
     return save_dict
 
+
 def save_dict_to_hdf5(
-    d: Dict[str, Any], output_path: str, none_sentinel: str = "__NONE__", **kwargs
+    d: dict[str, Any], output_path: str, none_sentinel: str = "__NONE__", **kwargs
 ) -> None:
     """
     Save a nested Python dictionary to an HDF5 file.
@@ -150,7 +168,7 @@ def save_dict_to_hdf5(
     (e.g., list of tuples, None, etc.) are automatically converted to HDF5-friendly formats.
 
     Note that integer key (e.g. like in optimizer state dict) are coerced to string for HDF5 format.
-    
+
     Args:
         d (Dict[str, Any]): The nested dictionary to save.
         output_path (str): The file path to save the HDF5 output to.
@@ -162,76 +180,86 @@ def save_dict_to_hdf5(
         None
     """
 
-    def _recursively_save_dict_to_hdf5(d: Dict[str, Any], h5group: h5py.Group, path="") -> None:
+    def _recursively_save_dict_to_hdf5(d: dict[str, Any], h5group: h5py.Group, path="") -> None:
         for key, value in d.items():
             full_key = f"{path}/{key}" if path else str(key)
-            key = str(key)  # convert to string for HDF5, especially important for optimizer state dict with integer as key
-            
+            key = str(
+                key
+            )  # convert to string for HDF5, especially important for optimizer state dict with integer as key
+
             try:
                 # Delete existing group/dataset if it exists
                 if key in h5group:
                     del h5group[key]
-                
+
                 if value is None:
                     h5group.create_dataset(key, data=none_sentinel, **kwargs)
-                
+
                 elif isinstance(value, dict):
                     subgroup = h5group.create_group(key)
                     _recursively_save_dict_to_hdf5(value, subgroup)
-                
+
                 elif isinstance(value, list):
                     if all(isinstance(i, (int, float, np.number)) for i in value):
                         h5group.create_dataset(key, data=np.array(value), **kwargs)
-                    
+
                     elif all(isinstance(i, str) for i in value):
                         dt = h5py.special_dtype(vlen=str)
                         h5group.create_dataset(key, data=np.array(value, dtype=dt), **kwargs)
-                    
+
                     elif all(isinstance(i, tuple) for i in value):
                         try:
                             arr = np.array([list(t) for t in value])
                             h5group.create_dataset(key, data=arr, **kwargs)
                         except Exception:
                             h5group.create_dataset(key, data=str(value), **kwargs)
-                    
+
                     elif all(isinstance(i, dict) for i in value):
                         subgroup = h5group.create_group(key)
                         for idx, item in enumerate(value):
                             item_group = subgroup.create_group(str(idx))
                             _recursively_save_dict_to_hdf5(item, item_group)
-                    
+
                     elif all(isinstance(i, (np.ndarray, torch.Tensor)) for i in value):
                         try:
-                            arr = np.stack([i.detach().cpu().numpy() if isinstance(i, torch.Tensor) else i for i in value])
+                            arr = np.stack(
+                                [
+                                    i.detach().cpu().numpy() if isinstance(i, torch.Tensor) else i
+                                    for i in value
+                                ]
+                            )
                             h5group.create_dataset(key, data=arr, **kwargs)
                         except Exception:
                             h5group.create_dataset(key, data=str(value), **kwargs)
-                    
+
                     else:
                         # fallback to storing list as strings (warn if needed)
                         h5group.create_dataset(key, data=str(value), **kwargs)
-                
+
                 elif isinstance(value, tuple):
                     h5group.create_dataset(key, data=np.array(value), **kwargs)
-                
+
                 elif isinstance(value, (int, float, str, np.number)):
                     h5group.create_dataset(key, data=value, **kwargs)
-                
+
                 elif isinstance(value, torch.Tensor):
                     h5group.create_dataset(key, data=value.detach().cpu().numpy(), **kwargs)
-                
+
                 elif isinstance(value, np.ndarray):
                     h5group.create_dataset(key, data=value, **kwargs)
-                
+
                 # Fallback option
                 else:
                     h5group.create_dataset(key, data=str(value), **kwargs)
-            
+
             except Exception as e:
-                raise RuntimeError(f"Failed to save key '{key}' (full path: '{full_key}') of type {type(value)}") from e
-            
+                raise RuntimeError(
+                    f"Failed to save key '{key}' (full path: '{full_key}') of type {type(value)}"
+                ) from e
+
     with h5py.File(output_path, "w") as hf:
         _recursively_save_dict_to_hdf5(d, hf)
+
 
 def make_output_folder(
     output_dir,
@@ -268,23 +296,47 @@ def make_output_folder(
     parts = []
 
     recon_dir_presets = {
-        "minimal": ['indices', 'meas', 'batch', 'pmode', 'omode', 'nlayer'],
-        
-        "default": ['indices', 'meas', 'batch', 'pmode', 'omode', 'nlayer',
-                    'lr', 'model', 'constraint',
-                    'loss', 'affine', 'tilt'],
-        
-        "all":     ['indices', 'meas', 'batch', 'pmode', 'omode', 'nlayer',
-                    'optimizer', 'start_iter', 'lr', 'model', 'constraint',
-                    'loss', 'illumination', 'dx', 'affine', 'tilt']        
-        }
-    
+        "minimal": ["indices", "meas", "batch", "pmode", "omode", "nlayer"],
+        "default": [
+            "indices",
+            "meas",
+            "batch",
+            "pmode",
+            "omode",
+            "nlayer",
+            "lr",
+            "model",
+            "constraint",
+            "loss",
+            "affine",
+            "tilt",
+        ],
+        "all": [
+            "indices",
+            "meas",
+            "batch",
+            "pmode",
+            "omode",
+            "nlayer",
+            "optimizer",
+            "start_iter",
+            "lr",
+            "model",
+            "constraint",
+            "loss",
+            "illumination",
+            "dx",
+            "affine",
+            "tilt",
+        ],
+    }
+
     # Process recon_dir_affixes to expand presets
     if any(tag in recon_dir_presets for tag in recon_dir_affixes):
         vprint(f"Original recon_dir_affixes = {recon_dir_affixes}", verbose=verbose)
         recon_dir_affixes = expand_presets(recon_dir_affixes, recon_dir_presets)
         vprint(f"Expanded recon_dir_affixes = {recon_dir_affixes}", verbose=verbose)
-    
+
     # Attach time string if prefix_time is true or non-empty str
     if prefix_time is True or (isinstance(prefix_time, str) and prefix_time):
         time_str = get_time(prefix_time)  # e.g. '20250606'
@@ -426,7 +478,7 @@ def make_output_folder(
             scale = round(constraint_params["mirrored_amp"]["scale"], 2)
             power = round(constraint_params["mirrored_amp"]["power"], 2)
             parts.append(f"mamp{scale}_{power}")
-            
+
         if constraint_params["obj_z_recenter"]["start_iter"] is not None:
             parts.append("ozrec")
 
@@ -497,7 +549,7 @@ def make_output_folder(
         scan_affine = model.scan_affine  # Note that scan_affine could be None
         if scan_affine is not None and not np.allclose(scan_affine, [1, 0, 0, 0]):
             formats = [".2f", ".2f", ".1f", ".1f"]  # customize per index
-            formatted = [format(x, fmt) for x, fmt in zip(scan_affine, formats)]
+            formatted = [format(x, fmt) for x, fmt in zip(scan_affine, formats, strict=False)]
             affine_str = "aff" + "_".join(formatted)  # (4,)
             parts.append(f"{affine_str}")
 
@@ -519,6 +571,7 @@ def make_output_folder(
     os.makedirs(output_path, exist_ok=True)
     vprint(f"output_path = '{output_path}' is generated!", verbose=verbose)
     return output_path
+
 
 def copy_params_to_dir(params_path, output_dir, params=None, verbose=True):
     """
@@ -558,118 +611,253 @@ def copy_params_to_dir(params_path, output_dir, params=None, verbose=True):
     else:
         # If neither a file nor params are provided, skip with a warning
         vprint(" ")
-        vprint("### Warning: No params file found and no params dictionary provided. Skipping. ###", verbose=verbose)
+        vprint(
+            "### Warning: No params file found and no params dictionary provided. Skipping. ###",
+            verbose=verbose,
+        )
+
 
 @torch.compiler.disable
-def save_results(output_path, model, params, optimizer, niter, indices, batch_losses, collate_str=''):
-    
-    save_result_list = params['recon_params'].get('save_result', ['model', 'obj', 'probe'])
-    result_modes = params['recon_params'].get('result_modes')
-    iter_str = '_iter' + str(niter).zfill(4)
-    
-    if 'model' in save_result_list:
-        save_dict = make_save_dict(output_path, model, params, optimizer, niter, indices, batch_losses)
-        save_dict_to_hdf5(save_dict, safe_filename(os.path.join(output_path, f"model{collate_str}{iter_str}.hdf5")))
-    probe      = model.get_complex_probe_view() 
-    probe_amp  = probe.reshape(-1, probe.size(-1)).t().abs().detach().cpu().numpy()
-    probe_prop = model.get_propagated_probe(np.array([0])).permute(0,2,1,3) # (Z, pmode, Y, X) -> (Z, Y, pmode, X). # Use np.array([0]) instead of [0] for indices is more consistent with types and safer with torch.compile
-    shape      = probe_prop.shape
-    prop_p_amp = probe_prop.reshape(shape[0], shape[1], shape[2]*shape[3]).abs().detach().cpu().numpy()
-    objp       = model.opt_objp.detach().cpu().numpy()
-    obja       = model.opt_obja.detach().cpu().numpy()
+def save_results(
+    output_path, model, params, optimizer, niter, indices, batch_losses, collate_str=""
+):
+    save_result_list = params["recon_params"].get("save_result", ["model", "obj", "probe"])
+    result_modes = params["recon_params"].get("result_modes")
+    iter_str = "_iter" + str(niter).zfill(4)
+
+    if "model" in save_result_list:
+        save_dict = make_save_dict(
+            output_path, model, params, optimizer, niter, indices, batch_losses
+        )
+        save_dict_to_hdf5(
+            save_dict,
+            safe_filename(os.path.join(output_path, f"model{collate_str}{iter_str}.hdf5")),
+        )
+    probe = model.get_complex_probe_view()
+    probe_amp = probe.reshape(-1, probe.size(-1)).t().abs().detach().cpu().numpy()
+    probe_prop = model.get_propagated_probe(
+        np.array([0])
+    ).permute(
+        0, 2, 1, 3
+    )  # (Z, pmode, Y, X) -> (Z, Y, pmode, X). # Use np.array([0]) instead of [0] for indices is more consistent with types and safer with torch.compile
+    shape = probe_prop.shape
+    prop_p_amp = (
+        probe_prop.reshape(shape[0], shape[1], shape[2] * shape[3]).abs().detach().cpu().numpy()
+    )
+    objp = model.opt_objp.detach().cpu().numpy()
+    obja = model.opt_obja.detach().cpu().numpy()
     # omode_occu = model.omode_occu # Currently not used but we'll need it when omode_occu != 'uniform'
-    omode      = model.opt_objp.size(0)
-    zslice     = model.opt_objp.size(1)
-    crop_pos   = model.crop_pos[indices].detach().cpu().numpy() + np.array(probe.shape[-2:])//2
-    y_min, y_max = crop_pos[:,0].min(), crop_pos[:,0].max()
-    x_min, x_max = crop_pos[:,1].min(), crop_pos[:,1].max()
-    
-    for bit in result_modes['bit']:
-        if bit == '8':
-            bit_str = '_08bit'
-        elif bit == '16':
-            bit_str = '_16bit'
-        elif bit == '32':
-            bit_str = '_32bit'
-        elif bit == 'raw':
-            bit_str = ''
+    omode = model.opt_objp.size(0)
+    zslice = model.opt_objp.size(1)
+    crop_pos = model.crop_pos[indices].detach().cpu().numpy() + np.array(probe.shape[-2:]) // 2
+    y_min, y_max = crop_pos[:, 0].min(), crop_pos[:, 0].max()
+    x_min, x_max = crop_pos[:, 1].min(), crop_pos[:, 1].max()
+
+    for bit in result_modes["bit"]:
+        if bit == "8":
+            bit_str = "_08bit"
+        elif bit == "16":
+            bit_str = "_16bit"
+        elif bit == "32":
+            bit_str = "_32bit"
+        elif bit == "raw":
+            bit_str = ""
         else:
-            bit_str = ''
-        if 'probe' in save_result_list:
-            imwrite(safe_filename(os.path.join(output_path, f"probe_amp{bit_str}{collate_str}{iter_str}.tif")), normalize_by_bit_depth(probe_amp, bit))
-        if 'probe_prop' in save_result_list:
-            imwrite(safe_filename(os.path.join(output_path, f"probe_prop_amp{bit_str}{collate_str}{iter_str}.tif")), normalize_by_bit_depth(prop_p_amp, bit))
-        for fov in result_modes['FOV']:
-            if fov == 'crop':
-                fov_str = '_crop'
-                objp_crop = objp[:, :, y_min-1:y_max, x_min-1:x_max]
-                obja_crop = obja[:, :, y_min-1:y_max, x_min-1:x_max]
-            elif fov == 'full':
-                fov_str = ''
+            bit_str = ""
+        if "probe" in save_result_list:
+            imwrite(
+                safe_filename(
+                    os.path.join(output_path, f"probe_amp{bit_str}{collate_str}{iter_str}.tif")
+                ),
+                normalize_by_bit_depth(probe_amp, bit),
+            )
+        if "probe_prop" in save_result_list:
+            imwrite(
+                safe_filename(
+                    os.path.join(output_path, f"probe_prop_amp{bit_str}{collate_str}{iter_str}.tif")
+                ),
+                normalize_by_bit_depth(prop_p_amp, bit),
+            )
+        for fov in result_modes["FOV"]:
+            if fov == "crop":
+                fov_str = "_crop"
+                objp_crop = objp[:, :, y_min - 1 : y_max, x_min - 1 : x_max]
+                obja_crop = obja[:, :, y_min - 1 : y_max, x_min - 1 : x_max]
+            elif fov == "full":
+                fov_str = ""
                 objp_crop = objp
                 obja_crop = obja
             else:
-                fov_str = ''
+                fov_str = ""
                 objp_crop = objp
                 obja_crop = obja
-                
+
             postfix_str = fov_str + bit_str + collate_str + iter_str
-                
-            if any(keyword in save_result_list for keyword in ['obj', 'objp', 'object']):
+
+            if any(keyword in save_result_list for keyword in ["obj", "objp", "object"]):
                 # TODO: For omode_occu != 'uniform', we should do a weighted sum across omode instead
-                
-                for dim in result_modes['obj_dim']:
-                    
+
+                for dim in result_modes["obj_dim"]:
                     if omode == 1 and zslice == 1:
-                        if dim == 2: 
-                            imwrite(safe_filename(os.path.join(output_path, f"objp{postfix_str}.tif")),              normalize_by_bit_depth(objp_crop[0,0], bit))
+                        if dim == 2:
+                            imwrite(
+                                safe_filename(os.path.join(output_path, f"objp{postfix_str}.tif")),
+                                normalize_by_bit_depth(objp_crop[0, 0], bit),
+                            )
                     elif omode == 1 and zslice > 1:
                         if dim == 3:
-                            imwrite(safe_filename(os.path.join(output_path, f"objp_zstack{postfix_str}.tif")),       normalize_by_bit_depth(objp_crop[0,:], bit))
+                            imwrite(
+                                safe_filename(
+                                    os.path.join(output_path, f"objp_zstack{postfix_str}.tif")
+                                ),
+                                normalize_by_bit_depth(objp_crop[0, :], bit),
+                            )
                         if dim == 2:
-                            imwrite(safe_filename(os.path.join(output_path, f"objp_zsum{postfix_str}.tif")),         normalize_by_bit_depth(objp_crop[0,:].sum(0), bit))
+                            imwrite(
+                                safe_filename(
+                                    os.path.join(output_path, f"objp_zsum{postfix_str}.tif")
+                                ),
+                                normalize_by_bit_depth(objp_crop[0, :].sum(0), bit),
+                            )
                     elif omode > 1 and zslice == 1:
                         if dim == 3:
-                            imwrite(safe_filename(os.path.join(output_path, f"objp_ostack{postfix_str}.tif")),       normalize_by_bit_depth(objp_crop[:,0], bit))
+                            imwrite(
+                                safe_filename(
+                                    os.path.join(output_path, f"objp_ostack{postfix_str}.tif")
+                                ),
+                                normalize_by_bit_depth(objp_crop[:, 0], bit),
+                            )
                         if dim == 2:
-                            imwrite(safe_filename(os.path.join(output_path, f"objp_omean{postfix_str}.tif")),        normalize_by_bit_depth(objp_crop[:,0].mean(0), bit))
-                            imwrite(safe_filename(os.path.join(output_path, f"objp_ostd{postfix_str}.tif")),         normalize_by_bit_depth(objp_crop[:,0].std(0), bit))
+                            imwrite(
+                                safe_filename(
+                                    os.path.join(output_path, f"objp_omean{postfix_str}.tif")
+                                ),
+                                normalize_by_bit_depth(objp_crop[:, 0].mean(0), bit),
+                            )
+                            imwrite(
+                                safe_filename(
+                                    os.path.join(output_path, f"objp_ostd{postfix_str}.tif")
+                                ),
+                                normalize_by_bit_depth(objp_crop[:, 0].std(0), bit),
+                            )
                     else:
                         if dim == 4:
-                            imwrite(safe_filename(os.path.join(output_path, f"objp_4D{postfix_str}.tif")),           normalize_by_bit_depth(objp_crop[:,:], bit))
+                            imwrite(
+                                safe_filename(
+                                    os.path.join(output_path, f"objp_4D{postfix_str}.tif")
+                                ),
+                                normalize_by_bit_depth(objp_crop[:, :], bit),
+                            )
                         if dim == 3:
-                            imwrite(safe_filename(os.path.join(output_path, f"objp_ostack_zsum{postfix_str}.tif")),  normalize_by_bit_depth(objp_crop[:,:].sum(1), bit))
-                            imwrite(safe_filename(os.path.join(output_path, f"objp_omean_zstack{postfix_str}.tif")), normalize_by_bit_depth(objp_crop[:,:].mean(0), bit))
+                            imwrite(
+                                safe_filename(
+                                    os.path.join(output_path, f"objp_ostack_zsum{postfix_str}.tif")
+                                ),
+                                normalize_by_bit_depth(objp_crop[:, :].sum(1), bit),
+                            )
+                            imwrite(
+                                safe_filename(
+                                    os.path.join(output_path, f"objp_omean_zstack{postfix_str}.tif")
+                                ),
+                                normalize_by_bit_depth(objp_crop[:, :].mean(0), bit),
+                            )
                         if dim == 2:
-                            imwrite(safe_filename(os.path.join(output_path, f"objp_omean_zsum{postfix_str}.tif")),   normalize_by_bit_depth(objp_crop[:,:].mean(0).sum(0), bit))
-                            
-            if any(keyword in save_result_list for keyword in ['obja']):
+                            imwrite(
+                                safe_filename(
+                                    os.path.join(output_path, f"objp_omean_zsum{postfix_str}.tif")
+                                ),
+                                normalize_by_bit_depth(objp_crop[:, :].mean(0).sum(0), bit),
+                            )
+
+            if any(keyword in save_result_list for keyword in ["obja"]):
                 # TODO: For omode_occu != 'uniform', we should do a weighted sum across omode instead
-                
-                for dim in result_modes['obj_dim']:
-                    
+
+                for dim in result_modes["obj_dim"]:
                     if omode == 1 and zslice == 1:
-                        if dim == 2: 
-                            imwrite(safe_filename(os.path.join(output_path, f"obja{postfix_str}.tif")),              normalize_by_bit_depth(obja_crop[0,0], bit))
+                        if dim == 2:
+                            imwrite(
+                                safe_filename(os.path.join(output_path, f"obja{postfix_str}.tif")),
+                                normalize_by_bit_depth(obja_crop[0, 0], bit),
+                            )
                     elif omode == 1 and zslice > 1:
                         if dim == 3:
-                            imwrite(safe_filename(os.path.join(output_path, f"obja_zstack{postfix_str}.tif")),       normalize_by_bit_depth(obja_crop[0,:], bit))
+                            imwrite(
+                                safe_filename(
+                                    os.path.join(output_path, f"obja_zstack{postfix_str}.tif")
+                                ),
+                                normalize_by_bit_depth(obja_crop[0, :], bit),
+                            )
                         if dim == 2:
-                            imwrite(safe_filename(os.path.join(output_path, f"obja_zmean{postfix_str}.tif")),         normalize_by_bit_depth(obja_crop[0,:].mean(0), bit))
-                            imwrite(safe_filename(os.path.join(output_path, f"obja_zprod{postfix_str}.tif")),         normalize_by_bit_depth(obja_crop[0,:].prod(0), bit))
+                            imwrite(
+                                safe_filename(
+                                    os.path.join(output_path, f"obja_zmean{postfix_str}.tif")
+                                ),
+                                normalize_by_bit_depth(obja_crop[0, :].mean(0), bit),
+                            )
+                            imwrite(
+                                safe_filename(
+                                    os.path.join(output_path, f"obja_zprod{postfix_str}.tif")
+                                ),
+                                normalize_by_bit_depth(obja_crop[0, :].prod(0), bit),
+                            )
                     elif omode > 1 and zslice == 1:
                         if dim == 3:
-                            imwrite(safe_filename(os.path.join(output_path, f"obja_ostack{postfix_str}.tif")),       normalize_by_bit_depth(obja_crop[:,0], bit))
+                            imwrite(
+                                safe_filename(
+                                    os.path.join(output_path, f"obja_ostack{postfix_str}.tif")
+                                ),
+                                normalize_by_bit_depth(obja_crop[:, 0], bit),
+                            )
                         if dim == 2:
-                            imwrite(safe_filename(os.path.join(output_path, f"obja_omean{postfix_str}.tif")),        normalize_by_bit_depth(obja_crop[:,0].mean(0), bit))
-                            imwrite(safe_filename(os.path.join(output_path, f"obja_ostd{postfix_str}.tif")),         normalize_by_bit_depth(obja_crop[:,0].std(0), bit))
+                            imwrite(
+                                safe_filename(
+                                    os.path.join(output_path, f"obja_omean{postfix_str}.tif")
+                                ),
+                                normalize_by_bit_depth(obja_crop[:, 0].mean(0), bit),
+                            )
+                            imwrite(
+                                safe_filename(
+                                    os.path.join(output_path, f"obja_ostd{postfix_str}.tif")
+                                ),
+                                normalize_by_bit_depth(obja_crop[:, 0].std(0), bit),
+                            )
                     else:
                         if dim == 4:
-                            imwrite(safe_filename(os.path.join(output_path, f"obja_4D{postfix_str}.tif")),           normalize_by_bit_depth(obja_crop[:,:], bit))
+                            imwrite(
+                                safe_filename(
+                                    os.path.join(output_path, f"obja_4D{postfix_str}.tif")
+                                ),
+                                normalize_by_bit_depth(obja_crop[:, :], bit),
+                            )
                         if dim == 3:
-                            imwrite(safe_filename(os.path.join(output_path, f"obja_ostack_zmean{postfix_str}.tif")),  normalize_by_bit_depth(obja_crop[:,:].mean(1), bit))
-                            imwrite(safe_filename(os.path.join(output_path, f"obja_ostack_zprod{postfix_str}.tif")),  normalize_by_bit_depth(obja_crop[:,:].prod(1), bit))
-                            imwrite(safe_filename(os.path.join(output_path, f"obja_omean_zstack{postfix_str}.tif")), normalize_by_bit_depth(obja_crop[:,:].mean(0), bit))
+                            imwrite(
+                                safe_filename(
+                                    os.path.join(output_path, f"obja_ostack_zmean{postfix_str}.tif")
+                                ),
+                                normalize_by_bit_depth(obja_crop[:, :].mean(1), bit),
+                            )
+                            imwrite(
+                                safe_filename(
+                                    os.path.join(output_path, f"obja_ostack_zprod{postfix_str}.tif")
+                                ),
+                                normalize_by_bit_depth(obja_crop[:, :].prod(1), bit),
+                            )
+                            imwrite(
+                                safe_filename(
+                                    os.path.join(output_path, f"obja_omean_zstack{postfix_str}.tif")
+                                ),
+                                normalize_by_bit_depth(obja_crop[:, :].mean(0), bit),
+                            )
                         if dim == 2:
-                            imwrite(safe_filename(os.path.join(output_path, f"obja_omean_zmean{postfix_str}.tif")),   normalize_by_bit_depth(obja_crop[:,:].mean(0).mean(0), bit))
-                            imwrite(safe_filename(os.path.join(output_path, f"obja_omean_zprod{postfix_str}.tif")),   normalize_by_bit_depth(obja_crop[:,:].mean(0).prod(0), bit))
+                            imwrite(
+                                safe_filename(
+                                    os.path.join(output_path, f"obja_omean_zmean{postfix_str}.tif")
+                                ),
+                                normalize_by_bit_depth(obja_crop[:, :].mean(0).mean(0), bit),
+                            )
+                            imwrite(
+                                safe_filename(
+                                    os.path.join(output_path, f"obja_omean_zprod{postfix_str}.tif")
+                                ),
+                                normalize_by_bit_depth(obja_crop[:, :].mean(0).prod(0), bit),
+                            )

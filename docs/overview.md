@@ -10,5 +10,3 @@ The main difference is that automatic differentiation allows simpler implementat
 ### High performance
 
 ### Flexible
-
-

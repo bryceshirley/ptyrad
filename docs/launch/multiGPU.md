@@ -34,7 +34,7 @@ echo params_path = ${PARAMS_PATH}
 
 ## Assuming you are under `ptyrad/` root and calling `sbatch scripts/slurm_run_ptyrad.sub`
 ## Change directory to ptyrad/demo/ so the relative path of data location specified in params.yml is correct
-cd demo/; pwd; 
+cd demo/; pwd;
 
 ## For multi-GPU and mixed-precision, explicitly pass `--gpuid acc` so that we can defer the device assignment to the "HuggingFace accelerate" package
 ## These capabilities are only available while launched via `accelerate``, and are only supported on non-MIG nodes so we can only do c0001 (full A100s)

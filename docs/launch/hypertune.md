@@ -20,7 +20,7 @@ Go to `ptyrad/` root directory, and execute the following command:
 
 ```bash
 # This will submit the same Slurm job 5 times, each job will be running on 1 GPU
-bash ./scripts/LoopSubmit.sh -n 5 
+bash ./scripts/LoopSubmit.sh -n 5
 ```
 
 > 💡 Note: Params file must be able to locate target files (e.g. measurements) from your directory during submission. For robustness, use absolute path.

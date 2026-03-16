@@ -10,7 +10,7 @@ Utility functions for logging, timing, image processing, etc.
 #     from ptyrad.utils import vprint, get_time, fftshift2, ...
 #
 # This creates a *clean and stable public interface* for utils, while allowing
-# internal code organization (e.g., separating utils functions for image_proc, 
+# internal code organization (e.g., separating utils functions for image_proc,
 # math_ops, and physics).
 #
 # Relative imports are used here because:

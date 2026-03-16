@@ -22,7 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.1.0b6] - 2025-05-24
 ### Added
 - Add `__main__.py` to allow `python -m ptyrad`. Now we can execute `ptyrad` package as a module/script for `accelerate launch`.
-- Add `.github/workflows/publish_pypi.yml` for automation. Future release will automatically be published to PyPI. 
+- Add `.github/workflows/publish_pypi.yml` for automation. Future release will automatically be published to PyPI.
 ### Changed
 - Fix `set_gpu_device` so we can properly return `device=None` to allow `accelerate` setting devices for multiGPU. The `--gpuid` argument can now take `'acc'`, `'cpu'`, and integers for GPU ID, which is still backward compatible. This hotfix is motivated by the question of multiGPU raised by @ccs1019.
 - Update `slurm_run_ptyrad.sub` with clearer comments about the normal and accelerate (multiGPU) modes.
@@ -74,7 +74,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add paper figure saving as pdf and png with 600 DPI
 - Fix hypertune when no pruner. The final optuna_error should only be calculated when pruner = None. Thanks to @noahschnitzer
 - Update `pyproject.toml` with the PEP 440 valid versioning and installation setup for `pip install -e .`
-- Change the versioning `v0.1.0-beta3.3` -> `0.1.0b3.dev3` to get `pyproject.toml` install working. 
+- Change the versioning `v0.1.0-beta3.3` -> `0.1.0b3.dev3` to get `pyproject.toml` install working.
 
 ## [v0.1.0-beta3.2] - 2025-04-11
 ### Added
@@ -134,7 +134,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Fix the printing error when using `GROUP_MODE = 'sparse'` by making `sparse_batches` a list of arrays so we can do `batch.tolist()` for cleaner printing of the batch_t
 - Change the default update step size for `py4dstem` scripts to 0.1 for numerical stability, otherwise the default 0.5 would easily give NaNs on my tBL-WSe2 dataset. Thanks the input from @sezelt
-- Simplify `run_py4dstem.py` and `run_py4dstem_detailed_walkthrough.ipynb` by calling the v0.0.2 version of locally modified py4DSTEM repo 
+- Simplify `run_py4dstem.py` and `run_py4dstem_detailed_walkthrough.ipynb` by calling the v0.0.2 version of locally modified py4DSTEM repo
 - Move `scikit-learn` as optional dependency because it's only used for compact/sparse grouping
 - Add `self.optimizer` to PtychoAD object so we can retrieve optimizer after the reconstruction
 
@@ -147,7 +147,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Modify `load_hdf5` so that it can return the entire dict if `dataset_key = None`
 - Add a `with torch.no_grad()` block for the saving/plotting block to locally disable autograd
 - Move the `init_accelerator` from `PtyRADSolver` class to `utils` to reduce duplicated printing because DDP is only initialized after initializing `accelerate`
-- Change the interpolation mode for on-the-fly resampling (torch.nn.functional.interpolate) from 'area' to 'bilinear' to avoid the edge artifact in reconstructed probe 
+- Change the interpolation mode for on-the-fly resampling (torch.nn.functional.interpolate) from 'area' to 'bilinear' to avoid the edge artifact in reconstructed probe
 
 ## [v0.1.0-beta2.8] - 2024-10-14
 ### Added
@@ -200,7 +200,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [v0.1.0-beta2.4] - 2024-09-17
 ### Added
-- Add an `'obja'` option to the `save_results` to allow saving the object amplitude. 
+- Add an `'obja'` option to the `save_results` to allow saving the object amplitude.
 ### Changed
 - Change the `plot_forward_pass` default behavior in `plot_summary` from random indices to fixed indices so the reconstruction progress can be better observed by visualizing the same region throughout the run.
 - Fix normalization error of `'bit: ['raw']` in `'result_modes'` since beta2.2 (2024-09-03). It was incorrectly normalizing the tif outputs from 0 to 1 when it should be outputting the original range. The output figure like `forward` and saved optimized tensors in `model.pt` were not affected by this error.
@@ -244,7 +244,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add `decompose_affine_matrix` to `utils` to decompose an affine matrix into the 4 components
 - Add `subscan_slow` and `subscan_fast` into `recon_params` for finer control of `INDICES_MODE` like `center` and `sub`
 - Add `dir_affixes` to `recon_params` to enable flexible control of the output folder name with `make_output_folder`
-- Add `defocus` and `conv_angle` to Optuna optimizable params in `hypertune_params` 
+- Add `defocus` and `conv_angle` to Optuna optimizable params in `hypertune_params`
 ### Changed
 - Fix `optuna_objective` so that the 4 components of `scan_affine` can be optimized independently
 - Move `inputs` out of `ptyrad` core package and rename it as `params` for simplicity
@@ -263,7 +263,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Simplify the arguments for `save_results` and `make_save_dict`
 - Rearrange the argument order of `plot_summary` and add default value to `fig_list`
-- Refactor the `run_ptyrad` scripts and notebooks and move them into `scripts` 
+- Refactor the `run_ptyrad` scripts and notebooks and move them into `scripts`
 - Move previous params.py files to `ptyrad/inputs/archive` and stop updating them
 - Fix `make_output_folder` so that dz will only print 3 significant figures after rounded to 2 decimal points. So dz = 12.8 would be printed as 12.8 instead of 12.800000190734863.
 - Add the `eps=1e-10` back to `multislice_forward_model_vec_all` in `forward` so that the `dp.pow()` is more numerically stable, especially for large collection angles with intensities near 0
@@ -286,7 +286,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [v0.1.0-beta1.2] - 2024-06-05
 ### Added
-- Add `obj_zblur` to `optimization` for a real-space substitution of `kz_filter`. By convolving a 1D Gaussian filter along z-direciton, we could remove the wrap-around while maintaining the z-regularization behavior. Note that there's no free lunch so instead of the wrap-around from `kz_filter`, the `obj_zblur` would still introduce edge effect due to the convolution. The default is "same" padding with "replicate" padding mode, so the object is padded with edge elements like abc|ccc, where | stands for the object edge 
+- Add `obj_zblur` to `optimization` for a real-space substitution of `kz_filter`. By convolving a 1D Gaussian filter along z-direciton, we could remove the wrap-around while maintaining the z-regularization behavior. Note that there's no free lunch so instead of the wrap-around from `kz_filter`, the `obj_zblur` would still introduce edge effect due to the convolution. The default is "same" padding with "replicate" padding mode, so the object is padded with edge elements like abc|ccc, where | stands for the object edge
 - Add `get_decomposed_affine_matrix` to `utils` to quickly estimate the needed scan affine transformation components if we already have a reconstructed object and we know the ideal lattice constant and the angle between lattice vectors
 ### Changed
 - Move `obj_tilts` to `source_params` so that we can decouple it with the `init_cache` and use it freely from scratch (e.g. start from random object, probe, pos but with known local tilts from previous reconstructions)
@@ -311,7 +311,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add `run_ptyrad_altas.py`, `run_ptyrad_local.py`, and `slurm_run_ptyrad.sub` as demo scripts
 - Add `docs/` and `params_description.md` for some more explanation
 ### Changed
-- Rename the `kz_filter` output folder string in `make_output_folder` from `kzreg` into `kzf` for simplicity, and to be consistent with `krf` for `kr_filter` 
+- Rename the `kz_filter` output folder string in `make_output_folder` from `kzreg` into `kzf` for simplicity, and to be consistent with `krf` for `kr_filter`
 - Change the `shift_cbeds` in `models` from `.abs()` to `.real.clamp(min=0)` because it seems that taking the real part of the complex Fourier filtered output from a real-valued input is a more correct approach
 - Use the `plt.show(block=False)` flag for `plot_pos_grouping` so that the non-interactive python execution wouldn't be block by the `plt.show()` when executed from script
 - Update `README.md` with the new conda install commands for local and altas usage
@@ -356,7 +356,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fix `kz_filter` to use `torch.real()` for the Fourier filtered obj to respect possible negative values
 - Delete the just-added fftshift/ifftshift in `forward` as they don't seem to matter and the forward pass is 50% slower with additional fftshifts
 ### Removed
-- Remove `fix_probe_com` constraints because constantly shifting global probe would cause instability of the obj. Once the obj is fairly reconstructed, shifting the global probe would require shifting the already reconstructed object (or equivalently the entire (N,2) `probe_pos_shifts`) 
+- Remove `fix_probe_com` constraints because constantly shifting global probe would cause instability of the obj. Once the obj is fairly reconstructed, shifting the global probe would require shifting the already reconstructed object (or equivalently the entire (N,2) `probe_pos_shifts`)
 - Remove `probe_mask_r` constraints because it's just not physical and I can't justify myself clipping so much real-space probe tails
 - Remove `obj_chgflip` constraints because the performance is rather poor
 - Remove `obj_same` constraints because the usecase is rather limited and could probably be replaced with `kz_filter`. Optimizing the broadcasted averaged slice wouldn't be computationally faster. Besides, the "rough" result cann't be used to estimate obj tilts so is less usefull than the obj regularized by `kz_filter`
@@ -384,7 +384,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add `recenter_cbeds` field into the `models` so we may shift the CBEDs based on their CoM
 ### Changed
 - Extend `get_center_of_mass` for 3D input (N,Ny,Nx)
-- Rename `imshift` into `imshift_single` and modify it in accordance with `get_center_of_mass` 
+- Rename `imshift` into `imshift_single` and modify it in accordance with `get_center_of_mass`
 
 ## [v0.1.0-alpha3.3] - 2024-05-04
 ### Added
@@ -410,7 +410,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add amplitude options for obj specific constraints `kz_filter` and `obj_blur` so that we have finer control
 - Add obja-related loss and constraints for completeness including `loss_obja1`, `obja_thresh`, and `obj_same`
 ### Changed
-- Major refactor of the `optimization` by encapsulating each section of losses and constraints into individual functions for clarity 
+- Major refactor of the `optimization` by encapsulating each section of losses and constraints into individual functions for clarity
 - Combine `loss_l1`, `loss_l2` into `loss_sparse` for simplicity, while I think the LN-norm with N > 1 isn't really sparse so could be useless
 - Extend `plot_forward_pass` to plot the obja(zprod) as well
 - Update `make_output_folder` with oalr, obj_blur, and the kz_str
@@ -438,7 +438,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [v0.1.0-alpha2.5] - 2024-04-21
 ### Added
 - Add `plot_scan_positions` to `plot_summary`
-- Add `init_pos` argument into `plot_scan_positions` 
+- Add `init_pos` argument into `plot_scan_positions`
 ### Changed
 - Extend `plot_probe_modes` with real/reciprocal/amp/phase options
 - Refine `plot_forward_modes` with weighted sum of omode for more correct objp visualization
@@ -492,7 +492,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add `plot_scan_positions` and `plot_affine_transformation` to `visualization`
 
 ### 2024-04-13
-- Add `fix_probe_int` constraint for `optimization` 
+- Add `fix_probe_int` constraint for `optimization`
 - Fix incorrect model saving and loading from .pt
 - Modify `orthogonalize_modes_vec` for probe_int sorting and printing
 - Modify `obj_ROI_grid` to on-the-fly generation to reduce memory consumption for large 4D dataset

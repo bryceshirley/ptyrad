@@ -27,11 +27,15 @@ dependencies = [
   "matplotlib",
   "optuna",
   "pydantic",
+  "pre-commit",
+  "pytest>=9.0.2",
+  "ruff>=0.15.6",
   "scikit-learn",
   "scipy",
   "tifffile",
   "torch>=2.0",
-  "torchvision"
+  "torchvision",
+  "ty>=0.0.23",
 ]
 
 [project.scripts]
@@ -51,3 +55,25 @@ where = ["src"]
 
 [tool.setuptools.dynamic]
 version = {attr = "ptyrad.__version__"}
+
+[tool.ruff]
+line-length = 100
+indent-width = 4
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "F",    # pyflakes
+    "W",    # pycodestyle warnings
+    "I",    # isort
+]
+ignore = [
+    "E501",  # line too long (handled by formatter)
+    "T201", # print statements (allowed in CLI tool)
+]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"

@@ -1,5 +1,5 @@
 # Quickstart Demo
-   
+
 Here, we provide a quick walkthough of our demo data and params files for *PtyRAD*.
 
 Before running the demo, please check the following:
@@ -26,8 +26,3 @@ Use `run_ptyrad_quick_example.ipynb` to quickly reconstruct the demo dataset in 
 # Here we assume working directory is set at `demo/`
 ptyrad run --params_path "params/tBL_WSe2_reconstruct.yml" --gpuid 0
 ```
-
-
-
-
-

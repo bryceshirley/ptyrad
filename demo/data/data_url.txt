@@ -12,4 +12,4 @@ PSO
 - Data: https://data.paradim.org/doi/ssmm-2j11/ (sample_data_PrScO3.mat)
 - Dose: 1.22*10^6 e-/Ang^2 based on SI and the ADU from .mat file (mean(sum(dp, [1,2]))/scanstep^2)
 - Thickness: 210 Ang
-- Note: The raw .mat file is padded with 0 to (256,256,4096), and the value of 'dp' is already in unit of e- 
+- Note: The raw .mat file is padded with 0 to (256,256,4096), and the value of 'dp' is already in unit of e-

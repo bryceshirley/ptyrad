@@ -2,8 +2,8 @@
 
 `loss_params` determines the individual loss terms for the CombinedLoss used for PtyRAD reconstruction
 Generally, the reconstruction loss is the CombinedLoss = weight1 * loss1 + weight2 * loss2 + weight3 * loss3 ...
-Use 'state' to switch on/off each loss term, and use 'weight' to determine their relative importance. 
-Each loss term would generate their corresponding gradient to the variable, and the final update is determined by the weighted sum of all gradients coming from all participating loss terms. 
+Use 'state' to switch on/off each loss term, and use 'weight' to determine their relative importance.
+Each loss term would generate their corresponding gradient to the variable, and the final update is determined by the weighted sum of all gradients coming from all participating loss terms.
 Data-error related loss terms ('loss_single', 'loss_poissn', and 'loss_pacbed') compare simulated DP with experimental DP, and their 'dp_pow' would raise the diffraction pattern to a power before the calculation
 For ptychography purpose, you MUST have at least 1 out of the 3 data-error loss terms. Although you can set all of them to true, typical dataset works fine with 'loss_single' alone
 Soft constraint (regularization)-like loss terms ('loss_sparse', and 'loss_simlar') are optional addition to the required data-error loss terms

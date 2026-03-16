@@ -2,11 +2,11 @@
 
 # Params files
 
-*PtyRAD* uses a **single parameters file** to fully configure the reconstruction task. 
+*PtyRAD* uses a **single parameters file** to fully configure the reconstruction task.
 
 These files are called *"params files"* and contains 6 nested dictionaries with a total of more than 100 fields, making *PtyRAD* extremely customizable and flexible for each reconstruciton task.
 
-For example, a complete *PtyRAD* params file includes: 
+For example, a complete *PtyRAD* params file includes:
 1. `init_params`
 2. `hypertune_params` (optional)
 3. `model_params`

@@ -12,22 +12,17 @@ class PtyRADParams(BaseModel):
     """
     The params object for PtyRAD. This object is used to create params, fill defaults, or validate inputs.
     """
-    
+
     model_config = {"extra": "forbid"}
 
-    
     init_params: InitParams = Field(
         default_factory=InitParams, description="Initialization parameters"
     )
     hypertune_params: HypertuneParams = Field(
         default_factory=HypertuneParams, description="Hyperparameter tuning parameters"
     )
-    model_params: ModelParams = Field(
-        default_factory=ModelParams, description="Model parameters"
-    )
-    loss_params: LossParams = Field(
-        default_factory=LossParams, description="Loss parameters"
-    )
+    model_params: ModelParams = Field(default_factory=ModelParams, description="Model parameters")
+    loss_params: LossParams = Field(default_factory=LossParams, description="Loss parameters")
     constraint_params: ConstraintParams = Field(
         default_factory=ConstraintParams, description="Constraint parameters"
     )

@@ -26,14 +26,14 @@
 - JIT compilation with `torch.compile`
 
 ## Recommended Tools
-We recommend using [*Miniforge*](https://github.com/conda-forge/miniforge) for Python environment management, and  
+We recommend using [*uv*](https://github.com/astral-sh/uv) for Python environment management, and
 [*Visual Studio Code*](https://code.visualstudio.com/Download) for code editing and execution.
 
 ## Major dependencies
 
 * Python 3.10 or above
 * PyTorch 2.0 or above
-* While *PtyRAD* can run on CPU, GPU is strongly suggested for high-speed ptychographic reconstructions. 
+* While *PtyRAD* can run on CPU, GPU is strongly suggested for high-speed ptychographic reconstructions.
     - *PtyRAD* supports both NVIDIA GPUs with CUDA and Apple Silicon (MPS)
 * *PtyRAD* was tested on Windows, MacOS, and Linux
 
@@ -41,26 +41,31 @@ We recommend using [*Miniforge*](https://github.com/conda-forge/miniforge) for P
 
 
 
-We recommend installing *PtyRAD* using `pip` inside a fresh conda environment.
+We recommend installing *PtyRAD* using `uv` for fast and reliable dependency management.
 
-First, create and activate a new conda environment **(ptyrad)** with Python > 3.10:
+First, install uv if you haven't already:
 ```sh
-conda create -n ptyrad python=3.12
-conda activate ptyrad
-```
-> 💡 **Note:** After activating the environment, your terminal prompt should show **(ptyrad)** at the beginning, indicating that the environment is active.
-
-Then install *PtyRAD* using:
-```sh
-pip install ptyrad
+curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-If you're using Windows with NVIDIA CUDA GPU, you will also need to install the GPU version of PyTorch with:
+Then create and activate a new uv virtual environment:
 ```sh
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118 --force-reinstall
+uv venv
+source .venv/bin/activate  # On Linux/Mac
+.\.venv\Scripts\activate   # On Windows
 ```
 
-*PtyRAD* can also be installed via `conda`. For detailed instructions on installing *PtyRAD* on different machines or pinning specific CUDA versions, see [the installation guide](https://ptyrad.readthedocs.io/en/latest/installation.html).
+Install PyTorch with CUDA 12.1 (or appropriate version for your system):
+```sh
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+```
+
+Finally, install *PtyRAD* and its dependencies:
+```sh
+uv pip install ptyrad
+```
+
+For detailed instructions on installing *PtyRAD* on different machines or pinning specific CUDA versions, see [the installation guide](https://ptyrad.readthedocs.io/en/latest/installation.html).
 
 
 
@@ -77,10 +82,10 @@ ptyrad check-gpu
 This command will print out relevant information of your CUDA information if available.
 
 ### How do I update my existing PtyRAD installation to a newer release?
-Assuming you've activated the `(ptyrad)` environment and you've installed *PtyRAD* via pip, you can simply update your PtyRAD installation with:
+Assuming you've activated the uv environment and you've installed *PtyRAD* via uv, you can simply update your PtyRAD installation with:
 
 ```bash
-pip install -U ptyrad
+uv pip install -U ptyrad
 ```
 
 ## Get Started with the Demo
@@ -91,11 +96,11 @@ Before running the demo, please check the following:
 1. Demo datasets are downloaded and placed to the correct location under `demo/data/`
 2. `(ptyrad)` environment is created and activated (in VS Code it's the "Select Kernel")
 3. *PtyRAD* is installed in the `(ptyrad)` environment
-   
+
 Now you're ready to run a quick demo using one of two interfaces:
 
 - **Interactive Jupyter interface (Recommended)**
- 
+
     Use `demo/scripts/run_ptyrad_quick_example.ipynb` to quickly reconstruct the demo dataset in a Jupyter notebook
 
 - **Command-line interface** (like your *Miniforge Prompt* terminal)
@@ -121,6 +126,21 @@ Besides great support from the entire Muller group, this package gets inspiratio
 * [py4dstem](https://github.com/py4dstem/py4DSTEM)
 * [adorym](https://github.com/mdw771/adorym)
 * [SciComPty](https://www.mdpi.com/2410-3896/6/4/36)
+
+## Development
+
+This project uses pre-commit hooks for code quality. To set up pre-commit:
+
+```bash
+pip install pre-commit
+pre-commit install
+```
+
+The pre-commit configuration includes:
+- **Ruff** for linting and formatting
+- **End of file fixer** to ensure files end with newlines
+- **Trailing whitespace** removal
+- **YAML/TOML/JSON** validation
 
 ## Other resources
 
