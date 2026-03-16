@@ -37,3 +37,23 @@ recon_params: {
 # - Use [] for list and {} for dict, avoid () because they might not be parsed correctly
 # - For commenting, leave a space before the #
 # - The comment for each entry is provided with type, unit, physical meaning, and suggested usage if applicable.
+
+model_params: {
+    'solver_type': 'born', # type: str. Type of solver to use: 'multislice' or 'born'
+    'born_iterations': 1, # type: int. Number of Born iterations to use when solver_type='born'
+    'obj_preblur_std': null, # type: null or float, unit: px. Gaussian blur std for object before forward pass
+    'detector_blur_std': null, # type: null or float, unit: px. Gaussian blur std for simulated diffraction patterns
+    'optimizer_params': {
+        'name': 'Adam', # type: str. Optimizer name
+        'configs': {}, # type: dict. Optimizer configurations
+        'load_state': null, # type: null or str. Path to load previous optimizer state
+    },
+    'update_params': {
+        'obja': {'start_iter': 1, 'lr': 5.0e-4}, # type: dict. Object amplitude update params
+        'objp': {'start_iter': 1, 'lr': 5.0e-4}, # type: dict. Object phase update params
+        'obj_tilts': {'start_iter': null, 'lr': 0.0}, # type: dict. Object tilts update params
+        'slice_thickness': {'start_iter': null, 'lr': 0.0}, # type: dict. Slice thickness update params
+        'probe': {'start_iter': 1, 'lr': 1.0e-4}, # type: dict. Probe update params
+        'probe_pos_shifts': {'start_iter': 1, 'lr': 5.0e-4}, # type: dict. Sub-pixel probe position shifts update params
+    },
+}
