@@ -18,6 +18,7 @@ from ptyrad.utils import fftshift2
 # So new tensor is being created and referenced to the old graph to keep the gradient flowing
 
 
+@torch.compile(mode="max-autotune")
 def multislice_forward_model_vec_all(object_patches, probe, H, omode_occu=None, eps=1e-10):
     """
     Computes the multislice electron diffraction pattern with multiple incoherent probe
@@ -98,7 +99,7 @@ def multislice_forward_model_vec_all(object_patches, probe, H, omode_occu=None, 
     return dp_fwd
 
 
-# @torch.compile(mode="max-autotune")
+@torch.compile(mode="max-autotune")
 def multislice_forward_model_vec_all_born(
     object_patches: torch.Tensor,
     probe: torch.Tensor,
