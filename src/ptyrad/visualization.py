@@ -68,13 +68,17 @@ def plot_forward_pass(model, indices, dp_power, show_fig=True, pass_fig=False):
 
     with torch.no_grad():
         probes = model.get_probes(indices)
-        probes_int = probes.abs().pow(2).sum(1)
         model_DP = model(indices)
         obj_patches = model.get_obj_patches(
             indices
         )  # The cache would be cleared right after the mini-batch update so we have to re-calculate it here
         omode_occu = model.omode_occu
         measured_DP = model.get_measurements(indices)
+
+        # Handle probes: if shift_probes=False, probes will be (1, pmode, Ny, Nx) but we need (N, pmode, Ny, Nx)
+        if probes.shape[0] == 1 and len(indices) > 1:
+            probes = probes.expand(len(indices), -1, -1, -1)  # Broadcast to match batch size
+        probes_int = probes.abs().pow(2).sum(1)
 
         probes_int = probes_int.detach().cpu().numpy()
         obja_ROI = (
@@ -92,6 +96,9 @@ def plot_forward_pass(model, indices, dp_power, show_fig=True, pass_fig=False):
 
     for i, idx in enumerate(indices):
         # Looping over the N_i dimension
+        if len(indices) == 1:
+            # If there's only one index, axs would be 1D array of length 5, we need to add a batch dimension to make it consistent with the case of multiple indices
+            axs = axs[None, :]
         im00 = axs[i, 0].imshow(probes_int[i])
         axs[i, 0].set_title(f"Probe intensity idx{idx}", fontsize=16)
         fig.colorbar(im00, shrink=0.6)
