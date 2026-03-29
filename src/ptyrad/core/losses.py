@@ -42,8 +42,10 @@ class CombinedLoss(torch.nn.Module):
         single_params = self.loss_params['loss_single']
         if single_params['state']:
             dp_pow      = single_params.get('dp_pow', 0.5)
-            data_mean   = measured_DP.pow(dp_pow).mean()
-            loss_single = self.mse(model_DP.pow(dp_pow), measured_DP.pow(dp_pow))**0.5 / data_mean # Doing Normalized RMSE makes the value quite consistent between dp_pow 0.2-0.5.
+            measured_pow = measured_DP.pow(dp_pow)
+            model_pow = model_DP.pow(dp_pow)
+            data_mean   = measured_pow.mean()
+            loss_single = self.mse(model_pow, measured_pow)**0.5 / data_mean # Doing Normalized RMSE makes the value quite consistent between dp_pow 0.2-0.5.
             loss_single *= single_params['weight']
         else:
             loss_single = torch.tensor(0, dtype=torch.float32, device=self.device) # Return a scalar 0 tensor so that the append/sum would work normally without NaN
@@ -67,8 +69,10 @@ class CombinedLoss(torch.nn.Module):
         if poissn_params['state']:
             dp_pow = poissn_params.get('dp_pow', 1)
             eps = poissn_params.get('eps', 1e-6)
-            data_mean   = measured_DP.pow(dp_pow).mean()
-            loss_poissn = -torch.mean(measured_DP.pow(dp_pow) * torch.log(model_DP.pow(dp_pow) + eps) - model_DP.pow(dp_pow)) / data_mean # Doing Normalized RMSE makes the value quite consistent between dp_pow 0.2-0.5.
+            measured_pow = measured_DP.pow(dp_pow)
+            model_pow = model_DP.pow(dp_pow)
+            data_mean   = measured_pow.mean()
+            loss_poissn = -torch.mean(measured_pow * torch.log(model_pow + eps) - model_pow) / data_mean # Doing Normalized RMSE makes the value quite consistent between dp_pow 0.2-0.5.
             loss_poissn *= poissn_params['weight']
         else:
             loss_poissn = torch.tensor(0, dtype=torch.float32, device=self.device) # Return a scalar 0 tensor so that the append/sum would work normally without NaN
