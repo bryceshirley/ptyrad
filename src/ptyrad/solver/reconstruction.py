@@ -442,11 +442,16 @@ def recon_step(batches, grad_accumulation, model, optimizer, loss_fn, constraint
               and the value is a list of loss values computed for each batch in the iteration.
             - iter_t (float): The total time taken to complete the iteration.
     """
-    batch_losses = {name: [] for name in loss_fn.loss_params.keys()}
-    
+    loss_names = list(loss_fn.loss_params.keys())
+
     # Use the method on the wrapped model (DDP) if it exists
     model_instance = model.module if hasattr(model, "module") else model
-    
+
+    # Pre-allocate GPU tensors for loss accumulation to avoid per-batch CPU syncs
+    num_batches = len(batches)
+    loss_accum = {name: torch.zeros(num_batches, device=model_instance.device) for name in loss_names}
+    batch_count = 0  # Track actual number of recorded batches
+
     start_iter_t = time_sync(model_instance.device)
     
     # Run the iteration with closure for LBFGS optimizer
@@ -506,12 +511,13 @@ def recon_step(batches, grad_accumulation, model, optimizer, loss_fn, constraint
         # Clear the model cache after the mini-batch
         model_instance.clear_cache()
         
-        # Append losses and log batch progress
+        # Record losses on GPU without CPU sync
         if acc is not None:
             acc.wait_for_everyone()
-        for loss_name, loss_value in zip(loss_fn.loss_params.keys(), losses):
-            batch_losses[loss_name].append(loss_value.detach().cpu().numpy())
-    
+        for loss_name, loss_value in zip(loss_names, losses):
+            loss_accum[loss_name][batch_count] = loss_value.detach()
+        batch_count += 1
+
     # Start mini-batch optimization for all other optimizers doesn't require a closure
     else:
         optimizer.zero_grad() # Since PyTorch 2.0 the default behavior is set_to_none=True for performance https://github.com/pytorch/pytorch/issues/92656
@@ -543,12 +549,16 @@ def recon_step(batches, grad_accumulation, model, optimizer, loss_fn, constraint
             # Clear the model cache after the mini-batch
             model_instance.clear_cache()
         
-            # Append losses and log batch progress
+            # Record losses on GPU without CPU sync
             if acc is not None:
                 acc.wait_for_everyone()
-            for loss_name, loss_value in zip(loss_fn.loss_params.keys(), losses):
-                batch_losses[loss_name].append(loss_value.detach().cpu().numpy())
-    
+            for loss_name, loss_value in zip(loss_names, losses):
+                loss_accum[loss_name][batch_count] = loss_value.detach()
+            batch_count += 1
+
+    # Transfer all losses to CPU once at end of iteration
+    batch_losses = {name: tensor[:batch_count].cpu().numpy().tolist() for name, tensor in loss_accum.items()}
+
     constraint_fn(model_instance, niter)
     
     iter_t = time_sync(model_instance.device) - start_iter_t
