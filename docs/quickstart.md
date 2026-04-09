@@ -95,7 +95,7 @@ Now you're ready to run a quick demo using one of two interfaces:
     Run the `ptyrad/notebooks/run_ptyrad.ipynb` in VS code, or run the following command in terminal:
 
     ```bash
-    jupyter notebook ./tutorials/run_ptyrad.ipynb # Or direcly open it in VS code
+    jupyter notebook ./notebooks/run_ptyrad.ipynb # Or direcly open it in VS code
     ``` 
 
 - **Command-line interface** (like your *Miniforge Prompt* terminal)
