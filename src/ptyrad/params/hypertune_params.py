@@ -211,7 +211,16 @@ class HypertuneParams(BaseModel):
     Set to true to run PtyRAD in hypertune (hyperparameter optimization) mode. 
     This is the main switch for hypertune mode so none of the settings in 'hypertune_params' would take effect if 'if_hypertune' is false.
     """
-    
+
+    verbosity: Literal['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'] = Field(default='WARNING', description="Logging verbosity level during hypertune trials")
+    """
+    Default is 'WARNING'.
+    The logging verbosity level of the inner reconstruction loop during hypertune trials.
+    Set to 'INFO' or 'DEBUG' if you need to emit core ptyrad logging for each trial.
+    Note: to see 'DEBUG'-level messages inside each trial, the outer '--verbosity' CLI arg must also be set to 'DEBUG',
+    since the log handlers are initialized at the outer verbosity level and act as a secondary filter.
+    """
+
     collate_results: bool = Field(default=True, description="Collect results from hypertune trials")
     """
     Default is true. 

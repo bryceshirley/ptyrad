@@ -215,10 +215,11 @@ class PtyRADSolver(object):
             logging_manager.flush_to_file(log_dir=output_dir) # Note that there's an internal flag of self.flush_file controls the actual file creation
             optuna_logger.addHandler(logging_manager.file_handler)
         
-        # Temporarily slicence the logger 
+        # Temporarily set the logger verbosity (silenced by default) 
         ptyrad_logger = logging.getLogger('ptyrad')
         original_level = ptyrad_logger.level # Save the current state (usually DEBUG or INFO)
-        ptyrad_logger.setLevel(logging.WARNING)
+        verbosity = hypertune_params.get('verbosity', 'WARNING')
+        ptyrad_logger.setLevel(verbosity)
         
         study.optimize(lambda trial: optuna_objective(trial, self.params, self.init, self.loss_fn, self.constraint_fn, self.device), 
                        n_trials=n_trials,
