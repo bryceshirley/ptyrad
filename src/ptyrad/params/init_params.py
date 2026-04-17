@@ -1874,18 +1874,7 @@ class InitParams(BaseModel):
                 setattr(self, field, None)
 
         return self
-    
-    @model_validator(mode='after')
-    def validate_simu_npix(self):
 
-        if self.simu_Npix is not None and self.simu_Npix < self.meas_Npix:
-            raise ValueError(
-                f"simu_Npix ({self.simu_Npix}) cannot be smaller than "
-                f"meas_Npix ({self.meas_Npix}). It must be equal or larger."
-            )
-            
-        return self
-    
     @model_validator(mode="after")
     def validate_all_source_params(self):
         _validate_source_params_pair('meas', self.meas_source, self.meas_params)
