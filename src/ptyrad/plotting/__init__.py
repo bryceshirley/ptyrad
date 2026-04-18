@@ -14,6 +14,7 @@ from .basic import (
     plot_scan_positions,
     plot_sigmoid_mask,
     plot_slice_thickness,
+    plot_learning_rates_schedule,
 )
 
 __all__ = [
@@ -26,4 +27,5 @@ __all__ = [
     "plot_scan_positions",
     "plot_sigmoid_mask",
     "plot_slice_thickness",
+    "plot_learning_rates_schedule",
 ]
