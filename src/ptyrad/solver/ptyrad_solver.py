@@ -18,7 +18,7 @@ from ptyrad.runtime.logging import get_logging_manager
 from ptyrad.utils.time import get_time, parse_sec_to_time_str
 
 from .hypertune import create_optuna_pruner, create_optuna_sampler, optuna_objective
-from .reconstruction import create_optimizer, prepare_recon, recon_loop, time_sync
+from .reconstruction import create_optimizer, create_scheduler, prepare_recon, recon_loop, time_sync
 
 logger = logging.getLogger(__name__)
 
@@ -95,34 +95,45 @@ class PtyRADSolver(object):
         params = self.params
         device = self.device
         
-        # Create the model and optimizer, prepare indices, batches, and output_path
+        # Create the model, optimizer, and scheduler; prepare indices, batches, and output_path
         model         = PtychoModel(self.init.init_variables, params['model_params'], device=device)
         optimizer     = create_optimizer(model.optimizer_params, model.optimizable_params)
+        scheduler     = create_scheduler(model.scheduler_params, optimizer)
         indices, batches, output_path = prepare_recon(model, self.init, params)
         batches = [torch.from_numpy(arr).to(device=device) for arr in batches]
-        
-        # Handle LBFGS incompatibility
+
+        # Handle LBFGS incompatibility with multi-GPU
         if params['model_params']['optimizer_params']['name'] == 'LBFGS' and self.accelerator.num_processes >1:
             logger.warning(f"Optimizer 'LBFGS' is not supported for multiGPU mode (accelerator.num_processes = {self.accelerator.num_processes}), switch to default optimizer 'Adam'")
             params['model_params']['optimizer_params']['name'] = 'Adam'
             model.optimizer_params['name'] = 'Adam'
             optimizer     = create_optimizer(model.optimizer_params, model.optimizable_params)
-        
+            scheduler     = create_scheduler(model.scheduler_params, optimizer)
+
+        # LBFGS uses internal line search — scheduler would interfere, so skip it
+        if params['model_params']['optimizer_params']['name'] == 'LBFGS' and scheduler is not None:
+            logger.warning("LBFGS optimizer detected with scheduler_params set. LR scheduler is not supported for LBFGS and will be ignored.")
+            scheduler = None
+
         # If using multi GPU, prepare the batches, model, optimizer with Accelerator
         if self.use_acc_device:
             ordered_indices = IndicesDataset(torch.concatenate(batches)) # Ordered indices would keep the original spatial distribution of each batch
             dataloader = DataLoader(ordered_indices, batch_size = params['recon_params']['BATCH_SIZE']['size'], shuffle=False) # This will do the batching sequentially
             batches = self.accelerator.prepare(dataloader) # Note that `batches` is replaced by a DataLoader (accelerate mode) that is also an iterable object
             model, optimizer = self.accelerator.prepare(model, optimizer)
-        
+            # Recreate scheduler with the accelerate-prepared optimizer so it tracks the correct object
+            if scheduler is not None:
+                scheduler = create_scheduler(model.module.scheduler_params, optimizer) # use .module to access the original unwrapped model
+
         # Look for the logging manager and trigger the flush
         logging_manager = get_logging_manager()
         if logging_manager:
-            logging_manager.flush_to_file(log_dir=output_path) # Note that output_path can be None, and there's an internal flag of self.flush_file controls the actual file creation       
+            logging_manager.flush_to_file(log_dir=output_path) # Note that output_path can be None, and there's an internal flag of self.flush_file controls the actual file creation
 
-        recon_loop(model, self.init, params, optimizer, self.loss_fn, self.constraint_fn, indices, batches, output_path, acc=self.accelerator)
+        recon_loop(model, self.init, params, optimizer, scheduler, self.loss_fn, self.constraint_fn, indices, batches, output_path, acc=self.accelerator)
         self.reconstruct_results = model
         self.optimizer = optimizer
+        self.scheduler = scheduler
     
     def hypertune(self):
         """Performs hyperparameter tuning using Optuna."""

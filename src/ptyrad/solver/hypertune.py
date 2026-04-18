@@ -20,6 +20,7 @@ from ptyrad.runtime.seed import set_random_seed
 from .reconstruction import (
     compute_loss,
     create_optimizer,
+    create_scheduler,
     parse_torch_compile_configs,
     prepare_recon,
     recon_step,
@@ -342,9 +343,13 @@ def optuna_objective(trial, params, init, loss_fn, constraint_fn, device='cuda')
     # SECTION 3: RECONSTRUCTION LOOP
     # ==============================================================================
    
-    # Create the model and optimizer, prepare indices, batches, and output_path
+    # Create the model, optimizer, and scheduler; prepare indices, batches, and output_path
     model         = PtychoModel(init.init_variables, params['model_params'], device=device)
     optimizer     = create_optimizer(model.optimizer_params, model.optimizable_params)
+    scheduler     = create_scheduler(model.scheduler_params, optimizer)
+    if params['model_params']['optimizer_params']['name'] == 'LBFGS' and scheduler is not None:
+        logger.warning("LBFGS optimizer detected with scheduler_params set. LR scheduler is not supported for LBFGS and will be ignored.")
+        scheduler = None
     indices, batches_np, output_path = prepare_recon(model, init, params)
 
     # Initialize the compute_loss_fn
@@ -370,11 +375,11 @@ def optuna_objective(trial, params, init, loss_fn, constraint_fn, device='cuda')
         shuffle(batches_np)
         batches = [torch.from_numpy(arr).to(device=device) for arr in batches_np]
         
-        batch_losses = recon_step(batches, grad_accumulation, model, optimizer, loss_fn, constraint_fn, niter, compute_loss_fn=compute_loss_fn)
+        batch_losses = recon_step(batches, grad_accumulation, model, optimizer, scheduler, loss_fn, constraint_fn, niter, compute_loss_fn=compute_loss_fn)
 
         ## Saving intermediate results
         if SAVE_ITERS is not None and niter % SAVE_ITERS == 0:
-            save_results(output_path, model, params, optimizer, niter, indices, batch_losses, collate_str='')
+            save_results(output_path, model, params, optimizer, scheduler, niter, indices, batch_losses, collate_str='')
             plot_summary(output_path, model, niter, indices, init.init_variables, selected_figs=selected_figs, collate_str='', show_fig=False, save_fig=True)
                
         ## Pruning logic for optuna
@@ -389,7 +394,7 @@ def optuna_objective(trial, params, init, loss_fn, constraint_fn, device='cuda')
                 params_str = parse_hypertune_params_to_str(trial.params) if append_params else ''
                 collate_str = f"_error_{optuna_error:.5f}_{trial_id}{params_str}"
                 if collate_results:
-                    save_results(output_dir, model, params, optimizer, niter, indices, batch_losses, collate_str=collate_str)
+                    save_results(output_dir, model, params, optimizer, scheduler, niter, indices, batch_losses, collate_str=collate_str)
                     plot_summary(output_dir, model, niter, indices, init.init_variables, selected_figs=selected_figs, collate_str=collate_str, show_fig=False, save_fig=True)
                 raise optuna.exceptions.TrialPruned()
 
@@ -401,7 +406,7 @@ def optuna_objective(trial, params, init, loss_fn, constraint_fn, device='cuda')
     params_str = parse_hypertune_params_to_str(trial.params) if append_params else ''
     collate_str = f"_error_{optuna_error:.5f}_{trial_id}{params_str}"
     if collate_results:
-        save_results(output_dir, model, params, optimizer, niter, indices, batch_losses, collate_str=collate_str)
+        save_results(output_dir, model, params, optimizer, scheduler, niter, indices, batch_losses, collate_str=collate_str)
         plot_summary(output_dir, model, niter, indices, init.init_variables, selected_figs=selected_figs, collate_str=collate_str, show_fig=False, save_fig=True)
     
     logger.info(f"### Finished {NITER} iterations, averaged iter_t = {np.mean(model.iter_times):.3g} sec ###")

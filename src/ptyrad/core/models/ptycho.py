@@ -4,8 +4,9 @@ Optimizable model of the ptychographic reconstruction using automatic differenti
 This is the PyTorch model that holds optimizable tensors and interacts with loss and constraints.
 
 """
-import logging
 
+from collections import defaultdict
+import logging
 import torch
 import torch.nn as nn
 from torch.fft import fft2, ifft2
@@ -97,6 +98,7 @@ class PtychoModel(torch.nn.Module):
                 end_iter_dict[key] = params.get('end_iter')
                 lr_dict[key] = params['lr']
             self.optimizer_params       = model_params['optimizer_params']
+            self.scheduler_params       = model_params.get('scheduler_params')
             self.start_iter             = start_iter_dict
             self.end_iter               = end_iter_dict
             self.lr_params              = lr_dict
@@ -134,6 +136,7 @@ class PtychoModel(torch.nn.Module):
             self.iter_times             = []
             self.dz_iters               = []
             self.avg_tilt_iters         = []
+            self.lr_iters               = defaultdict(list)
             self.recon_provenance       = init_variables['recon_provenance']
 
             # Create grids for shifting

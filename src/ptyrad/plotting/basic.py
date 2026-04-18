@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 import numpy as np
 from numpy.fft import fft2, fftshift, ifftshift
+from itertools import cycle
 
 
 def plot_sigmoid_mask(Npix, relative_radius, relative_width, img=None, show_circles=False):
@@ -269,6 +270,45 @@ def plot_loss_curves(loss_iters, last_n_iters=10, show_fig=True, pass_fig=False)
         plt.show()
     if pass_fig:
         return fig
+
+def plot_learning_rates_schedule(lr_iters, log=True, show_fig=True, pass_fig=False):
+    """Plots the learning rate schedule for each optimizable parameter group over iterations."""
+
+    styles = cycle(['-', '--', '-.', ':', (0, (3, 5, 1, 5)), (0, (5, 10))])
+    colors = cycle(plt.cm.tab10.colors) # High-contrast palette
+
+    plt.ioff() # Temporaily disable the interactive plotting mode
+    fig, axs = plt.subplots(nrows=1, ncols=1, figsize=(8, 6))
+
+    for name in [k for k in lr_iters.keys() if k != 'niter']:
+        axs.plot(
+            lr_iters['niter'],
+            lr_iters[name],
+            label=name,
+            linestyle=next(styles),
+            color=next(colors),
+            linewidth=2,
+            alpha=0.8,
+        )
+
+    # Set labels and title for the main plot
+    axs.set_xlabel('Iterations', fontsize=16)
+    axs.set_ylabel('Learning rates', fontsize=16)
+    axs.set_title(f'Learning rates schedule up to iter {lr_iters['niter'][-1]}', fontsize=16)
+    if log:
+        axs.set_yscale('log')
+    axs.xaxis.set_major_locator(ticker.MaxNLocator(integer=True))
+    axs.tick_params(axis='both', which='major', labelsize=14)
+    axs.grid(True, linestyle=':', alpha=0.6)
+    axs.legend(frameon=True, loc='best')
+
+    plt.tight_layout()
+    if show_fig:
+        plt.show()
+    if pass_fig:
+        return fig
+    else:
+        plt.close(fig)
 
 def plot_slice_thickness(dz_iters, last_n_iters=10, show_fig=True, pass_fig=False):
     last_n_iters = int(last_n_iters)

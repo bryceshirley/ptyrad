@@ -18,6 +18,7 @@ from .basic import (
     plot_probe_modes,
     plot_scan_positions,
     plot_slice_thickness,
+    plot_learning_rates_schedule,
 )
 
 logger = logging.getLogger(__name__)
@@ -43,6 +44,14 @@ def plot_summary(output_path, model, niter, indices, init_variables, selected_fi
             fig_loss.show()
         if save_fig:
             fig_loss.savefig(safe_filename(output_path + f"/summary_loss{collate_str}{iter_str}.png"))
+    
+    # Learning rate schedule
+    if 'learning_rates' in selected_figs or 'all' in selected_figs:
+        fig_lr = plot_learning_rates_schedule(model.lr_iters, log=True, show_fig=show_fig, pass_fig=True)
+        if show_fig:
+            fig_lr.show()
+        if save_fig:
+            fig_lr.savefig(safe_filename(output_path + f"/summary_learning_rates{collate_str}{iter_str}.png"))
     
     # Forward pass
     if 'forward' in selected_figs or 'all' in selected_figs:

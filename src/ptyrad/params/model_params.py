@@ -32,6 +32,27 @@ class OptimizerParams(BaseModel):
         return data
 
 
+class SchedulerParams(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    name: Literal["LambdaLR", "MultiplicativeLR", "StepLR", "MultiStepLR",
+                  "ConstantLR", "LinearLR", "ExponentialLR", "PolynomialLR",
+                  "CosineAnnealingLR", "ReduceLROnPlateau",
+                  "CyclicLR", "OneCycleLR", "CosineAnnealingWarmRestarts"] = Field(description="Scheduler class name from torch.optim.lr_scheduler")
+    configs: Dict[str, Any] = Field(default_factory=dict, description="Scheduler configurations")
+    load_state: Optional[FilePath] = Field(
+        default=None, description="Path str of a PtyRAD model file to load previous scheduler state"
+    )
+
+    @model_serializer
+    def serialize_model(self):
+        """Custom serializer to convert pathlib.Path back to str."""
+        data = self.__dict__.copy()
+        if data.get('load_state') is not None and isinstance(data['load_state'], pathlib.Path):
+            data['load_state'] = str(data['load_state'])
+        return data
+
+
 class UpdateParams(BaseModel):
     model_config = {"extra": "forbid"}
     
@@ -149,6 +170,20 @@ class ModelParams(BaseModel):
     However, the optimizer state must be coming from previous reconstructions with the same set of optimization variables with identical size of the dimensions otherwise it won't run.
     """
 
+    scheduler_params: Optional[SchedulerParams] = Field(
+        default=None, description="LR scheduler configuration"
+    )
+    """
+    Optional learning rate scheduler. 
+    Set to e.g. {name: CosineAnnealingLR, configs: {T_max: 500}} to decay the learning rate during reconstruction. 
+    Supports any class from torch.optim.lr_scheduler (https://pytorch.org/docs/stable/optim.html#how-to-adjust-learning-rate)
+    except ChainedScheduler and SequentialLR because both of them require other scheduler objects as constructor arguments, 
+    so you will have to specify them after param loading if you want to use them. 
+    ReduceLROnPlateau is handled automatically (mean loss is passed). 
+    Set load_state to a model.hdf5 path to resume mid-schedule. 
+    Note: not compatible with LBFGS optimizer (scheduler will be ignored with a warning). 
+    """
+
     update_params: UpdateParams = Field(
         default_factory=UpdateParams, description="Update parameters for optimizable tensors"
     )
@@ -157,5 +192,6 @@ class ModelParams(BaseModel):
 __all__ = [
     "ModelParams",
     "OptimizerParams",
+    "SchedulerParams",
     "UpdateParams"
 ]

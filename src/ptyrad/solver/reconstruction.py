@@ -135,6 +135,73 @@ def create_optimizer(optimizer_params, optimizable_params):
     logger.info(" ")
     return optimizer
 
+def create_scheduler(scheduler_params, optimizer):
+    """
+    Creates a PyTorch LR scheduler from the given params and binds it to the optimizer.
+
+    Converts param-group LRs to CPU tensors (required for torch.compile compatibility) and
+    patches scheduler.step() to restore tensor identity after each step so Dynamo guards
+    remain stable. Optionally loads a previously saved scheduler state.
+
+    Args:
+        scheduler_params (dict or None): Scheduler configuration dict with keys 'name',
+            'configs', and 'load_state'. If None, returns None.
+        optimizer (torch.optim.Optimizer): The optimizer whose param-group LRs will be managed.
+
+    Returns:
+        torch.optim.lr_scheduler.LRScheduler or None: The configured scheduler, or None.
+    """
+    if scheduler_params is None:
+        return None
+
+    scheduler_name = scheduler_params['name']
+    scheduler_configs = scheduler_params.get('configs') or {}
+    ptyrad_path = scheduler_params.get('load_state')
+
+    scheduler_class = getattr(torch.optim.lr_scheduler, scheduler_name, None)
+    if scheduler_class is None:
+        raise ValueError(f"LR Scheduler '{scheduler_name}' is not found in torch.optim.lr_scheduler.")
+
+    logger.info(f"### Creating LR scheduler '{scheduler_name}' with configs = {scheduler_configs} ###")
+
+    # Convert param_group LRs to CPU tensors before creating the scheduler so that:
+    # (1) scheduler.base_lrs captures tensors (arithmetic stays in tensor-land), and
+    # (2) torch.compile guards on tensor identity rather than scalar value → no recompilation
+    #     when the LR changes each iteration (see PyTorch lr_scheduler + compile tutorial).
+    for group in optimizer.param_groups:
+        group['lr'] = torch.tensor(float(group['lr']))
+
+    scheduler = scheduler_class(optimizer, **scheduler_configs)
+
+    if ptyrad_path is not None and isinstance(ptyrad_path, str):
+        try:
+            from ptyrad.io.load import load_ptyrad
+            scheduler_state_dict = load_ptyrad(ptyrad_path)['scheduler_state_dict']
+            scheduler.load_state_dict(scheduler_state_dict)
+            logger.info(f"Loaded scheduler state from '{ptyrad_path}'")
+        except Exception as e:
+            logger.info(f"Failed to load scheduler state from '{ptyrad_path}': {e}. Using fresh scheduler.")
+
+    # Patch scheduler.step to always restore the original tensor objects in-place.
+    # Standard schedulers do `param_group['lr'] = new_float`, which replaces the tensor
+    # with a float and breaks Dynamo's tensor-identity guard on the compiled optimizer step.
+    # This wrapper re-fills the original tensors and puts them back after each step.
+    _lr_tensors = [group['lr'] for group in optimizer.param_groups]
+    _original_step = scheduler.step
+
+    def _inplace_step(*args, **kwargs):
+        _original_step(*args, **kwargs)
+        for tensor, group in zip(_lr_tensors, optimizer.param_groups):
+            new_lr = group['lr']
+            if new_lr is not tensor:
+                tensor.fill_(new_lr.item() if isinstance(new_lr, torch.Tensor) else float(new_lr))
+                group['lr'] = tensor
+
+    scheduler.step = _inplace_step
+
+    logger.info(" ")
+    return scheduler
+
 def prepare_recon(model, init, params):
     """
     Prepares the indices, batches, and output path for ptychographic reconstruction.
@@ -332,7 +399,7 @@ def make_batches(indices, pos, batch_size, mode='random', seed=None):
 #  SECTION 2: RECONSTRUCTION LOOP
 # ==============================================================================
 
-def recon_loop(model, init, params, optimizer, loss_fn, constraint_fn, indices, batches, output_path, acc=None):
+def recon_loop(model, init, params, optimizer, scheduler, loss_fn, constraint_fn, indices, batches, output_path, acc=None):
     """
     Executes the iterative optimization loop for ptychographic reconstruction.
 
@@ -350,14 +417,16 @@ def recon_loop(model, init, params, optimizer, loss_fn, constraint_fn, indices, 
             process, including experimental parameters, source parameters, loss parameters, 
             constraint parameters, and reconstruction settings.
         optimizer (torch.optim.Optimizer): The optimizer used to update the model parameters.
-        loss_fn (CombinedLoss): The loss function object used to compute the loss during 
+        scheduler (torch.optim.lr_scheduler.LRScheduler or None): The LR scheduler that
+            adjusts the optimizer's learning rate each iteration. Pass None to disable.
+        loss_fn (CombinedLoss): The loss function object used to compute the loss during
             each iteration.
-        constraint_fn (CombinedConstraint): The constraint function object applied during 
+        constraint_fn (CombinedConstraint): The constraint function object applied during
             each iteration to enforce specific constraints on the model.
         indices (numpy.ndarray): Array of indices for scanning positions.
-        batches (list of numpy.ndarray): List of batches where each batch contains indices 
+        batches (list of numpy.ndarray): List of batches where each batch contains indices
             grouped according to the selected grouping mode.
-        output_path (str): The path to the directory where reconstruction results and 
+        output_path (str): The path to the directory where reconstruction results and
             figures will be saved.
 
     Returns:
@@ -386,7 +455,7 @@ def recon_loop(model, init, params, optimizer, loss_fn, constraint_fn, indices, 
     
     # Use the method on the wrapped model (DDP) if it exists
     model_instance = model.module if hasattr(model, "module") else model
-    
+
     logger.info("### Start the PtyRAD iterative ptycho reconstruction ###")
     
     # Initialize the compute_loss_fn and optimizer.step
@@ -408,8 +477,8 @@ def recon_loop(model, init, params, optimizer, loss_fn, constraint_fn, indices, 
             if not isinstance(optimizer, torch.optim.LBFGS): # Only compile first-order optimizers (like Adam), L-BFGS relies on dynamic closures that cannot be safely traced.
                 optimizer.step = torch.compile(optim_step_fn, **optim_compiler_configs)
         
-        batch_losses = recon_step(batches, grad_accumulation, model, optimizer, loss_fn, constraint_fn, niter, acc=acc, compute_loss_fn=compute_loss_fn)
-        
+        batch_losses = recon_step(batches, grad_accumulation, model, optimizer, scheduler, loss_fn, constraint_fn, niter, acc=acc, compute_loss_fn=compute_loss_fn)
+
         # Only log the main process
         if acc is None or acc.is_main_process:
             
@@ -418,7 +487,7 @@ def recon_loop(model, init, params, optimizer, loss_fn, constraint_fn, indices, 
                 with torch.no_grad():
                     # Note that `params` stores the original params from the configuration file, 
                     # while `model` contains the actual params that could be updated by meas_crop, meas_pad, or meas_resample
-                    save_results(output_path, model_instance, params, optimizer, niter, indices, batch_losses)
+                    save_results(output_path, model_instance, params, optimizer, scheduler, niter, indices, batch_losses)
                     
                     ## Saving summary
                     plot_summary(output_path, model_instance, niter, indices, init_variables, selected_figs=selected_figs, show_fig=False, save_fig=True)
@@ -426,7 +495,7 @@ def recon_loop(model, init, params, optimizer, loss_fn, constraint_fn, indices, 
     logger.info(f"### Finished {NITER} iterations, averaged iter_t = {np.mean(model_instance.iter_times):.5g} with std = {np.std(model_instance.iter_times):.3f} ###")
     logger.info(" ")
 
-def recon_step(batches, grad_accumulation, model, optimizer, loss_fn, constraint_fn, niter, acc=None, compute_loss_fn=None):
+def recon_step(batches, grad_accumulation, model, optimizer, scheduler, loss_fn, constraint_fn, niter, acc=None, compute_loss_fn=None):
     """
     Performs one iteration (or step) of the ptychographic reconstruction in the optimization loop.
 
@@ -437,26 +506,35 @@ def recon_step(batches, grad_accumulation, model, optimizer, loss_fn, constraint
     - Applying iteration-wise constraints after all batches are processed.
 
     Args:
-        batches (list of numpy.ndarray): List of batches where each batch contains indices 
+        batches (list of numpy.ndarray): List of batches where each batch contains indices
             grouped according to the selected grouping mode.
-        model (PtychoModel): The ptychographic model containing the parameters and variables 
+        grad_accumulation (int): Number of mini-batches to accumulate gradients over before stepping.
+        model (PtychoModel): The ptychographic model containing the parameters and variables
             to be optimized.
         optimizer (torch.optim.Optimizer): The optimizer used to update the model parameters.
+        scheduler (torch.optim.lr_scheduler.LRScheduler or None): LR scheduler stepped once per
+            iteration after the optimizer step. Pass None to disable.
         loss_fn (CombinedLoss): The loss function object used to compute the loss for each batch.
-        constraint_fn (CombinedConstraint): The constraint function object applied after each iteration 
+        constraint_fn (CombinedConstraint): The constraint function object applied after each iteration
             to enforce specific constraints on the model.
         niter (int): The current iteration number in the optimization loop.
+        acc (Accelerator or None): HuggingFace Accelerator for multi-GPU support. None for single-GPU.
+        compute_loss_fn (callable or None): Compiled or uncompiled loss function; defaults to compute_loss.
 
     Returns:
-        tuple: A tuple containing:
-            - batch_losses (dict): A dictionary where each key corresponds to a loss component name, 
-              and the value is a list of loss values computed for each batch in the iteration.
-            - iter_t (float): The total time taken to complete the iteration.
+        dict: A dictionary where each key corresponds to a loss component name and the value is
+            a list of loss values computed for each batch in the iteration.
     """
     loss_names = list(loss_fn.loss_params.keys())
 
     # Use the method on the wrapped model (DDP) if it exists
     model_instance = model.module if hasattr(model, "module") else model
+
+    # Unwrap accelerate-prepared optimizer to access param_groups for LR tracking
+    optimizer_instance = optimizer.optimizer if hasattr(optimizer, "optimizer") else optimizer
+
+    # Build param group name list for LR logging (non-zero-lr params, same order as optimizer.param_groups)
+    param_group_names = [name for name, lr in model_instance.lr_params.items() if lr != 0]
 
     # Pre-allocate GPU tensors for loss accumulation to avoid per-batch CPU syncs
     num_batches = len(batches)
@@ -570,7 +648,26 @@ def recon_step(batches, grad_accumulation, model, optimizer, loss_fn, constraint
     # Transfer all losses to CPU once at end of iteration
     batch_losses = {name: tensor[:batch_count].cpu().numpy().tolist() for name, tensor in loss_accum.items()}
 
+    # Apply iter-wise constraint
     constraint_fn(model_instance, niter)
+    
+    # Record the Learning rates
+    current_lrs = [group['lr'] for group in optimizer_instance.param_groups]
+    model_instance.lr_iters['niter'].append(niter)
+    for name, lr in zip(param_group_names, current_lrs):
+        lr_value = lr.item() if isinstance(lr, torch.Tensor) else lr
+        model_instance.lr_iters[name].append(lr_value)
+    
+    # Step the LR scheduler
+    if scheduler is not None:
+        lr_str = ', '.join([f"{name}: {float(lr):.3e}" for name, lr in zip(param_group_names, current_lrs)])
+        logger.debug(f"Iter: {niter}, LR: {lr_str}")
+    
+        if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+            loss_iter = float(sum([np.mean(v) for v in batch_losses.values()]))
+            scheduler.step(loss_iter)
+        else:
+            scheduler.step()
     
     iter_t = time_sync(model_instance.device) - start_iter_t
     model_instance.loss_iters.append((niter, loss_logger(batch_losses, niter, iter_t)))

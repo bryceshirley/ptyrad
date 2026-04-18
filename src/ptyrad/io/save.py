@@ -135,7 +135,7 @@ def safe_filename(filepath):
     
     return result_path
 
-def make_save_dict(output_path, model, params, optimizer, niter, indices, batch_losses):
+def make_save_dict(output_path, model, params, optimizer, scheduler, niter, indices, batch_losses):
     """Compiles the model state, parameters, and optimizer data into a dictionary.
 
     This explicitly extracts and formats the current runtime attributes from the 
@@ -172,6 +172,13 @@ def make_save_dict(output_path, model, params, optimizer, niter, indices, batch_
         if name == 'probe':
             optimizable_tensors['probe'] = model.get_complex_probe_view().detach().clone()
     
+    # Postprocess the scheduler_state_dict
+    if (scheduler is not None and 'scheduler_state' in params['recon_params']['save_result']):
+        scheduler_state_dict = scheduler.state_dict().copy()
+        del scheduler_state_dict['step'] # Remove the monkey-patched closure — it's not serializable and not part of resumable state
+    else:
+        scheduler_state_dict = None
+    
     from ptyrad import __version__ as ptyrad_version
         
     save_dict = {
@@ -179,6 +186,7 @@ def make_save_dict(output_path, model, params, optimizer, niter, indices, batch_
                 'output_path'           : output_path,
                 'optimizable_tensors'   : optimizable_tensors,
                 'optim_state_dict'      : optimizer.state_dict() if 'optim_state' in params['recon_params']['save_result'] else None,
+                'scheduler_state_dict'  : scheduler_state_dict,
                 'params'                : params, 
                 'model_attributes': # Have to do this explicit saving because I want specific fields but don't want the enitre model with grids and other redundant info
                     {'detector_blur_std': model.detector_blur_std,
@@ -205,6 +213,7 @@ def make_save_dict(output_path, model, params, optimizer, niter, indices, batch_
                 'loss_iters'            : model.loss_iters,
                 'iter_times'            : model.iter_times,
                 'dz_iters'              : model.dz_iters,
+                'lr_iters'              : model.lr_iters,
                 'avg_iter_t'            : avg_iter_t,
                 'niter'                 : niter,
                 'indices'               : indices,
@@ -350,7 +359,7 @@ def make_output_folder(
                     'loss', 'affine', 'tilt', 'aberrations'],
         
         "all":     ['indices', 'meas', 'batch', 'pmode', 'omode', 'nlayer',
-                    'optimizer', 'start_iter', 'lr', 'model', 'constraint',
+                    'optimizer', 'scheduler', 'start_iter', 'lr', 'model', 'constraint',
                     'loss', 'conv_angle', 'aberrations', 'Ls', 'z_shift', 'dx', 'affine', 'tilt']        
         }
     
@@ -418,6 +427,11 @@ def make_output_folder(
     if "optimizer" in recon_dir_affixes:
         optimizer_str = model.optimizer_params["name"]
         parts.append(f"{optimizer_str}")
+
+    # Attach scheduler name (optional)
+    if "scheduler" in recon_dir_affixes and model.scheduler_params is not None:
+        scheduler_str = model.scheduler_params["name"]
+        parts.append(f"{scheduler_str}")
 
     # Attach start_iter (optional)
     if "start_iter" in recon_dir_affixes:
@@ -598,7 +612,7 @@ def make_output_folder(
     logger.info(f"output_path = '{output_path}' is generated!")
     return output_path
 
-def save_results(output_path, model, params, optimizer, niter, indices, batch_losses, collate_str=''):
+def save_results(output_path, model, params, optimizer, scheduler, niter, indices, batch_losses, collate_str=''):
     """Exports the reconstruction model state and renders image outputs.
 
     This function acts as the main saving hub. Depending on the `save_result` 
@@ -612,6 +626,7 @@ def save_results(output_path, model, params, optimizer, niter, indices, batch_lo
         model (PtychoModel): The reconstruction model.
         params (dict): The configuration dictionary dictating save preferences.
         optimizer (torch.optim.Optimizer): The active optimizer.
+        scheduler (torch.optim.lr_scheduler.LRScheduler or None): The active LR scheduler, or None if not used.
         niter (int): The current iteration number.
         indices (list or numpy.ndarray): The batch indices.
         batch_losses (dict): The recorded loss values.
@@ -626,7 +641,7 @@ def save_results(output_path, model, params, optimizer, niter, indices, batch_lo
     
     if 'model' in save_result_list:
         hdf5_file_path = safe_filename(os.path.join(output_path, f"model{collate_str}{iter_str}.hdf5"))
-        save_dict = make_save_dict(output_path, model, params, optimizer, niter, indices, batch_losses)
+        save_dict = make_save_dict(output_path, model, params, optimizer, scheduler, niter, indices, batch_losses)
         save_dict_to_hdf5(save_dict, hdf5_file_path)
 
         provenance_json_str = generate_provenance_json(current_provenance=model.recon_provenance, params=params, output_filename=hdf5_file_path)

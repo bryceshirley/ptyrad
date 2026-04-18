@@ -183,6 +183,7 @@ class ReconParams(BaseModel):
             "nlayer",
             "lr",
             "optimizer",
+            "scheduler",
             "start_iter",
             "model",
             "constraint",
@@ -200,8 +201,8 @@ class ReconParams(BaseModel):
     This list specifies the optional affixes to the reconstruction folder name for file management. 
     The order of strings has NO effect to the output folder name. 
     PtyRAD provides high-level presets including 'minimal', 'default', and 'all', while each of them corresponds to a subset of all available options. 
-    There are currently 19 available options, including 'indices', 'meas', 'batch', 'pmode', 'omode', 'nlayer', 'lr', 
-    'optimizer', 'start_iter', 'model', 'constraint', 'loss', 'conv_angle', 'aberrations', 'Ls', 'z_shift', 'dx', 'affine', and 'tilt'. 
+    There are currently 20 available options, including 'indices', 'meas', 'batch', 'pmode', 'omode', 'nlayer', 'lr', 
+    'optimizer', 'scheduler', 'start_iter', 'model', 'constraint', 'loss', 'conv_angle', 'aberrations', 'Ls', 'z_shift', 'dx', 'affine', and 'tilt'. 
     Each option corresponds to specific fields in the params file. 
     These individual tags can be combined with the presets, e.g. ['minimal', 'tilt']. 
     A typical output folder name of 'default' looks like: 
@@ -247,12 +248,12 @@ class ReconParams(BaseModel):
     In hypertune mode, the postfix string would be applied on the hypertune folder instead of the reconsstruction folder. 
     """
 
-    save_result: List[Literal["model", "obja", "objp", "probe", "probe_prop", "optim_state"]] = (
+    save_result: List[Literal["model", "obja", "objp", "probe", "probe_prop", "optim_state", "scheduler_state"]] = (
         Field(default=["model", "objp"], description="Results to save")
     )
     """
     This list specifies the available results to save every SAVE_ITERS, so it keeps the intermediate progress. 
-    Available options are 'model', 'obja', 'objp', 'probe', 'probe_prop', and 'optim_state'. 
+    Available options are 'model', 'obja', 'objp', 'probe', 'probe_prop', 'optim_state', and 'scheduler_state'. 
     'model' is a nested dict that later got stored as an hdf5 file. 
     'model' contains optimizable tensors and metadata so that you can always refine from it and load whatever optimizable tensors (object, probe, positions, tilts) 
     if you want to continue the reconstruction. 
@@ -281,12 +282,12 @@ class ReconParams(BaseModel):
 
     selected_figs: List[
         Literal[
-            "loss", "forward", "probe_r_amp", "probe_k_amp", "probe_k_phase", "pos", "tilt", "tilt_avg", "slice_thickness", "all"
+            "loss", "learning_rates", "forward", "probe_r_amp", "probe_k_amp", "probe_k_phase", "pos", "tilt", "tilt_avg", "slice_thickness", "all"
         ]
     ] = Field(default=["loss", "forward", "probe_r_amp", "pos"], description="Figures to plot/save")
     """
     This list specified the selected figures that will be plotted/saved. 
-    The available strings are 'loss', 'forward', 'probe_r_amp', 'probe_k_amp', 'probe_k_phase', 'pos', 'tilt', 'tilt_avg', 'slice_thickness', and 'all'. 
+    The available strings are 'loss', 'learning_rates', 'forward', 'probe_r_amp', 'probe_k_amp', 'probe_k_phase', 'pos', 'tilt', 'tilt_avg', 'slice_thickness', and 'all'.
     The suggested value is ['loss', 'forward', 'probe_r_amp', 'pos'].
     """
 
