@@ -6,7 +6,7 @@ Visualization functions for summary figures
 # Only promote .basic for easier plotting in CLI and notebooks without pulling torch
 from .basic import (
     plot_affine_transformation,
-    plot_convergence_metrics,
+    plot_convergence_dashboard,
     plot_loss_curves,
     plot_obj_tilts,
     plot_obj_tilts_avg,
@@ -20,7 +20,7 @@ from .basic import (
 
 __all__ = [
     "plot_affine_transformation",
-    "plot_convergence_metrics",
+    "plot_convergence_dashboard",
     "plot_loss_curves",
     "plot_obj_tilts",
     "plot_obj_tilts_avg",

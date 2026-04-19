@@ -69,16 +69,18 @@ class ConvergenceMonitorParams(BaseModel):
     model_config = {"extra": "forbid"}
 
     tensors: List[
-        Literal["obja", "objp", "probe", "probe_pos_shifts", "slice_thickness", "obj_tilts"]
+        Literal["obja", "objp", "probe", "probe_pos_shifts"]
     ] = Field(
-        default=["obja", "objp", "probe"],
+        default=["obja", "objp", "probe", "probe_pos_shifts"],
         min_length=1,
     )
     """
-    Which optimizable tensors to track convergence for. Default covers the three highest-dimensional
-    tensors. 'obja' and 'objp' use relative Frobenius norm change. 'probe' tracks amplitude and
-    phase change separately (both as relative Frobenius). 'probe_pos_shifts' uses RMS displacement
-    change (pixels). 'slice_thickness' and 'obj_tilts' use absolute change (Å and mrad).
+    Which optimizable tensors to track convergence for.
+    - 'obja', 'objp': relative Frobenius norm change of object amplitude/phase.
+    - 'probe': relative Frobenius norm change of probe amplitude (real-space).
+    - 'probe_pos_shifts': RMS displacement change in Å.
+    'slice_thickness' and 'obj_tilts' are excluded — they are already recorded every iteration
+    via model.dz_iters and model.avg_tilt_iters and plotted directly by the dashboard.
     """
 
     every_n_iters: Optional[int] = Field(default=None, ge=1)
@@ -318,10 +320,25 @@ class ReconParams(BaseModel):
         ]
     ] = Field(default=["loss", "forward", "probe_r_amp", "pos"], description="Figures to plot/save")
     """
-    This list specified the selected figures that will be plotted/saved.
-    The available strings are 'loss', 'learning_rates', 'forward', 'probe_r_amp', 'probe_k_amp', 'probe_k_phase', 'pos', 'tilt', 'tilt_avg', 'slice_thickness', 'convergence', and 'all'.
-    'convergence' requires convergence_monitor to be configured; it is silently skipped otherwise.
-    The suggested value is ['loss', 'forward', 'probe_r_amp', 'pos'].
+    This list specifies the selected figures that will be plotted/saved at each save interval.
+    Available keys:
+    - 'convergence'     : Unified time-series dashboard (loss, LR schedule, slice thickness, avg tilts,
+                          and per-tensor convergence metrics). Saved as a single fixed-name file
+                          summary_convergence.png (overwritten each cycle). Works even when
+                          convergence_monitor is null — tensor panels are simply absent.
+                          Recommended replacement for 'loss', 'slice_thickness', and 'tilt_avg'.
+    - 'loss'            : Standalone loss curve with zoom inset (iter-stamped). Covered by 'convergence'.
+    - 'learning_rates'  : Standalone LR schedule (iter-stamped). Covered by 'convergence'.
+    - 'slice_thickness' : Standalone slice thickness curve with zoom inset (iter-stamped). Covered by 'convergence'.
+    - 'tilt_avg'        : Standalone avg tilt curves with zoom inset (iter-stamped). Covered by 'convergence'.
+    - 'forward'         : Forward pass snapshot (probe, object patches, model DP vs measured DP).
+    - 'probe_r_amp'     : Probe modes amplitude in real space.
+    - 'probe_k_amp'     : Probe modes amplitude in Fourier space.
+    - 'probe_k_phase'   : Probe modes phase in Fourier space.
+    - 'pos'             : Scan positions overlay (init vs optimized).
+    - 'tilt'            : Object tilt quiver plot (snapshot).
+    - 'all'             : All of the above.
+    Suggested value: ['convergence', 'forward', 'probe_r_amp', 'pos'].
     """
 
     copy_params: bool = Field(default=True, description="Copy params file to output folder")

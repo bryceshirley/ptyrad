@@ -12,7 +12,7 @@ import torch
 from ptyrad.io.save import safe_filename
 
 from .basic import (
-    plot_convergence_metrics,
+    plot_convergence_dashboard,
     plot_loss_curves,
     plot_obj_tilts,
     plot_obj_tilts_avg,
@@ -134,17 +134,26 @@ def plot_summary(output_path, model, niter, indices, init_variables, selected_fi
         if save_fig:
             fig_slice_thickness.savefig(safe_filename(output_path + f"/summary_slice_thickness{collate_str}{iter_str}.png"))
 
-    # Convergence metrics
+    # Convergence dashboard — unified time-series figure (loss, LR, dz, tilts, tensor metrics).
+    # Saved with a fixed filename (no iter suffix) since the full history is always shown.
+    # Old standalone keys 'loss', 'slice_thickness', 'tilt_avg' still work as aliases above.
     if 'convergence' in selected_figs or 'all' in selected_figs:
-        if model.convergence_iters:
-            threshold = getattr(model, 'convergence_threshold', 1e-4) or 1e-4
-            for tensor_name, history in model.convergence_iters.items():
-                fig_conv = plot_convergence_metrics({tensor_name: history}, threshold=threshold, show_fig=show_fig, pass_fig=True)
-                if fig_conv is not None:
-                    if show_fig:
-                        fig_conv.show()
-                    if save_fig:
-                        fig_conv.savefig(safe_filename(output_path + f"/summary_convergence_{tensor_name}{collate_str}{iter_str}.png"))
+        threshold = getattr(model, 'convergence_threshold', 1e-4) or 1e-4
+        fig_conv = plot_convergence_dashboard(
+            loss_iters=model.loss_iters,
+            lr_iters=model.lr_iters,
+            dz_iters=model.dz_iters,
+            avg_tilt_iters=model.avg_tilt_iters,
+            convergence_iters=model.convergence_iters,
+            threshold=threshold,
+            show_fig=show_fig,
+            pass_fig=True,
+        )
+        if fig_conv is not None:
+            if show_fig:
+                fig_conv.show()
+            if save_fig:
+                fig_conv.savefig(safe_filename(output_path + f"/summary_convergence{collate_str}.png"))
 
     # Close figures after saving
     plt.close('all')

@@ -19,9 +19,12 @@ class ConvergenceMonitor:
     Takes periodic snapshots of tracked tensors and computes the iter-to-iter change
     (relative to the previous snapshot) at each snapshot.
 
+    Tracked tensors: ``obja``, ``objp``, ``probe`` (→ ``probe_amp`` only), ``probe_pos_shifts``.
+    ``slice_thickness`` and ``obj_tilts`` are excluded — they are already tracked every iteration
+    via ``model.dz_iters`` and ``model.avg_tilt_iters`` and fed directly to the dashboard.
+
     Results are stored in ``model.convergence_iters`` as a dict of lists of 2-tuples
-    ``(niter, iter_change)``. For probe, amplitude and phase are tracked
-    separately under keys ``'probe_amp'`` and ``'probe_phase'``.
+    ``(niter, iter_change)``.
 
     Args:
         params: Parsed ``ConvergenceMonitorParams`` dict (with keys ``tensors``,
@@ -34,11 +37,8 @@ class ConvergenceMonitor:
     _METRIC_TYPE = {
         "obja":             "rel_frob",
         "objp":             "rel_frob",
-        "probe_amp":        "rel_frob",
-        "probe_phase":      "rel_frob",
+        "probe":            "rel_frob",
         "probe_pos_shifts": "rms",
-        "slice_thickness":  "abs_mean",
-        "obj_tilts":        "abs_mean",
     }
 
     def __init__(self, params: dict, model) -> None:
@@ -48,7 +48,10 @@ class ConvergenceMonitor:
         self._converged: set      = set()
 
         model.convergence_threshold = self._threshold
+        # TODO: extend ConvergenceMonitorParams with per-tensor threshold dict so each tensor
+        # can have its own convergence criterion, and expose them as reference lines in the dashboard.
 
+        self._dx: float  = float(model.dx)   # pixel size [Å]; used to convert probe_pos_shifts to Å
         self._prev: dict = {}
 
         for name in self._tensors:
@@ -81,6 +84,8 @@ class ConvergenceMonitor:
             for key, current in snaps.items():
                 metric_type = self._METRIC_TYPE[key]
                 iter_change = self._compute_metric(current, self._prev[key], metric_type)
+                if key == "probe_pos_shifts":
+                    iter_change *= self._dx
 
                 model.convergence_iters[key].append((niter, iter_change))
                 self._prev[key] = current.clone()
@@ -106,14 +111,8 @@ class ConvergenceMonitor:
     # ------------------------------------------------------------------
 
     def _all_tracked_keys(self) -> set:
-        """Return the full set of history keys (probe expands to probe_amp + probe_phase)."""
-        keys = set()
-        for name in self._tensors:
-            if name == "probe":
-                keys.update({"probe_amp", "probe_phase"})
-            else:
-                keys.add(name)
-        return keys
+        """Return the set of history keys, which matches self._tensors directly."""
+        return set(self._tensors)
 
     @staticmethod
     def _snapshot(model, name: str) -> dict:
@@ -124,11 +123,8 @@ class ConvergenceMonitor:
         For all others, returns {name: tensor}.
         """
         if name == "probe":
-            probe_c = model.get_complex_probe_view().detach()  # keep complex64; abs/angle return float32
-            return {
-                "probe_amp":   probe_c.abs().cpu(),
-                "probe_phase": probe_c.angle().cpu(),
-            }
+            probe_c = model.get_complex_probe_view().detach()  # keep complex64; abs() returns float32
+            return {"probe": probe_c.abs().cpu()}
         return {name: model.optimizable_tensors[name].detach().float().cpu()}
 
     @staticmethod
@@ -138,10 +134,8 @@ class ConvergenceMonitor:
         if metric_type == "rel_frob":
             return (diff.norm() / (reference.norm() + 1e-8)).item()
         if metric_type == "rms":
-            # Per-position displacement magnitude (works for (N, 2) and scalars)
-            return diff.pow(2).sum(dim=-1).mean().sqrt().item() if diff.dim() > 1 else diff.abs().item()
-        if metric_type == "abs_mean":
-            return diff.abs().mean().item()
+            # Per-position displacement magnitude (works for (N, 2) tensors)
+            return diff.pow(2).sum(dim=-1).mean().sqrt().item()
         raise ValueError(f"Unknown metric_type: {metric_type!r}")
 
 

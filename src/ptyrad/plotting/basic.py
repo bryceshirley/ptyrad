@@ -441,45 +441,179 @@ def plot_probe_modes(init_probe=None, opt_probe=None, amp_or_phase='amplitude', 
 _CONVERGENCE_LABELS = {
     "obja":             ("Relative Frobenius change", True),
     "objp":             ("Relative Frobenius change", True),
-    "probe_amp":        ("Relative Frobenius change (amplitude)", True),
-    "probe_phase":      ("Relative Frobenius change (phase)", True),
-    "probe_pos_shifts": ("RMS shift change [px]", False),
-    "slice_thickness":  ("Absolute change [Å]", False),
-    "obj_tilts":        ("Mean absolute change [mrad]", False),
+    "probe":            ("Relative Frobenius change", True),
+    "probe_pos_shifts": ("RMS shift change (Å)", False),
 }
 
 
-def plot_convergence_metrics(convergence_iters, threshold=1e-4, show_fig=True, pass_fig=False):
-    """Plot iter-to-iter convergence metric for a single tracked tensor."""
-    assert len(convergence_iters) == 1, "Pass one tensor at a time via a single-key dict."
-    tensor_name, history = next(iter(convergence_iters.items()))
+# ---------------------------------------------------------------------------
+# Dashboard helpers — one per panel type, each draws into a provided Axes
+# ---------------------------------------------------------------------------
 
+# Human-readable title for each convergence tensor key
+_CONVERGENCE_PANEL_TITLES = {
+    "obja":             "Object amplitude",
+    "objp":             "Object phase",
+    "probe":            "Probe amplitude",
+    "probe_pos_shifts": "Probe position shifts",
+}
+
+
+def _panel_no_data(ax, label):
+    ax.text(0.5, 0.5, f'{label}\n(no data)', transform=ax.transAxes,
+            ha='center', va='center', fontsize=12, color='lightgray')
+    ax.set_xticks([])
+    ax.set_yticks([])
+
+
+def _draw_loss_panel(ax, loss_iters):
+    if not loss_iters:
+        _panel_no_data(ax, 'Loss')
+        return
+    data   = np.array(loss_iters)
+    niters = data[:, 0]
+    vals   = data[:, 1]
+    ax.plot(niters, vals, marker='o', linewidth=1.5, markersize=3,
+            label=f'Loss: {vals[-1]:.5f}')
+    if len(data) > 20:
+        axins = ax.inset_axes([0.45, 0.3, 0.4, 0.5])
+        axins.plot(niters[-10:], vals[-10:], marker='o', markersize=3)
+        axins.set_xlabel('Iteration', fontsize=9)
+        axins.yaxis.set_major_formatter(ticker.StrMethodFormatter('{x:.5f}'))
+        axins.set_title('Last 10 iters', fontsize=9, pad=4)
+        axins.grid(True, linestyle=':', alpha=0.5)
+        ax.indicate_inset_zoom(axins, edgecolor='gray')
+    ax.set_xlabel('Iteration', fontsize=12)
+    ax.set_ylabel('Loss', fontsize=12)
+    ax.set_title('Loss', fontsize=13)
+    ax.xaxis.set_major_locator(ticker.MaxNLocator(integer=True))
+    ax.legend(fontsize=9, loc='upper right')
+    ax.grid(True, linestyle=':', alpha=0.5)
+    ax.tick_params(labelsize=10)
+
+
+def _draw_lr_panel(ax, lr_iters):
+    if not lr_iters or not lr_iters.get('niter'):
+        _panel_no_data(ax, 'Learning rates')
+        return
+    styles = cycle(['-', '--', '-.', ':'])
+    colors = cycle(plt.cm.tab10.colors)
+    for name in [k for k in lr_iters if k != 'niter']:
+        vals = lr_iters[name]
+        ax.plot(lr_iters['niter'], vals, label=f'{name}: {vals[-1]:.3e}',
+                linestyle=next(styles), color=next(colors), linewidth=1.5)
+    ax.set_yscale('log')
+    ax.set_xlabel('Iteration', fontsize=12)
+    ax.set_ylabel('LR', fontsize=12)
+    ax.set_title('Learning rates', fontsize=13)
+    ax.xaxis.set_major_locator(ticker.MaxNLocator(integer=True))
+    ax.legend(fontsize=9, loc='upper right')
+    ax.grid(True, linestyle=':', alpha=0.5)
+    ax.tick_params(labelsize=10)
+
+
+def _draw_dz_panel(ax, dz_iters):
+    if not dz_iters:
+        _panel_no_data(ax, 'Slice thickness')
+        return
+    data   = np.array(dz_iters)
+    niters = data[:, 0]
+    vals   = data[:, 1]
+    ax.plot(niters, vals, marker='o', linewidth=1.5, markersize=3,
+            label=f'{vals[-1]:.4f} Å')
+    ax.set_xlabel('Iteration', fontsize=12)
+    ax.set_ylabel('dz (Å)', fontsize=12)
+    ax.set_title('Slice thickness', fontsize=13)
+    ax.xaxis.set_major_locator(ticker.MaxNLocator(integer=True))
+    ax.legend(fontsize=9, loc='upper right')
+    ax.grid(True, linestyle=':', alpha=0.5)
+    ax.tick_params(labelsize=10)
+
+
+def _draw_tilt_panel(ax, avg_tilt_iters):
+    if not avg_tilt_iters:
+        _panel_no_data(ax, 'Object tilts')
+        return
+    iters, tilts = zip(*avg_tilt_iters)
+    tilts = np.vstack(tilts)
+    iters = np.array(iters)
+    ax.plot(iters, tilts[:, 0], linewidth=1.5, marker='o', markersize=3,
+            label=f'tilt_y: {tilts[-1, 0]:.3f} mrad')
+    ax.plot(iters, tilts[:, 1], linewidth=1.5, marker='o', markersize=3,
+            label=f'tilt_x: {tilts[-1, 1]:.3f} mrad')
+    ax.set_xlabel('Iteration', fontsize=12)
+    ax.set_ylabel('Object tilts (mrad)', fontsize=12)
+    ax.set_title('Object tilts', fontsize=13)
+    ax.xaxis.set_major_locator(ticker.MaxNLocator(integer=True))
+    ax.legend(fontsize=9, loc='upper right')
+    ax.grid(True, linestyle=':', alpha=0.5)
+    ax.tick_params(labelsize=10)
+
+
+def _draw_convergence_panel(ax, tensor_name, history):
+    title  = _CONVERGENCE_PANEL_TITLES.get(tensor_name, tensor_name)
+    ylabel, use_log = _CONVERGENCE_LABELS.get(tensor_name, ('Change', True))
     if not history:
-        return None
+        _panel_no_data(ax, title)
+        return
+    data   = np.array(history)  # shape (N, 2): [niter, iter_change] — values already in physical units
+    niters = data[:, 0]
+    vals   = data[:, 1]
+    ax.plot(niters, vals, marker='o', linewidth=1.5, markersize=3,
+            label=f'{tensor_name}: {vals[-1]:.3e}')
+    ax.set_xlabel('Iteration', fontsize=12)
+    ax.set_ylabel(ylabel, fontsize=12)
+    ax.set_title(title, fontsize=13)
+    ax.xaxis.set_major_locator(ticker.MaxNLocator(integer=True))
+    if use_log and np.any(vals > 0):
+        ax.set_yscale('log')
+    ax.legend(fontsize=9, loc='upper right')
+    ax.grid(True, linestyle=':', alpha=0.5)
+    ax.tick_params(labelsize=10)
 
-    data = np.array(history)  # shape (N, 2): [niter, iter_change]
-    niters    = data[:, 0]
-    iter_vals = data[:, 1]
 
-    ylabel, use_log = _CONVERGENCE_LABELS.get(tensor_name, ("Change metric", True))
-    last_iter = int(niters[-1])
+def _get_last_iter(loss_iters, convergence_iters):
+    if loss_iters:
+        return int(np.array(loss_iters)[-1, 0])
+    for hist in (convergence_iters or {}).values():
+        if hist:
+            return int(hist[-1][0])
+    return None
+
+
+def plot_convergence_dashboard(loss_iters, lr_iters, dz_iters, avg_tilt_iters,
+                               convergence_iters, threshold=1e-4,
+                               show_fig=True, pass_fig=False):
+    """Unified dashboard of all scalar time-series in a fixed 2x4 grid.
+
+    Layout::
+
+        Row 0: Loss | obja | objp | Object tilts
+        Row 1: LR   | Probe amplitude | Probe position shifts | Slice thickness
+
+    Panels with no data show a blank placeholder so the layout stays fixed across save cycles.
+    ``threshold`` is accepted for API compatibility but not currently plotted — per-tensor
+    threshold specification is planned (see TODO in runtime/convergence.py).
+    """
+    ci        = convergence_iters or {}
+    last_iter = _get_last_iter(loss_iters, ci)
 
     plt.ioff()
-    fig, ax = plt.subplots(figsize=(6, 4))
+    fig, axes = plt.subplots(2, 4, figsize=(20, 8), squeeze=False)
 
-    ax.plot(niters, iter_vals, marker='o', linewidth=1.5, markersize=4)
-    ax.axhline(threshold, color='r', linestyle='--', linewidth=1, label=f'threshold {threshold:.1e}')
-    ax.set_xlabel('Iteration', fontsize=13)
-    ax.set_ylabel(ylabel, fontsize=13)
-    ax.set_title(f'Convergence: {tensor_name} at iter {last_iter}', fontsize=14)
-    ax.xaxis.set_major_locator(ticker.MaxNLocator(integer=True))
-    if use_log and np.any(iter_vals > 0):
-        ax.set_yscale('log')
-    ax.legend(fontsize=11)
-    ax.grid(True, linestyle=':', alpha=0.5)
-    ax.tick_params(axis='both', which='major', labelsize=11)
+    _draw_loss_panel        (axes[0, 0], loss_iters)
+    _draw_convergence_panel (axes[0, 1], 'obja',             ci.get('obja', []))
+    _draw_convergence_panel (axes[0, 2], 'objp',             ci.get('objp', []))
+    _draw_tilt_panel        (axes[0, 3], avg_tilt_iters)
+    _draw_lr_panel          (axes[1, 0], lr_iters)
+    _draw_convergence_panel (axes[1, 1], 'probe',            ci.get('probe', []))
+    _draw_convergence_panel (axes[1, 2], 'probe_pos_shifts', ci.get('probe_pos_shifts', []))
+    _draw_dz_panel          (axes[1, 3], dz_iters)
 
-    plt.tight_layout()
+    if last_iter is not None:
+        fig.suptitle(f"Convergence Dashboard at Iter {last_iter}", fontsize=16)
+
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
     if show_fig:
         plt.show()
     if pass_fig:
