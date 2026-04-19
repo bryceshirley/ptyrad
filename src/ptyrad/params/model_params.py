@@ -43,6 +43,15 @@ class SchedulerParams(BaseModel):
     load_state: Optional[FilePath] = Field(
         default=None, description="Path str of a PtyRAD model file to load previous scheduler state"
     )
+    step_unit: Literal["iter", "batch"] = Field(
+        default="iter",
+        description=(
+            "When to call scheduler.step(): 'iter' (once per outer iteration, default) or "
+            "'batch' (once per optimizer.step() call, i.e. per grad-accumulation boundary). "
+            "Use 'batch' for CyclicLR and OneCycleLR, which are designed to step every optimizer "
+            "update. ReduceLROnPlateau ignores this setting and always steps per iteration."
+        )
+    )
 
     @model_serializer
     def serialize_model(self):

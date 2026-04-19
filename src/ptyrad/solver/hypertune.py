@@ -350,6 +350,7 @@ def optuna_objective(trial, params, init, loss_fn, constraint_fn, device='cuda')
     if params['model_params']['optimizer_params']['name'] == 'LBFGS' and scheduler is not None:
         logger.warning("LBFGS optimizer detected with scheduler_params set. LR scheduler is not supported for LBFGS and will be ignored.")
         scheduler = None
+    scheduler_step_unit = (model.scheduler_params or {}).get('step_unit', 'iter')
     indices, batches_np, output_path = prepare_recon(model, init, params)
 
     # Initialize the compute_loss_fn
@@ -375,7 +376,7 @@ def optuna_objective(trial, params, init, loss_fn, constraint_fn, device='cuda')
         shuffle(batches_np)
         batches = [torch.from_numpy(arr).to(device=device) for arr in batches_np]
         
-        batch_losses = recon_step(batches, grad_accumulation, model, optimizer, scheduler, loss_fn, constraint_fn, niter, compute_loss_fn=compute_loss_fn)
+        batch_losses = recon_step(batches, grad_accumulation, model, optimizer, scheduler, loss_fn, constraint_fn, niter, compute_loss_fn=compute_loss_fn, scheduler_step_unit=scheduler_step_unit)
 
         ## Saving intermediate results
         if SAVE_ITERS is not None and niter % SAVE_ITERS == 0:
