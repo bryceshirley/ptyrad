@@ -15,6 +15,7 @@ from ptyrad.core.losses import get_objp_contrast
 from ptyrad.io.save import save_results
 from ptyrad.optics.aberrations import Aberrations
 from ptyrad.plotting.model import plot_summary
+from ptyrad.runtime.convergence import create_convergence_monitor
 from ptyrad.runtime.seed import set_random_seed
 
 from .reconstruction import (
@@ -351,6 +352,8 @@ def optuna_objective(trial, params, init, loss_fn, constraint_fn, device='cuda')
         logger.warning("LBFGS optimizer detected with scheduler_params set. LR scheduler is not supported for LBFGS and will be ignored.")
         scheduler = None
     scheduler_step_unit = (model.scheduler_params or {}).get('step_unit', 'iter')
+    convergence_monitor_params = recon_params.get('convergence_monitor')
+    monitor = create_convergence_monitor(convergence_monitor_params, model)
     indices, batches_np, output_path = prepare_recon(model, init, params)
 
     # Initialize the compute_loss_fn
@@ -377,6 +380,11 @@ def optuna_objective(trial, params, init, loss_fn, constraint_fn, device='cuda')
         batches = [torch.from_numpy(arr).to(device=device) for arr in batches_np]
         
         batch_losses = recon_step(batches, grad_accumulation, model, optimizer, scheduler, loss_fn, constraint_fn, niter, compute_loss_fn=compute_loss_fn, scheduler_step_unit=scheduler_step_unit)
+
+        ## Convergence monitoring snapshot
+        if monitor is not None and monitor.should_step(niter, SAVE_ITERS):
+            with torch.no_grad():
+                monitor.step(model, niter)
 
         ## Saving intermediate results
         if SAVE_ITERS is not None and niter % SAVE_ITERS == 0:

@@ -137,6 +137,8 @@ class PtychoModel(torch.nn.Module):
             self.dz_iters               = []
             self.avg_tilt_iters         = []
             self.lr_iters               = defaultdict(list)
+            self.convergence_iters      = defaultdict(list)
+            self.convergence_threshold  = None
             self.recon_provenance       = init_variables['recon_provenance']
 
             # Create grids for shifting

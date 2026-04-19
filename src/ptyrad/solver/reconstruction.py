@@ -14,6 +14,7 @@ from ptyrad.io.save import make_output_folder, safe_filename, save_results
 from ptyrad.params.parser import copy_params_to_dir
 from ptyrad.plotting.basic import plot_pos_grouping
 from ptyrad.plotting.model import plot_summary
+from ptyrad.runtime.convergence import create_convergence_monitor
 from ptyrad.runtime.seed import set_random_seed
 from ptyrad.solver.grouping import (
     remap_batches_to_global,
@@ -501,6 +502,9 @@ def recon_loop(model, init, params, optimizer, scheduler, loss_fn, constraint_fn
 
     scheduler_step_unit = (params.get('model_params', {}).get('scheduler_params') or {}).get('step_unit', 'iter')
 
+    convergence_monitor_params = recon_params.get('convergence_monitor')
+    monitor = create_convergence_monitor(convergence_monitor_params, model_instance)
+
     logger.info("### Start the PtyRAD iterative ptycho reconstruction ###")
 
     # Initialize the compute_loss_fn and optimizer.step
@@ -526,7 +530,12 @@ def recon_loop(model, init, params, optimizer, scheduler, loss_fn, constraint_fn
 
         # Only log the main process
         if acc is None or acc.is_main_process:
-            
+
+            ## Convergence monitoring snapshot
+            if monitor is not None and monitor.should_step(niter, SAVE_ITERS):
+                with torch.no_grad():
+                    monitor.step(model_instance, niter)
+
             ## Saving intermediate results
             if SAVE_ITERS is not None and niter % SAVE_ITERS == 0:
                 with torch.no_grad():

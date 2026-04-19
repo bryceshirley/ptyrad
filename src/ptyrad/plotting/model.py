@@ -12,6 +12,7 @@ import torch
 from ptyrad.io.save import safe_filename
 
 from .basic import (
+    plot_convergence_metrics,
     plot_loss_curves,
     plot_obj_tilts,
     plot_obj_tilts_avg,
@@ -132,7 +133,19 @@ def plot_summary(output_path, model, niter, indices, init_variables, selected_fi
             fig_slice_thickness.show()
         if save_fig:
             fig_slice_thickness.savefig(safe_filename(output_path + f"/summary_slice_thickness{collate_str}{iter_str}.png"))
-    
+
+    # Convergence metrics
+    if 'convergence' in selected_figs or 'all' in selected_figs:
+        if model.convergence_iters:
+            threshold = getattr(model, 'convergence_threshold', 1e-4) or 1e-4
+            for tensor_name, history in model.convergence_iters.items():
+                fig_conv = plot_convergence_metrics({tensor_name: history}, threshold=threshold, show_fig=show_fig, pass_fig=True)
+                if fig_conv is not None:
+                    if show_fig:
+                        fig_conv.show()
+                    if save_fig:
+                        fig_conv.savefig(safe_filename(output_path + f"/summary_convergence_{tensor_name}{collate_str}{iter_str}.png"))
+
     # Close figures after saving
     plt.close('all')
     

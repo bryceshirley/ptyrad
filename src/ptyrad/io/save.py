@@ -214,6 +214,7 @@ def make_save_dict(output_path, model, params, optimizer, scheduler, niter, indi
                 'iter_times'            : model.iter_times,
                 'dz_iters'              : model.dz_iters,
                 'lr_iters'              : model.lr_iters,
+                'convergence_iters'     : dict(model.convergence_iters),
                 'avg_iter_t'            : avg_iter_t,
                 'niter'                 : niter,
                 'indices'               : indices,

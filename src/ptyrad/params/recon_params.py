@@ -65,6 +65,38 @@ class CompilerConfigs(BaseModel):
     mode: Literal['default', 'reduce-overhead', 'max-autotune', 'max-autotune-no-cudagraphs'] = Field(default='default')
     options: Optional[dict[str, Union[str, int, bool]]] = Field(default=None)
 
+class ConvergenceMonitorParams(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    tensors: List[
+        Literal["obja", "objp", "probe", "probe_pos_shifts", "slice_thickness", "obj_tilts"]
+    ] = Field(
+        default=["obja", "objp", "probe"],
+        min_length=1,
+    )
+    """
+    Which optimizable tensors to track convergence for. Default covers the three highest-dimensional
+    tensors. 'obja' and 'objp' use relative Frobenius norm change. 'probe' tracks amplitude and
+    phase change separately (both as relative Frobenius). 'probe_pos_shifts' uses RMS displacement
+    change (pixels). 'slice_thickness' and 'obj_tilts' use absolute change (Å and mrad).
+    """
+
+    every_n_iters: Optional[int] = Field(default=None, ge=1)
+    """
+    Snapshot interval in iterations. When null (default), aligns with SAVE_ITERS so convergence
+    snapshots happen at the same cadence as result saving. When set explicitly, snapshots are taken
+    at every_n_iters regardless of SAVE_ITERS. Has no effect if both every_n_iters and SAVE_ITERS
+    are null (monitor silently disabled).
+    """
+
+    threshold: float = Field(default=1e-4, gt=0.0)
+    """
+    Convergence threshold for the relative Frobenius change metric. Used as a visual reference line
+    in convergence plots and for one-time INFO log messages when a tensor first drops below it.
+    Does not auto-stop the reconstruction.
+    """
+
+
 class ReconParams(BaseModel):
     """
     The PtyRAD results are organized into folder structures with 2 (reconstruction) or 3 (hypertune) levels not including the 'output/'. 
@@ -282,12 +314,13 @@ class ReconParams(BaseModel):
 
     selected_figs: List[
         Literal[
-            "loss", "learning_rates", "forward", "probe_r_amp", "probe_k_amp", "probe_k_phase", "pos", "tilt", "tilt_avg", "slice_thickness", "all"
+            "loss", "learning_rates", "forward", "probe_r_amp", "probe_k_amp", "probe_k_phase", "pos", "tilt", "tilt_avg", "slice_thickness", "convergence", "all"
         ]
     ] = Field(default=["loss", "forward", "probe_r_amp", "pos"], description="Figures to plot/save")
     """
-    This list specified the selected figures that will be plotted/saved. 
-    The available strings are 'loss', 'learning_rates', 'forward', 'probe_r_amp', 'probe_k_amp', 'probe_k_phase', 'pos', 'tilt', 'tilt_avg', 'slice_thickness', and 'all'.
+    This list specified the selected figures that will be plotted/saved.
+    The available strings are 'loss', 'learning_rates', 'forward', 'probe_r_amp', 'probe_k_amp', 'probe_k_phase', 'pos', 'tilt', 'tilt_avg', 'slice_thickness', 'convergence', and 'all'.
+    'convergence' requires convergence_monitor to be configured; it is silently skipped otherwise.
     The suggested value is ['loss', 'forward', 'probe_r_amp', 'pos'].
     """
 
@@ -302,11 +335,20 @@ class ReconParams(BaseModel):
     This dict specifies the PyTorch JIT compiler configurations.
     Set to {'enable': true} to enable PyTorch JIT compilation for a 1.3-1.9x speedup on supported hardware.
     See https://docs.pytorch.org/docs/stable/generated/torch.compile.html for more details.
-    
+
     Generally, for torch.compile with Triton, you'll need CUDA GPU with Compute Capability >= 7.0.
     Linux and macOS should support the PyTorch JIT compiler out-of-the-box.
     For Windows users, please follow the instruction and download `triton-windows` from https://github.com/woct0rdho/triton-windows.
     """
+
+    convergence_monitor: Optional[ConvergenceMonitorParams] = Field(default=None)
+    """
+    Convergence monitoring configuration. When set, periodically snapshots optimizable tensors
+    and tracks how they change over the reconstruction. Add 'convergence' to selected_figs to
+    generate convergence plots at each save interval.
+    Example: {tensors: [obja, objp, probe], every_n_iters: null, threshold: 1.0e-4}.
+    """
+
     # Note that this validator allows users to explictly set `'compiler_configs': null` to reset to default behavior
     # This makes it convenient to switch off without deleting or commenting out the line (especially when they don't know the switch is {'enable': False})
     @model_validator(mode="after")
@@ -322,4 +364,5 @@ __all__ = [
     "BatchSize",
     "ResultModes",
     "CompilerConfigs",
+    "ConvergenceMonitorParams",
 ]

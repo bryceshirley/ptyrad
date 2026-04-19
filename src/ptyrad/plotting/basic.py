@@ -401,16 +401,16 @@ def plot_probe_modes(init_probe=None, opt_probe=None, amp_or_phase='amplitude', 
             raise ValueError("Please use 'amplitude' or 'phase' for probe mode visualization!")
 
         processed_probes.append(probe)
-        
+
     # Parse variables
     non_none = [(label, probe, probe_pow) for label, probe, probe_pow in zip(labels, processed_probes, probes_pow) if probe is not None]
     n_modes = non_none[0][1].shape[0] # non_none[0][1] would be probe, probe = (pmode, Ny, Nx)
     rows = len(non_none)
-    
+
     # Actual plotting
     plt.ioff() # Temporaily disable the interactive plotting mode
     fig, axs = plt.subplots(rows, n_modes, figsize=(n_modes*2.5, rows*3), dpi=dpi)
-    
+
     # Normalize axs shapes
     axs = np.asarray(axs)
     if axs.ndim == 0:
@@ -420,7 +420,7 @@ def plot_probe_modes(init_probe=None, opt_probe=None, amp_or_phase='amplitude', 
             axs = axs.reshape(1, n_modes)
         else:
             axs = axs.reshape(rows, 1)
-    
+
     for row_idx, (label, probe, probe_pow) in enumerate(non_none):
         for i in range(n_modes):
             ax = axs[row_idx, i]
@@ -428,10 +428,61 @@ def plot_probe_modes(init_probe=None, opt_probe=None, amp_or_phase='amplitude', 
             im = ax.imshow(probe[i], cmap=cmap)
             ax.axis('off')
             fig.colorbar(im, ax=ax, shrink=0.6)
-    
+
     plt.suptitle(f"Probe modes {amp_or_phase} in {real_or_fourier} space", fontsize=18)
     plt.tight_layout()
     if show_fig:
         plt.show()
     if pass_fig:
         return fig
+
+
+# Metric labels and whether to use log Y-scale per tensor key
+_CONVERGENCE_LABELS = {
+    "obja":             ("Relative Frobenius change", True),
+    "objp":             ("Relative Frobenius change", True),
+    "probe_amp":        ("Relative Frobenius change (amplitude)", True),
+    "probe_phase":      ("Relative Frobenius change (phase)", True),
+    "probe_pos_shifts": ("RMS shift change [px]", False),
+    "slice_thickness":  ("Absolute change [Å]", False),
+    "obj_tilts":        ("Mean absolute change [mrad]", False),
+}
+
+
+def plot_convergence_metrics(convergence_iters, threshold=1e-4, show_fig=True, pass_fig=False):
+    """Plot iter-to-iter convergence metric for a single tracked tensor."""
+    assert len(convergence_iters) == 1, "Pass one tensor at a time via a single-key dict."
+    tensor_name, history = next(iter(convergence_iters.items()))
+
+    if not history:
+        return None
+
+    data = np.array(history)  # shape (N, 2): [niter, iter_change]
+    niters    = data[:, 0]
+    iter_vals = data[:, 1]
+
+    ylabel, use_log = _CONVERGENCE_LABELS.get(tensor_name, ("Change metric", True))
+    last_iter = int(niters[-1])
+
+    plt.ioff()
+    fig, ax = plt.subplots(figsize=(6, 4))
+
+    ax.plot(niters, iter_vals, marker='o', linewidth=1.5, markersize=4)
+    ax.axhline(threshold, color='r', linestyle='--', linewidth=1, label=f'threshold {threshold:.1e}')
+    ax.set_xlabel('Iteration', fontsize=13)
+    ax.set_ylabel(ylabel, fontsize=13)
+    ax.set_title(f'Convergence: {tensor_name} at iter {last_iter}', fontsize=14)
+    ax.xaxis.set_major_locator(ticker.MaxNLocator(integer=True))
+    if use_log and np.any(iter_vals > 0):
+        ax.set_yscale('log')
+    ax.legend(fontsize=11)
+    ax.grid(True, linestyle=':', alpha=0.5)
+    ax.tick_params(axis='both', which='major', labelsize=11)
+
+    plt.tight_layout()
+    if show_fig:
+        plt.show()
+    if pass_fig:
+        return fig
+    else:
+        plt.close(fig)
