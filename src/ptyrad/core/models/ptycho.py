@@ -135,7 +135,7 @@ class PtychoModel(torch.nn.Module):
             self.loss_iters             = []
             self.iter_times             = []
             self.dz_iters               = []
-            self.avg_tilt_iters         = []
+            self.avg_tilt_iters         = defaultdict(list)
             self.lr_iters               = defaultdict(list)
             self.convergence_iters      = defaultdict(list)
             self.convergence_threshold  = None

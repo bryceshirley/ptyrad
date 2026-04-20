@@ -43,11 +43,9 @@ def plot_sigmoid_mask(Npix, relative_radius, relative_width, img=None, show_circ
 
 def plot_obj_tilts_avg(avg_tilt_iters, last_n_iters=2, show_fig=True, pass_fig=False):
     last_n_iters = int(last_n_iters)
-    
-    # Unpack iteration numbers and tilt values
-    iters, tilts = zip(*avg_tilt_iters)  # Separates into two tuples
-    tilts = np.vstack(tilts)  # Converts list of (1,2) arrays to (N,2) array
-    iters = np.array(iters)  # Convert iteration numbers to a NumPy array
+
+    iters = np.array(avg_tilt_iters['niter'])
+    tilts = np.column_stack([avg_tilt_iters['tilt_y'], avg_tilt_iters['tilt_x']])
 
     plt.ioff()  # Temporarily disable interactive mode
     fig, axes = plt.subplots(nrows=2, ncols=1, figsize=(8, 10), sharex=True)
@@ -450,6 +448,11 @@ _CONVERGENCE_PANEL_TITLES = {
 }
 
 
+def _is_empty(x):
+    """Return True for None or zero-length lists/ndarrays (avoids ambiguous ndarray truth test)."""
+    return x is None or len(x) == 0
+
+
 def _panel_no_data(ax, label):
     ax.text(0.5, 0.5, f'{label}\n(no data)', transform=ax.transAxes,
             ha='center', va='center', fontsize=12, color='lightgray')
@@ -457,41 +460,83 @@ def _panel_no_data(ax, label):
     ax.set_yticks([])
 
 
-def _kneedle_start_idx(values):
-    """Return the index of the geometric 'knee' in ``values`` (Kneedle algorithm).
+def _iter_to_idx(niters, iter_offset):
+    """Return the array index of the first entry at or after ``iter_offset``.
 
-    Normalises both axes to [0, 1] and finds the point of maximum perpendicular distance
-    from the chord connecting the first and last points. Returns 0 for short or flat series.
+    Uses binary search on the iteration column so panels with different logging
+    strides (e.g. every iter vs every 50 iters) each resolve the correct index.
     """
-    n = len(values)
+    return int(np.searchsorted(niters, iter_offset, side='left'))
+
+
+def _standard_kneedle(y, offset=0):
+    """Core Kneedle: max perpendicular distance from the first-to-last chord.
+
+    Returns the index into the *original* array (offset + local argmax).
+    Assumes y is a flat float ndarray with at least 3 elements and non-zero range.
+    """
+    n = len(y)
     if n < 3:
-        return 0
-    y = np.asarray(values, dtype=float)
+        return offset
     y_range = y.max() - y.min()
     if y_range == 0:
-        return 0
+        return offset
     x_norm = np.arange(n, dtype=float) / (n - 1)
     y_norm = (y - y.min()) / y_range
-    # Chord from first to last point; perpendicular distances via cross-product
     chord = np.array([x_norm[-1] - x_norm[0], y_norm[-1] - y_norm[0]])
     chord_len = np.linalg.norm(chord)
     if chord_len == 0:
-        return 0
+        return offset
     chord_unit = chord / chord_len
     vecs = np.column_stack((x_norm - x_norm[0], y_norm - y_norm[0]))
     distances = np.abs(vecs[:, 0] * chord_unit[1] - vecs[:, 1] * chord_unit[0])
-    return int(np.argmax(distances))
+    return offset + int(np.argmax(distances))
 
 
-def _draw_loss_panel(ax, loss_iters):
-    if not loss_iters:
+def _double_kneedle(y):
+    """Run Kneedle twice: find the first knee, then find the knee in its tail."""
+    first_knee = _standard_kneedle(y)
+    return _standard_kneedle(y[first_knee:], offset=first_knee)
+
+
+def _kneedle_start_idx(values):
+    """Smart Kneedle router — picks the best strategy based on dynamic range.
+
+    * Small dynamic range (ratio < 2, e.g. loss on a large baseline): log-space
+      compression is useless, so double Kneedle zooms into the converging tail.
+    * Large dynamic range with all-positive values: log-space linearises the
+      exponential decay; falls back to double Kneedle if the log knee is still
+      stuck in the first 5% of the series.
+    * Non-positive values: plain Kneedle in linear space.
+    """
+    y = np.asarray(values, dtype=float)
+    n = len(y)
+    if n < 3 or y.max() == y.min():
+        return 0
+
+    dynamic_ratio = y.max() / (y.min() + 1e-9)
+
+    if dynamic_ratio < 2.0:
+        return _double_kneedle(y)
+
+    if np.all(y > 0):
+        log_knee = _standard_kneedle(np.log(y))
+        if log_knee < n * 0.05:
+            return _double_kneedle(y)
+        return log_knee
+
+    return _standard_kneedle(y)
+
+
+def _draw_loss_panel(ax, loss_iters, iter_offset=None):
+    if _is_empty(loss_iters):
         _panel_no_data(ax, 'Loss')
         return
     data      = np.array(loss_iters)
     niters    = data[:, 0]
     vals      = data[:, 1]
-    knee_idx  = _kneedle_start_idx(vals)
-    ax.plot(niters[knee_idx:], vals[knee_idx:], marker='o', linewidth=1.5, markersize=3,
+    start     = _iter_to_idx(niters, iter_offset) if iter_offset is not None else _kneedle_start_idx(vals)
+    ax.plot(niters[start:], vals[start:], marker='o', linewidth=1.5, markersize=3,
             label=f'Loss: {vals[-1]:.5f}')
     ax.set_xlabel('Iteration', fontsize=12)
     ax.set_ylabel('Loss', fontsize=12)
@@ -502,15 +547,17 @@ def _draw_loss_panel(ax, loss_iters):
     ax.tick_params(labelsize=10)
 
 
-def _draw_lr_panel(ax, lr_iters):
-    if not lr_iters or not lr_iters.get('niter'):
+def _draw_lr_panel(ax, lr_iters, iter_offset=None):
+    if not lr_iters or _is_empty(lr_iters.get('niter')):
         _panel_no_data(ax, 'Learning rates')
         return
+    niters = np.asarray(lr_iters['niter'])
+    start  = _iter_to_idx(niters, iter_offset) if iter_offset is not None else 0
     styles = cycle(['-', '--', '-.', ':'])
     colors = cycle(plt.cm.tab10.colors)
     for name in [k for k in lr_iters if k != 'niter']:
-        vals = lr_iters[name]
-        ax.plot(lr_iters['niter'], vals, label=f'{name}: {vals[-1]:.3e}',
+        vals = np.asarray(lr_iters[name])
+        ax.plot(niters[start:], vals[start:], label=f'{name}: {vals[-1]:.3e}',
                 linestyle=next(styles), color=next(colors), linewidth=1.5)
     ax.set_yscale('log')
     ax.set_xlabel('Iteration', fontsize=12)
@@ -522,14 +569,15 @@ def _draw_lr_panel(ax, lr_iters):
     ax.tick_params(labelsize=10)
 
 
-def _draw_dz_panel(ax, dz_iters):
-    if not dz_iters:
+def _draw_dz_panel(ax, dz_iters, iter_offset=None):
+    if _is_empty(dz_iters):
         _panel_no_data(ax, 'Slice thickness')
         return
     data   = np.array(dz_iters)
     niters = data[:, 0]
     vals   = data[:, 1]
-    ax.plot(niters, vals, marker='o', linewidth=1.5, markersize=3,
+    start  = _iter_to_idx(niters, iter_offset) if iter_offset is not None else 0
+    ax.plot(niters[start:], vals[start:], marker='o', linewidth=1.5, markersize=3,
             label=f'{vals[-1]:.4f} Å')
     ax.set_xlabel('Iteration', fontsize=12)
     ax.set_ylabel('dz (Å)', fontsize=12)
@@ -540,17 +588,18 @@ def _draw_dz_panel(ax, dz_iters):
     ax.tick_params(labelsize=10)
 
 
-def _draw_tilt_panel(ax, avg_tilt_iters):
-    if not avg_tilt_iters:
+def _draw_tilt_panel(ax, avg_tilt_iters, iter_offset=None):
+    if not avg_tilt_iters or _is_empty(avg_tilt_iters.get('niter')):
         _panel_no_data(ax, 'Object tilts')
         return
-    iters, tilts = zip(*avg_tilt_iters)
-    tilts = np.vstack(tilts)
-    iters = np.array(iters)
-    ax.plot(iters, tilts[:, 0], linewidth=1.5, marker='o', markersize=3,
-            label=f'tilt_y: {tilts[-1, 0]:.3f} mrad')
-    ax.plot(iters, tilts[:, 1], linewidth=1.5, marker='o', markersize=3,
-            label=f'tilt_x: {tilts[-1, 1]:.3f} mrad')
+    iters  = np.array(avg_tilt_iters['niter'])
+    tilt_y = np.array(avg_tilt_iters['tilt_y'])
+    tilt_x = np.array(avg_tilt_iters['tilt_x'])
+    start  = _iter_to_idx(iters, iter_offset) if iter_offset is not None else 0
+    ax.plot(iters[start:], tilt_y[start:], linewidth=1.5, marker='o', markersize=3,
+            label=f'tilt_y: {tilt_y[-1]:.3f} mrad')
+    ax.plot(iters[start:], tilt_x[start:], linewidth=1.5, marker='o', markersize=3,
+            label=f'tilt_x: {tilt_x[-1]:.3f} mrad')
     ax.set_xlabel('Iteration', fontsize=12)
     ax.set_ylabel('Object tilts (mrad)', fontsize=12)
     ax.set_title('Object tilts', fontsize=13)
@@ -566,12 +615,13 @@ _CONVERGENCE_YLABELS = {
 }
 
 
-def _draw_convergence_panel(ax, tensor_name, convergence_iters):
+def _draw_convergence_panel(ax, tensor_name, convergence_iters, iter_offset=None):
     """Draw a convergence panel for ``tensor_name``.
 
     For 'obja'/'objp', draws bg (C0) and fg (C1) lines from the ``_bg``/``_fg`` sub-keys.
     For other tensors, draws a single line from the matching key.
-    All panels apply the Kneedle algorithm to start the x-axis at the convergence region.
+    If ``iter_offset`` is given, both lines are clipped to that iteration number;
+    otherwise the smart Kneedle router determines the start index.
     ``convergence_iters`` is the full ci dict (not a single history list).
     """
     title = _CONVERGENCE_PANEL_TITLES.get(tensor_name, tensor_name)
@@ -579,29 +629,32 @@ def _draw_convergence_panel(ax, tensor_name, convergence_iters):
     if tensor_name in ("obja", "objp"):
         bg_hist = convergence_iters.get(f"{tensor_name}_bg", [])
         fg_hist = convergence_iters.get(f"{tensor_name}_fg", [])
-        if not bg_hist and not fg_hist:
+        if _is_empty(bg_hist) and _is_empty(fg_hist):
             _panel_no_data(ax, title)
             return
         ylabel  = "Mean |Δ| (abs change)"
-        bg_data = np.array(bg_hist) if bg_hist else None
-        fg_data = np.array(fg_hist) if fg_hist else None
-        knees   = [_kneedle_start_idx(d[:, 1]) for d in [bg_data, fg_data] if d is not None]
-        knee_idx = min(knees)
+        bg_data = np.array(bg_hist) if not _is_empty(bg_hist) else None
+        fg_data = np.array(fg_hist) if not _is_empty(fg_hist) else None
+        if iter_offset is not None:
+            ref = next(d for d in [bg_data, fg_data] if d is not None)
+            start = _iter_to_idx(ref[:, 0], iter_offset)
+        else:
+            start = max(_kneedle_start_idx(d[:, 1]) for d in [bg_data, fg_data] if d is not None)
         for data_arr, suffix, color in [(bg_data, "bg", "C0"), (fg_data, "fg", "C1")]:
             if data_arr is None:
                 continue
-            sl = data_arr[knee_idx:]
+            sl = data_arr[start:]
             ax.plot(sl[:, 0], sl[:, 1], marker='o', linewidth=1.5, markersize=3, color=color,
                     label=f'{suffix}: {sl[-1, 1]:.3e}')
     else:
         hist = convergence_iters.get(tensor_name, [])
         ylabel = _CONVERGENCE_YLABELS.get(tensor_name, "Change")
-        if not hist:
+        if _is_empty(hist):
             _panel_no_data(ax, title)
             return
-        data     = np.array(hist)
-        knee_idx = _kneedle_start_idx(data[:, 1])
-        ax.plot(data[knee_idx:, 0], data[knee_idx:, 1], marker='o', linewidth=1.5, markersize=3,
+        data  = np.array(hist)
+        start = _iter_to_idx(data[:, 0], iter_offset) if iter_offset is not None else _kneedle_start_idx(data[:, 1])
+        ax.plot(data[start:, 0], data[start:, 1], marker='o', linewidth=1.5, markersize=3,
                 label=f'{tensor_name}: {data[-1, 1]:.3e}')
 
     ax.set_xlabel('Iteration', fontsize=12)
@@ -614,17 +667,17 @@ def _draw_convergence_panel(ax, tensor_name, convergence_iters):
 
 
 def _get_last_iter(loss_iters, convergence_iters):
-    if loss_iters:
+    if not _is_empty(loss_iters):
         return int(np.array(loss_iters)[-1, 0])
     for hist in (convergence_iters or {}).values():
-        if hist:
-            return int(hist[-1][0])
+        if not _is_empty(hist):
+            return int(np.array(hist)[-1, 0])
     return None
 
 
 def plot_convergence_dashboard(loss_iters, lr_iters, dz_iters, avg_tilt_iters,
                                convergence_iters, threshold=1e-4,
-                               show_fig=True, pass_fig=False):
+                               iter_offset=None, show_fig=True, pass_fig=False):
     """Unified dashboard of all scalar time-series in a fixed 2x4 grid.
 
     Layout::
@@ -633,6 +686,10 @@ def plot_convergence_dashboard(loss_iters, lr_iters, dz_iters, avg_tilt_iters,
         Row 1: LR   | Probe amplitude | Probe position shifts | Slice thickness
 
     Panels with no data show a blank placeholder so the layout stays fixed across save cycles.
+    ``iter_offset`` sets the starting iteration for all panels; if None, each panel
+    determines its own start via the smart Kneedle router. Because panels have different
+    logging strides (e.g. loss every iter, convergence metrics every 50 iters), each
+    panel independently converts the iteration number to its own array index.
     ``threshold`` is accepted for API compatibility but not currently plotted — per-tensor
     threshold specification is planned (see TODO in runtime/convergence.py).
     """
@@ -642,14 +699,14 @@ def plot_convergence_dashboard(loss_iters, lr_iters, dz_iters, avg_tilt_iters,
     plt.ioff()
     fig, axes = plt.subplots(2, 4, figsize=(20, 8), squeeze=False)
 
-    _draw_loss_panel        (axes[0, 0], loss_iters)
-    _draw_convergence_panel (axes[0, 1], 'obja',             ci)
-    _draw_convergence_panel (axes[0, 2], 'objp',             ci)
-    _draw_tilt_panel        (axes[0, 3], avg_tilt_iters)
-    _draw_lr_panel          (axes[1, 0], lr_iters)
-    _draw_convergence_panel (axes[1, 1], 'probe',            ci)
-    _draw_convergence_panel (axes[1, 2], 'probe_pos_shifts', ci)
-    _draw_dz_panel          (axes[1, 3], dz_iters)
+    _draw_loss_panel        (axes[0, 0], loss_iters,                    iter_offset)
+    _draw_convergence_panel (axes[0, 1], 'obja',             ci,        iter_offset)
+    _draw_convergence_panel (axes[0, 2], 'objp',             ci,        iter_offset)
+    _draw_tilt_panel        (axes[0, 3], avg_tilt_iters,                iter_offset)
+    _draw_lr_panel          (axes[1, 0], lr_iters,                      iter_offset)
+    _draw_convergence_panel (axes[1, 1], 'probe',            ci,        iter_offset)
+    _draw_convergence_panel (axes[1, 2], 'probe_pos_shifts', ci,        iter_offset)
+    _draw_dz_panel          (axes[1, 3], dz_iters,                      iter_offset)
 
     if last_iter is not None:
         fig.suptitle(f"Convergence Dashboard at Iter {last_iter}", fontsize=16)

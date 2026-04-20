@@ -734,7 +734,10 @@ def recon_step(batches, grad_accumulation, model, optimizer, scheduler, loss_fn,
     model_instance.loss_iters.append((niter, loss_logger(batch_losses, niter, iter_t)))
     model_instance.iter_times.append(iter_t)
     model_instance.dz_iters.append((niter, model_instance.opt_slice_thickness.detach().cpu().numpy()))
-    model_instance.avg_tilt_iters.append((niter, model_instance.opt_obj_tilts.detach().mean(0).cpu().numpy()))
+    avg_tilts = model_instance.opt_obj_tilts.detach().mean(0).cpu().numpy()
+    model_instance.avg_tilt_iters['niter'].append(niter)
+    model_instance.avg_tilt_iters['tilt_y'].append(float(avg_tilts[0]))
+    model_instance.avg_tilt_iters['tilt_x'].append(float(avg_tilts[1]))
     return batch_losses
 
 # ==============================================================================
