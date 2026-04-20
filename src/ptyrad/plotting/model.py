@@ -135,7 +135,6 @@ def plot_summary(output_path, model, niter, indices, init_variables, selected_fi
             fig_slice_thickness.savefig(safe_filename(output_path + f"/summary_slice_thickness{collate_str}{iter_str}.png"))
 
     # Convergence dashboard — unified time-series figure (loss, LR, dz, tilts, tensor metrics).
-    # Saved with a fixed filename (no iter suffix) since the full history is always shown.
     # Old standalone keys 'loss', 'slice_thickness', 'tilt_avg' still work as aliases above.
     if 'convergence' in selected_figs or 'all' in selected_figs:
         threshold = getattr(model, 'convergence_threshold', 1e-4) or 1e-4
@@ -153,7 +152,7 @@ def plot_summary(output_path, model, niter, indices, init_variables, selected_fi
             if show_fig:
                 fig_conv.show()
             if save_fig:
-                fig_conv.savefig(safe_filename(output_path + f"/summary_convergence{collate_str}.png"))
+                fig_conv.savefig(safe_filename(output_path + f"/summary_convergence{collate_str}{iter_str}.png"))
 
     # Close figures after saving
     plt.close('all')

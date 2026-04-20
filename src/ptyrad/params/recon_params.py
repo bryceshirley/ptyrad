@@ -76,9 +76,14 @@ class ConvergenceMonitorParams(BaseModel):
     )
     """
     Which optimizable tensors to track convergence for.
-    - 'obja', 'objp': relative Frobenius norm change of object amplitude/phase.
-    - 'probe': relative Frobenius norm change of probe amplitude (real-space).
-    - 'probe_pos_shifts': RMS displacement change in Å.
+    - 'obja': mean absolute change of (1 - obja) in the scanned ROI, split into background
+      (pixels below p_low) and signal (pixels above p_high) regions. Stored as obja_bg / obja_fg.
+      The 1-obja transform maps vacuum → 0 and material → >0 for a consistent sign convention.
+    - 'objp': same percentile-masked mean absolute change applied to objp directly, stored as
+      objp_bg / objp_fg.
+    - 'probe': fractional intensity change (sum|ΔI|/sum(I)) of mode-summed probe intensity
+      (robust to mode-order switching).
+    - 'probe_pos_shifts': RMS displacement change in Å between consecutive snapshots.
     'slice_thickness' and 'obj_tilts' are excluded — they are already recorded every iteration
     via model.dz_iters and model.avg_tilt_iters and plotted directly by the dashboard.
     """
@@ -89,14 +94,45 @@ class ConvergenceMonitorParams(BaseModel):
     snapshots happen at the same cadence as result saving. When set explicitly, snapshots are taken
     at every_n_iters regardless of SAVE_ITERS. Has no effect if both every_n_iters and SAVE_ITERS
     are null (monitor silently disabled).
+    Note: each metric measures the accumulated change since the previous snapshot, so its magnitude
+    scales with this interval. The threshold should be interpreted and tuned relative to the chosen
+    cadence — a coarser interval accumulates more change per step and keeps metric values well above
+    the noise floor. Tracking every iteration is not recommended; 10–50 iters (matching SAVE_ITERS)
+    is the intended use.
     """
 
     threshold: float = Field(default=1e-4, gt=0.0)
     """
-    Convergence threshold for the relative Frobenius change metric. Used as a visual reference line
-    in convergence plots and for one-time INFO log messages when a tensor first drops below it.
-    Does not auto-stop the reconstruction.
+    Convergence threshold applied to all tracked metrics. Triggers a one-time INFO log message
+    when a metric first drops below it. Does not auto-stop the reconstruction.
+    Note: the threshold is implicitly coupled to every_n_iters — the same value means something
+    very different at 1-iter vs 50-iter cadence. Re-evaluate the threshold if you change the
+    snapshot interval.
     """
+
+    percentile_range: List[float] = Field(
+        default=[15.0, 85.0],
+        min_length=2,
+        max_length=2,
+        description=(
+            "[p_low, p_high] percentile thresholds (0-100) for obja/objp masking. "
+            "Background metric uses pixels below p_low; signal metric uses pixels above p_high."
+        ),
+    )
+    """
+    Percentile range [p_low, p_high] used to separate background from signal pixels when computing
+    obja and objp convergence metrics. The background metric tracks mean |Δ| for pixels below p_low
+    (vacuum/near-vacuum region), and the signal metric tracks mean |Δ| for pixels above p_high
+    (material region). The middle range [p_low, p_high] is excluded to avoid the transition boundary.
+    Has no effect on probe or probe_pos_shifts metrics.
+    """
+
+    @field_validator("percentile_range")
+    @classmethod
+    def _validate_percentile_range(cls, v: List[float]) -> List[float]:
+        if not (0.0 <= v[0] < v[1] <= 100.0):
+            raise ValueError("percentile_range must satisfy 0 <= p_low < p_high <= 100")
+        return v
 
 
 class ReconParams(BaseModel):

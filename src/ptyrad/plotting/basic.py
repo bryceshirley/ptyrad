@@ -437,15 +437,6 @@ def plot_probe_modes(init_probe=None, opt_probe=None, amp_or_phase='amplitude', 
         return fig
 
 
-# Metric labels and whether to use log Y-scale per tensor key
-_CONVERGENCE_LABELS = {
-    "obja":             ("Relative Frobenius change", True),
-    "objp":             ("Relative Frobenius change", True),
-    "probe":            ("Relative Frobenius change", True),
-    "probe_pos_shifts": ("RMS shift change (Å)", False),
-}
-
-
 # ---------------------------------------------------------------------------
 # Dashboard helpers — one per panel type, each draws into a provided Axes
 # ---------------------------------------------------------------------------
@@ -454,7 +445,7 @@ _CONVERGENCE_LABELS = {
 _CONVERGENCE_PANEL_TITLES = {
     "obja":             "Object amplitude",
     "objp":             "Object phase",
-    "probe":            "Probe amplitude",
+    "probe":            "Probe intensity",
     "probe_pos_shifts": "Probe position shifts",
 }
 
@@ -466,23 +457,42 @@ def _panel_no_data(ax, label):
     ax.set_yticks([])
 
 
+def _kneedle_start_idx(values):
+    """Return the index of the geometric 'knee' in ``values`` (Kneedle algorithm).
+
+    Normalises both axes to [0, 1] and finds the point of maximum perpendicular distance
+    from the chord connecting the first and last points. Returns 0 for short or flat series.
+    """
+    n = len(values)
+    if n < 3:
+        return 0
+    y = np.asarray(values, dtype=float)
+    y_range = y.max() - y.min()
+    if y_range == 0:
+        return 0
+    x_norm = np.arange(n, dtype=float) / (n - 1)
+    y_norm = (y - y.min()) / y_range
+    # Chord from first to last point; perpendicular distances via cross-product
+    chord = np.array([x_norm[-1] - x_norm[0], y_norm[-1] - y_norm[0]])
+    chord_len = np.linalg.norm(chord)
+    if chord_len == 0:
+        return 0
+    chord_unit = chord / chord_len
+    vecs = np.column_stack((x_norm - x_norm[0], y_norm - y_norm[0]))
+    distances = np.abs(vecs[:, 0] * chord_unit[1] - vecs[:, 1] * chord_unit[0])
+    return int(np.argmax(distances))
+
+
 def _draw_loss_panel(ax, loss_iters):
     if not loss_iters:
         _panel_no_data(ax, 'Loss')
         return
-    data   = np.array(loss_iters)
-    niters = data[:, 0]
-    vals   = data[:, 1]
-    ax.plot(niters, vals, marker='o', linewidth=1.5, markersize=3,
+    data      = np.array(loss_iters)
+    niters    = data[:, 0]
+    vals      = data[:, 1]
+    knee_idx  = _kneedle_start_idx(vals)
+    ax.plot(niters[knee_idx:], vals[knee_idx:], marker='o', linewidth=1.5, markersize=3,
             label=f'Loss: {vals[-1]:.5f}')
-    if len(data) > 20:
-        axins = ax.inset_axes([0.45, 0.3, 0.4, 0.5])
-        axins.plot(niters[-10:], vals[-10:], marker='o', markersize=3)
-        axins.set_xlabel('Iteration', fontsize=9)
-        axins.yaxis.set_major_formatter(ticker.StrMethodFormatter('{x:.5f}'))
-        axins.set_title('Last 10 iters', fontsize=9, pad=4)
-        axins.grid(True, linestyle=':', alpha=0.5)
-        ax.indicate_inset_zoom(axins, edgecolor='gray')
     ax.set_xlabel('Iteration', fontsize=12)
     ax.set_ylabel('Loss', fontsize=12)
     ax.set_title('Loss', fontsize=13)
@@ -550,23 +560,54 @@ def _draw_tilt_panel(ax, avg_tilt_iters):
     ax.tick_params(labelsize=10)
 
 
-def _draw_convergence_panel(ax, tensor_name, history):
-    title  = _CONVERGENCE_PANEL_TITLES.get(tensor_name, tensor_name)
-    ylabel, use_log = _CONVERGENCE_LABELS.get(tensor_name, ('Change', True))
-    if not history:
-        _panel_no_data(ax, title)
-        return
-    data   = np.array(history)  # shape (N, 2): [niter, iter_change] — values already in physical units
-    niters = data[:, 0]
-    vals   = data[:, 1]
-    ax.plot(niters, vals, marker='o', linewidth=1.5, markersize=3,
-            label=f'{tensor_name}: {vals[-1]:.3e}')
+_CONVERGENCE_YLABELS = {
+    "probe":            "Fractional intensity change",
+    "probe_pos_shifts": "RMS shift change (Å)",
+}
+
+
+def _draw_convergence_panel(ax, tensor_name, convergence_iters):
+    """Draw a convergence panel for ``tensor_name``.
+
+    For 'obja'/'objp', draws bg (C0) and fg (C1) lines from the ``_bg``/``_fg`` sub-keys.
+    For other tensors, draws a single line from the matching key.
+    All panels apply the Kneedle algorithm to start the x-axis at the convergence region.
+    ``convergence_iters`` is the full ci dict (not a single history list).
+    """
+    title = _CONVERGENCE_PANEL_TITLES.get(tensor_name, tensor_name)
+
+    if tensor_name in ("obja", "objp"):
+        bg_hist = convergence_iters.get(f"{tensor_name}_bg", [])
+        fg_hist = convergence_iters.get(f"{tensor_name}_fg", [])
+        if not bg_hist and not fg_hist:
+            _panel_no_data(ax, title)
+            return
+        ylabel  = "Mean |Δ| (abs change)"
+        bg_data = np.array(bg_hist) if bg_hist else None
+        fg_data = np.array(fg_hist) if fg_hist else None
+        knees   = [_kneedle_start_idx(d[:, 1]) for d in [bg_data, fg_data] if d is not None]
+        knee_idx = min(knees)
+        for data_arr, suffix, color in [(bg_data, "bg", "C0"), (fg_data, "fg", "C1")]:
+            if data_arr is None:
+                continue
+            sl = data_arr[knee_idx:]
+            ax.plot(sl[:, 0], sl[:, 1], marker='o', linewidth=1.5, markersize=3, color=color,
+                    label=f'{suffix}: {sl[-1, 1]:.3e}')
+    else:
+        hist = convergence_iters.get(tensor_name, [])
+        ylabel = _CONVERGENCE_YLABELS.get(tensor_name, "Change")
+        if not hist:
+            _panel_no_data(ax, title)
+            return
+        data     = np.array(hist)
+        knee_idx = _kneedle_start_idx(data[:, 1])
+        ax.plot(data[knee_idx:, 0], data[knee_idx:, 1], marker='o', linewidth=1.5, markersize=3,
+                label=f'{tensor_name}: {data[-1, 1]:.3e}')
+
     ax.set_xlabel('Iteration', fontsize=12)
     ax.set_ylabel(ylabel, fontsize=12)
     ax.set_title(title, fontsize=13)
     ax.xaxis.set_major_locator(ticker.MaxNLocator(integer=True))
-    if use_log and np.any(vals > 0):
-        ax.set_yscale('log')
     ax.legend(fontsize=9, loc='upper right')
     ax.grid(True, linestyle=':', alpha=0.5)
     ax.tick_params(labelsize=10)
@@ -602,12 +643,12 @@ def plot_convergence_dashboard(loss_iters, lr_iters, dz_iters, avg_tilt_iters,
     fig, axes = plt.subplots(2, 4, figsize=(20, 8), squeeze=False)
 
     _draw_loss_panel        (axes[0, 0], loss_iters)
-    _draw_convergence_panel (axes[0, 1], 'obja',             ci.get('obja', []))
-    _draw_convergence_panel (axes[0, 2], 'objp',             ci.get('objp', []))
+    _draw_convergence_panel (axes[0, 1], 'obja',             ci)
+    _draw_convergence_panel (axes[0, 2], 'objp',             ci)
     _draw_tilt_panel        (axes[0, 3], avg_tilt_iters)
     _draw_lr_panel          (axes[1, 0], lr_iters)
-    _draw_convergence_panel (axes[1, 1], 'probe',            ci.get('probe', []))
-    _draw_convergence_panel (axes[1, 2], 'probe_pos_shifts', ci.get('probe_pos_shifts', []))
+    _draw_convergence_panel (axes[1, 1], 'probe',            ci)
+    _draw_convergence_panel (axes[1, 2], 'probe_pos_shifts', ci)
     _draw_dz_panel          (axes[1, 3], dz_iters)
 
     if last_iter is not None:
