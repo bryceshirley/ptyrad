@@ -95,19 +95,8 @@ class ConvergenceMonitorParams(BaseModel):
     at every_n_iters regardless of SAVE_ITERS. Has no effect if both every_n_iters and SAVE_ITERS
     are null (monitor silently disabled).
     Note: each metric measures the accumulated change since the previous snapshot, so its magnitude
-    scales with this interval. The threshold should be interpreted and tuned relative to the chosen
-    cadence — a coarser interval accumulates more change per step and keeps metric values well above
-    the noise floor. Tracking every iteration is not recommended; 10–50 iters (matching SAVE_ITERS)
-    is the intended use.
-    """
-
-    threshold: float = Field(default=1e-4, gt=0.0)
-    """
-    Convergence threshold applied to all tracked metrics. Triggers a one-time INFO log message
-    when a metric first drops below it. Does not auto-stop the reconstruction.
-    Note: the threshold is implicitly coupled to every_n_iters — the same value means something
-    very different at 1-iter vs 50-iter cadence. Re-evaluate the threshold if you change the
-    snapshot interval.
+    scales with this interval. Tracking every iteration is noisy so not recommended; 10-50 iters (matching
+    SAVE_ITERS) is the intended use.
     """
 
     percentile_range: List[float] = Field(
@@ -352,17 +341,19 @@ class ReconParams(BaseModel):
 
     selected_figs: List[
         Literal[
-            "loss", "learning_rates", "forward", "probe_r_amp", "probe_k_amp", "probe_k_phase", "pos", "tilt", "tilt_avg", "slice_thickness", "convergence", "all"
+            "loss", "learning_rates", "forward", "probe_r_amp", "probe_k_amp", "probe_k_phase", "pos", "tilt", "tilt_avg", "slice_thickness", "convergence", "convergence_full", "convergence_dynamic", "all"
         ]
-    ] = Field(default=["loss", "forward", "probe_r_amp", "pos"], description="Figures to plot/save")
+    ] = Field(default=["convergence", "forward", "probe_r_amp", "pos"], description="Figures to plot/save")
     """
     This list specifies the selected figures that will be plotted/saved at each save interval.
     Available keys:
-    - 'convergence'     : Unified time-series dashboard (loss, LR schedule, slice thickness, avg tilts,
-                          and per-tensor convergence metrics). Saved as a single fixed-name file
-                          summary_convergence.png (overwritten each cycle). Works even when
-                          convergence_monitor is null — tensor panels are simply absent.
-                          Recommended replacement for 'loss', 'slice_thickness', and 'tilt_avg'.
+    - 'convergence' / 'convergence_full' : Unified time-series dashboard showing the full iteration
+                          history from iter 0 (no zoom). Saved as summary_convergence.png (fixed
+                          name, overwritten each cycle). Works even when convergence_monitor is null
+                          — tensor panels are simply absent. Recommended default.
+    - 'convergence_dynamic' : Same dashboard but each panel is zoomed to its most informative
+                          x-range via the Kneedle algorithm. Useful for inspecting the long tail
+                          of an qualitatively converged run. Saved as summary_convergence_dynamic.png.
     - 'loss'            : Standalone loss curve with zoom inset (iter-stamped). Covered by 'convergence'.
     - 'learning_rates'  : Standalone LR schedule (iter-stamped). Covered by 'convergence'.
     - 'slice_thickness' : Standalone slice thickness curve with zoom inset (iter-stamped). Covered by 'convergence'.
@@ -394,12 +385,12 @@ class ReconParams(BaseModel):
     For Windows users, please follow the instruction and download `triton-windows` from https://github.com/woct0rdho/triton-windows.
     """
 
-    convergence_monitor: Optional[ConvergenceMonitorParams] = Field(default=None)
+    convergence_monitor: Optional[ConvergenceMonitorParams] = Field(default_factory=ConvergenceMonitorParams)
     """
-    Convergence monitoring configuration. When set, periodically snapshots optimizable tensors
-    and tracks how they change over the reconstruction. Add 'convergence' to selected_figs to
-    generate convergence plots at each save interval.
-    Example: {tensors: [obja, objp, probe], every_n_iters: null, threshold: 1.0e-4}.
+    Convergence monitoring configuration. Enabled by default — periodically snapshots optimizable
+    tensors and records how they change over the reconstruction into model.hdf5. Set to null to
+    disable. Add 'convergence' to selected_figs to generate convergence plots at each save interval.
+    Example: {tensors: [obja, objp, probe, probe_pos_shifts], every_n_iters: null, percentile_range: [15, 85]}.
     """
 
     # Note that this validator allows users to explictly set `'compiler_configs': null` to reset to default behavior

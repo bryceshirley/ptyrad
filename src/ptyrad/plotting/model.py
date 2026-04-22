@@ -136,23 +136,31 @@ def plot_summary(output_path, model, niter, indices, init_variables, selected_fi
 
     # Convergence dashboard — unified time-series figure (loss, LR, dz, tilts, tensor metrics).
     # Old standalone keys 'loss', 'slice_thickness', 'tilt_avg' still work as aliases above.
-    if 'convergence' in selected_figs or 'all' in selected_figs:
-        threshold = getattr(model, 'convergence_threshold', 1e-4) or 1e-4
-        fig_conv = plot_convergence_dashboard(
-            loss_iters=model.loss_iters,
-            lr_iters=model.lr_iters,
-            dz_iters=model.dz_iters,
-            avg_tilt_iters=model.avg_tilt_iters,
-            convergence_iters=model.convergence_iters,
-            threshold=threshold,
-            show_fig=show_fig,
-            pass_fig=True,
-        )
+    # 'convergence' / 'convergence_full': full history from iter 0 (iter_offset=0).
+    # 'convergence_dynamic': per-panel Kneedle zoom to the most informative x-range.
+    _conv_kwargs = dict(
+        loss_iters=model.loss_iters,
+        lr_iters=model.lr_iters,
+        dz_iters=model.dz_iters,
+        avg_tilt_iters=model.avg_tilt_iters,
+        convergence_iters=model.convergence_iters,
+        show_fig=show_fig,
+        pass_fig=True,
+    )
+    if 'convergence' in selected_figs or 'convergence_full' in selected_figs or 'all' in selected_figs:
+        fig_conv = plot_convergence_dashboard(**_conv_kwargs, iter_offset=0)
         if fig_conv is not None:
             if show_fig:
                 fig_conv.show()
             if save_fig:
                 fig_conv.savefig(safe_filename(output_path + f"/summary_convergence{collate_str}{iter_str}.png"))
+    if 'convergence_dynamic' in selected_figs or 'all' in selected_figs:
+        fig_conv_dyn = plot_convergence_dashboard(**_conv_kwargs, iter_offset=None)
+        if fig_conv_dyn is not None:
+            if show_fig:
+                fig_conv_dyn.show()
+            if save_fig:
+                fig_conv_dyn.savefig(safe_filename(output_path + f"/summary_convergence_dynamic{collate_str}{iter_str}.png"))
 
     # Close figures after saving
     plt.close('all')

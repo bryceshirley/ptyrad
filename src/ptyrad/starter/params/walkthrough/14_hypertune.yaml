@@ -87,5 +87,5 @@ recon_params:
     postfix: '' # Postfix this string to the reconstruction folder name. Note that a "_" will be automatically generated.
     save_result: ['model', 'objp', 'probe_prop'] # Selected results to save every SAVE_ITERS. 
     result_modes: {'obj_dim': [2, 3, 4], 'FOV': ['crop'], 'bit': ['8', 'raw']} # Specifies which object output is saved by their final dimension ('obj_dim'), whether to save the full or cropped FOV ('FOV') of object, and whether to save the raw or normalized bit depth version of object and probe.
-    selected_figs: ['loss', 'forward', 'probe_r_amp', 'pos'] # Selected figures that will be saved.
+    selected_figs: ['convergence', 'forward', 'probe_r_amp', 'pos'] # Selected figures that will be saved. See full.yaml for all available keys, recommended keys are ['convergence', 'forward', 'probe_r_amp', 'pos'].
     compiler_configs: {'enable': true} # Set to {'enable': true} to enable PyTorch JIT compilation for a 1.3-1.9x speedup on supported hardware.

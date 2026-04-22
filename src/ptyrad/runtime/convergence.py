@@ -7,8 +7,6 @@ from typing import Optional
 
 import torch
 
-from ptyrad.runtime.logging import report
-
 logger = logging.getLogger(__name__)
 
 
@@ -37,7 +35,7 @@ class ConvergenceMonitor:
 
     Args:
         params: Parsed ``ConvergenceMonitorParams`` dict (with keys ``tensors``,
-            ``every_n_iters``, ``threshold``, ``percentile_range``).
+            ``every_n_iters``, ``percentile_range``).
         model: ``PtychoModel`` instance. An initial snapshot is taken during ``__init__``
             so the baseline is the state before the first optimizer update.
     """
@@ -51,13 +49,7 @@ class ConvergenceMonitor:
     def __init__(self, params: dict, model) -> None:
         self._tensors: list          = list(params["tensors"])
         self._every_n: Optional[int] = params.get("every_n_iters")
-        self._threshold: float       = params["threshold"]
-        self._converged: set         = set()
         self._percentile_range: list = list(params.get("percentile_range", [15.0, 85.0]))
-
-        model.convergence_threshold = self._threshold
-        # TODO: extend ConvergenceMonitorParams with per-tensor threshold dict so each tensor
-        # can have its own convergence criterion, and expose them as reference lines in the dashboard.
 
         self._dx: float  = float(model.dx)   # pixel size [Å]; used to convert probe_pos_shifts to Å
 
@@ -78,12 +70,8 @@ class ConvergenceMonitor:
             for key, tensor in snaps.items():
                 self._prev[key] = tensor.clone()
 
-        report(
-            f"ConvergenceMonitor initialized — tracking: {self._tensors}, "
-            f"threshold: {self._threshold:.1e}, "
-            f"percentile_range: {self._percentile_range}",
-            verbosity="INFO",
-        )
+        logger.info(
+            f"### Creating ConvergenceMonitor with {params} ### ")
 
     # ------------------------------------------------------------------
     # Public API
@@ -108,50 +96,17 @@ class ConvergenceMonitor:
                     )
                     model.convergence_iters[f"{key}_bg"].append((niter, bg_change))
                     model.convergence_iters[f"{key}_fg"].append((niter, fg_change))
-                    for sub_key, change in [(f"{key}_bg", bg_change), (f"{key}_fg", fg_change)]:
-                        if change < self._threshold and sub_key not in self._converged:
-                            self._converged.add(sub_key)
-                            report(
-                                f"[iter {niter}] {sub_key} change {change:.3e} < "
-                                f"threshold {self._threshold:.1e} — converged",
-                                verbosity="INFO",
-                            )
                 else:
                     metric_type = self._METRIC_TYPE[key]
                     iter_change = self._compute_metric(current, self._prev[key], metric_type)
                     if key == "probe_pos_shifts":
                         iter_change *= self._dx
                     model.convergence_iters[key].append((niter, iter_change))
-                    if iter_change < self._threshold and key not in self._converged:
-                        self._converged.add(key)
-                        report(
-                            f"[iter {niter}] {key} change {iter_change:.3e} < "
-                            f"threshold {self._threshold:.1e} — converged",
-                            verbosity="INFO",
-                        )
                 self._prev[key] = current.clone()
-
-        tracked_keys = self._all_tracked_keys()
-        if tracked_keys and tracked_keys.issubset(self._converged):
-            report(
-                f"[iter {niter}] All monitored tensors have converged "
-                f"(threshold {self._threshold:.1e})",
-                verbosity="INFO",
-            )
 
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
-
-    def _all_tracked_keys(self) -> set:
-        """Return the set of convergence_iters keys produced by the tracked tensors."""
-        keys = set()
-        for name in self._tensors:
-            if name in ("obja", "objp"):
-                keys.update({f"{name}_bg", f"{name}_fg"})
-            else:
-                keys.add(name)
-        return keys
 
     def _snapshot(self, model, name: str) -> dict:
         """
@@ -218,7 +173,7 @@ def create_convergence_monitor(convergence_monitor_params, model) -> Optional[Co
 
     Args:
         convergence_monitor_params: Parsed dict from ``ReconParams.convergence_monitor``,
-            or None to disable monitoring.
+            or ``None`` to disable monitoring.
         model: ``PtychoModel`` instance used for the initial snapshot.
 
     Returns:

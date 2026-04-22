@@ -676,7 +676,7 @@ def _get_last_iter(loss_iters, convergence_iters):
 
 
 def plot_convergence_dashboard(loss_iters, lr_iters, dz_iters, avg_tilt_iters,
-                               convergence_iters, threshold=1e-4,
+                               convergence_iters,
                                iter_offset=None, show_fig=True, pass_fig=False):
     """Unified dashboard of all scalar time-series in a fixed 2x4 grid.
 
@@ -690,8 +690,6 @@ def plot_convergence_dashboard(loss_iters, lr_iters, dz_iters, avg_tilt_iters,
     determines its own start via the smart Kneedle router. Because panels have different
     logging strides (e.g. loss every iter, convergence metrics every 50 iters), each
     panel independently converts the iteration number to its own array index.
-    ``threshold`` is accepted for API compatibility but not currently plotted — per-tensor
-    threshold specification is planned (see TODO in runtime/convergence.py).
     """
     ci        = convergence_iters or {}
     last_iter = _get_last_iter(loss_iters, ci)
