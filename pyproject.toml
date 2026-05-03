@@ -31,7 +31,8 @@ dependencies = [
   "scipy",
   "tifffile",
   "torch>=2.4",
-  "torchvision"
+  "torchvision",
+  "zarr"
 ]
 
 [project.scripts]

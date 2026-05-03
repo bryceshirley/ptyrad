@@ -9,7 +9,7 @@ from typing import List, Optional, Tuple
 
 import numpy as np
 
-from .generic import load_npy, load_raw, load_tif, write_npy, write_tif
+from .generic import load_npy, load_raw, load_tif, load_zarr, write_npy, write_tif
 from .hierarchy import load_ND_with_key, write_hdf5
 
 logger = logging.getLogger(__name__)
@@ -21,10 +21,11 @@ def load_array_from_file(
     shape: Optional[Tuple[int, ...]] = None,
     offset: Optional[int] = None,
     gap: Optional[int] = None,
+    zarr_kwargs: Optional[dict] = None,
 ) -> np.ndarray:
     """
     Load array from a file. The file type is inferred from the extension.
-    Currently supports .tif, .tiff, .npy, .mat, .h5, .hdf5, and .raw.
+    Currently supports .tif, .tiff, .npy, .mat, .h5, .hdf5, .zarr, and .raw.
 
     Args:
         path (str): Path to the file.
@@ -33,6 +34,8 @@ def load_array_from_file(
         shape (tuple): Shape of the data for .raw files (optional).
         offset (int): Offset for .raw files (optional).
         gap (int): Gap for .raw files (optional).
+        zarr_kwargs (dict): Optional settings for .zarr files. Use `selection`
+            for YAML-friendly slicing; remaining entries are passed to zarr.open.
 
     Returns:
         numpy.ndarray: The loaded array.
@@ -60,6 +63,9 @@ def load_array_from_file(
     elif ext in [".mat", ".h5", ".hdf5"]:
         return load_ND_with_key(file_path, key, ndims)
 
+    elif ext == ".zarr":
+        return load_zarr(file_path, key=key, ndims=ndims, zarr_kwargs=zarr_kwargs)
+
     elif ext == ".raw":
         if shape is None:
             raise ValueError(
@@ -73,7 +79,7 @@ def load_array_from_file(
 
     else:
         raise ValueError(
-            f"Unsupported file type: '{ext}'. Supported types are .tif, .tiff, .mat, .h5, .hdf5, .npy, and .raw."
+            f"Unsupported file type: '{ext}'. Supported types are .tif, .tiff, .mat, .h5, .hdf5, .zarr, .npy, and .raw."
         )
         
 def save_array(data, file_dir='', file_name='ptyrad_init_meas', file_format="hdf5", output_shape=None, append_shape=True, **kwargs):

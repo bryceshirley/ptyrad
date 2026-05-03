@@ -41,6 +41,13 @@ class FilePathWithKey(BaseModel):
     **[bytes]** Number of bytes to skip between each diffraction pattern. Used for raw binary loading.
     """
 
+    zarr_kwargs: Optional[Dict[str, Any]] = Field(default=None, description="Options for loading from .zarr")
+    """
+    Optional settings for Zarr loading. Use ``selection`` for YAML-friendly slicing,
+    e.g. ``{'selection': [[0, 64], [0, 64], None, None]}``; remaining entries are
+    passed to ``zarr.open``.
+    """
+
 
 class MeasCalibration(BaseModel):
     model_config = {"extra": "forbid"}
@@ -440,6 +447,14 @@ class TiltParams(BaseModel):
 SOURCE_PARAMS_MAPPING = {
     'meas': {
         'file': FilePathWithKey,
+        'tif': FilePathWithKey,
+        'tiff': FilePathWithKey,
+        'mat': FilePathWithKey,
+        'h5': FilePathWithKey,
+        'hdf5': FilePathWithKey,
+        'zarr': FilePathWithKey,
+        'npy': FilePathWithKey,
+        'raw': FilePathWithKey,
         'custom': np.ndarray,
     },
     'obj': {
@@ -1367,11 +1382,11 @@ class InitParams(BaseModel):
     """
     
     # Input source and params
-    meas_source: Literal['file', 'custom'] = Field(default="file", description="Data source for measurements")
+    meas_source: Literal['file', 'tif', 'tiff', 'mat', 'h5', 'hdf5', 'zarr', 'npy', 'raw', 'custom'] = Field(default="file", description="Data source for measurements")
     """
     Data source for the diffraction patterns.
-    
-    Available options: ``file``, ``custom``.
+
+    Available options: ``file``, ``custom``. File-type source names like ``zarr``, ``hdf5``, ``npy``, ``tif``, and ``raw`` are also accepted for backward compatibility.
     """
 
     meas_params: Union[FilePathWithKey, np.ndarray] = Field(description="Parameters for measurement loading") # Required
@@ -1386,6 +1401,13 @@ class InitParams(BaseModel):
 
           'meas_source': 'file'
           'meas_params': {'path': '/data/scan.h5', 'key': '/entry/data'}
+
+    - **Zarr**:
+
+      .. code-block:: yaml
+
+          'meas_source': 'file'
+          'meas_params': {'path': '/data/scan.zarr', 'key': '/entry/data', 'zarr_kwargs': {'selection': [[0, 64], [0, 64], null, null]}}
 
     - **TIF**:
 
@@ -1756,8 +1778,8 @@ class InitParams(BaseModel):
     @classmethod
     def validate_meas_params(cls, v: Union[FilePathWithKey, np.ndarray], info) -> Union[FilePathWithKey, np.ndarray]:
         if isinstance(v, FilePathWithKey):
-            if not v.__dict__['path'].is_file():
-                raise FileNotFoundError(f"{info.field_name}: Path '{v}' does not point to a valid file")
+            if not v.__dict__['path'].exists():
+                raise FileNotFoundError(f"{info.field_name}: Path '{v}' does not point to a valid file or directory")
             return v
         if isinstance(v, np.ndarray):
             return v

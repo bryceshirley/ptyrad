@@ -745,7 +745,7 @@ class Initializer:
                 raise TypeError(f"'custom' source requires 'meas_params' to be a NumPy array. Got {type(meas_params)}.")
             meas = meas_params
             
-        elif meas_source in ['file', 'tif', 'tiff', 'mat', 'h5', 'hdf5', 'npy', 'raw']: # Keep the file types for backward compatibility
+        elif meas_source in ['file', 'tif', 'tiff', 'mat', 'h5', 'hdf5', 'zarr', 'npy', 'raw']: # Keep the file types for backward compatibility
             # Infer file type from extension
             file_path = meas_params.get('path')
             key = meas_params.get('key')
