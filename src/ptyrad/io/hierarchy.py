@@ -4,7 +4,7 @@ Hierarchical file handling (load/save) for pt, mat, hdf5 formats
 """
 
 import os
-from typing import Any, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 import logging
 
 import h5py
@@ -14,6 +14,160 @@ import scipy.io as sio
 KeyType = Union[str, list[str], None]
 
 logger = logging.getLogger(__name__)
+
+def _normalize_selection(selection):
+    """Convert YAML-friendly slice specs into NumPy/HDF5/Zarr indexing objects."""
+    if selection is None:
+        return None
+    if isinstance(selection, (int, slice)):
+        return selection
+    if selection is Ellipsis:
+        return selection
+    if not isinstance(selection, (list, tuple)):
+        raise TypeError(
+            "`selection` must be an int, slice, or a list/tuple of ints, slices, "
+            "nulls, ellipses, or [start, stop, step] slice specs."
+        )
+
+    normalized = []
+    for axis_selection in selection:
+        if axis_selection is None:
+            normalized.append(slice(None))
+        elif isinstance(axis_selection, (int, slice)):
+            normalized.append(axis_selection)
+        elif axis_selection is Ellipsis:
+            normalized.append(axis_selection)
+        elif isinstance(axis_selection, (list, tuple)):
+            if len(axis_selection) > 3:
+                raise ValueError(
+                    "Each slice spec must be [start], [start, stop], or [start, stop, step]."
+                )
+            normalized.append(slice(*axis_selection))
+        else:
+            raise TypeError(
+                "Each axis selection must be an int, slice, null, ellipsis, "
+                "or [start, stop, step] slice spec."
+            )
+    return tuple(normalized)
+
+def _selection_ndim(ndim, selection=None):
+    """Return resulting ndim after indexing, or None if selection cannot fit ndim."""
+    if selection is None or selection is Ellipsis:
+        return ndim
+    if isinstance(selection, int):
+        return ndim - 1
+    if isinstance(selection, slice):
+        return ndim
+
+    ellipsis_count = sum(axis_selection is Ellipsis for axis_selection in selection)
+    if ellipsis_count > 1:
+        raise IndexError("Only one ellipsis is allowed in `selection`.")
+
+    consumed_axes = sum(axis_selection is not Ellipsis for axis_selection in selection)
+    if consumed_axes > ndim:
+        return None
+
+    indexed_axes = sum(isinstance(axis_selection, int) for axis_selection in selection)
+    return ndim - indexed_axes
+
+def _normalize_zarr_key(key: Optional[str]) -> Optional[str]:
+    """Normalize HDF5-like keys for Zarr path access."""
+    if key in (None, ""):
+        return None
+    return key.lstrip("/")
+
+def _zarr_array_to_numpy(zarray, selection=None):
+    if selection is None:
+        selection = Ellipsis
+    return np.asarray(zarray[selection])
+
+def _collect_zarr_array_refs(zgroup, ndims=None, selection=None, _parent_key=None):
+    results = {}
+    for key in zgroup.keys():
+        full_key = f"{_parent_key}/{key}" if _parent_key else key
+        value = zgroup[key]
+        if hasattr(value, "shape") and hasattr(value, "ndim"):
+            selected_ndim = _selection_ndim(value.ndim, selection)
+            if selected_ndim is not None and selected_ndim in ndims:
+                results[full_key] = value
+        elif hasattr(value, "keys"):
+            results.update(
+                _collect_zarr_array_refs(
+                    value,
+                    ndims=ndims,
+                    selection=selection,
+                    _parent_key=full_key,
+                )
+            )
+    return results
+
+def load_zarr(
+    file_path,
+    key=None,
+    ndims=None,
+    selection=None,
+    zarr_kwargs: Optional[Dict[str, Any]] = None,
+):
+    """Loads an array from a Zarr store.
+
+    Args:
+        file_path (str): Path to the Zarr store.
+        key (str, optional): Internal path to the array inside a Zarr group.
+        ndims (list, optional): Desired dimensions when searching a group with no key.
+        selection (optional): Optional load-time slicing/indexing.
+        zarr_kwargs (dict, optional): Optional Zarr open settings passed to
+            ``zarr.open``. Use top-level ``selection`` for slicing and top-level
+            ``key`` for the array path.
+
+    Returns:
+        numpy.ndarray: The loaded array data.
+    """
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(f"The specified file '{file_path}' does not exist. Please check your file path and working directory.")
+
+    import zarr
+
+    if ndims is None:
+        ndims = [3, 4]
+
+    open_kwargs = dict(zarr_kwargs or {})
+    unsupported_kwargs = {"selection", "slices", "path"} & set(open_kwargs)
+    if unsupported_kwargs:
+        raise ValueError(
+            f"Unsupported zarr_kwargs entries {sorted(unsupported_kwargs)}. "
+            "Use top-level `selection` for slicing and top-level `key` for the array path."
+        )
+    selection = _normalize_selection(selection)
+    zarr_path = _normalize_zarr_key(key)
+
+    zobj = zarr.open(file_path, mode="r", path=zarr_path, **open_kwargs)
+    if hasattr(zobj, "shape") and hasattr(zobj, "ndim"):
+        selected_ndim = _selection_ndim(zobj.ndim, selection)
+        if selected_ndim is None:
+            raise IndexError(
+                f"Selection consumes more axes than the Zarr array has ({zobj.ndim})."
+            )
+        return _zarr_array_to_numpy(zobj, selection=selection)
+
+    if hasattr(zobj, "keys"):
+        if zarr_path is not None:
+            raise ValueError(
+                f"The returned Zarr value at key '{key}' is a group, not an array. "
+                "Please specify the dataset key explicitly."
+            )
+
+        valid_datasets = _collect_zarr_array_refs(zobj, ndims=ndims, selection=selection)
+        if len(valid_datasets) == 1:
+            return _zarr_array_to_numpy(next(iter(valid_datasets.values())), selection=selection)
+        if len(valid_datasets) == 0:
+            raise ValueError(
+                f"No eligible Zarr arrays found with ndims = {ndims}. Please check the store or specify `key`."
+            )
+        raise ValueError(
+            f"Multiple eligible Zarr arrays found: {list(valid_datasets.keys())}. Please specify the dataset key explicitly."
+        )
+
+    raise ValueError(f"Unsupported Zarr object type: {type(zobj).__name__}")
 
 def load_pt(file_path, weights_only=False):
     """Loads data from a PyTorch .pt file.
@@ -54,7 +208,7 @@ def load_pt(file_path, weights_only=False):
 
 def load_mat(
     file_path: str, key: KeyType = None, delimiter: str = ".",
-    squeeze_me=True, simplify_cells=True
+    squeeze_me=True, simplify_cells=True, selection=None
 ) -> Union[np.ndarray, dict[str, np.ndarray]]:
     """
     Load dataset(s) from a MATLAB .mat file, handling both default and v7.3 (HDF5) formats.
@@ -69,6 +223,7 @@ def load_mat(
         delimiter (str): Delimiter for hierarchical keys (default: ".").
         squeeze_me (bool): Whether to squeeze unit matrix dimensions (scipy.io.loadmat parameter).
         simplify_cells (bool): Whether to simplify cell arrays (scipy.io.loadmat parameter).
+        selection: Optional NumPy-style indexing object applied to loaded dataset(s).
 
     Returns:
         data (np.ndarray or dict): The loaded dataset(s) with the same structure as load_hdf5.
@@ -85,6 +240,8 @@ def load_mat(
             f"The specified file '{file_path}' does not exist. Please check your file path or working directory."
         )
 
+    selection = _normalize_selection(selection)
+
     # Check file version
     from scipy.io.matlab import matfile_version as get_matfile_version
     try:
@@ -97,10 +254,15 @@ def load_mat(
     # If v7.3 (HDF5), delegate to load_hdf5 directly
     if is_hdf5_format:
         logger.info("Detected .mat v7.3 (HDF5 format). Delegating to `load_hdf5`.")
-        return load_hdf5(file_path, key=key, delimiter=delimiter)
+        return load_hdf5(file_path, key=key, delimiter=delimiter, selection=selection)
     
     # Handle normal .mat formats
     logger.info("Detected .mat version less than v7.3. Using `scipy.io.loadmat`.")
+    if selection is not None:
+        raise ValueError(
+            "Load-time `selection` is only supported for HDF5-backed .mat v7.3 files. "
+            "For legacy .mat files, load the dataset first and use `meas_crop` for post-load cropping."
+        )
     
     # Load the entire .mat file first
     mat_contents = sio.loadmat(file_path, squeeze_me=squeeze_me, simplify_cells=simplify_cells) # mat_contents is already a nested dict
@@ -123,7 +285,8 @@ def load_mat(
         
         for k in key:
             try:
-                datasets_dict[k] = get_nested(mat_contents, key=k, delimiter=delimiter)
+                data = get_nested(mat_contents, key=k, delimiter=delimiter)
+                datasets_dict[k] = data
             except KeyError:
                 missing.append(k)
                 
@@ -142,7 +305,7 @@ def load_mat(
         )    
 
 def load_hdf5(
-    file_path: str, key: KeyType = None, delimiter: str = ".") -> Union[np.ndarray, dict[str, np.ndarray]]:
+    file_path: str, key: KeyType = None, delimiter: str = ".", selection=None) -> Union[np.ndarray, dict[str, np.ndarray]]:
     """
     Load dataset(s) from an HDF5 file, recursively if groups are encountered.
 
@@ -153,6 +316,7 @@ def load_hdf5(
             - If str: Load a single dataset or group. Supports hierarchical keys (e.g., 'group1.dataset1').
             - If list[str]: Load multiple datasets. The returned dictionary will have a flattened structure with the hierarchical key strings as keys.
         delimiter (str): Delimiter for hierarchical keys (default: ".").
+        selection: Optional NumPy/HDF5-style indexing object applied to loaded dataset(s).
 
     Returns:
         data (np.ndarray or dict): The loaded dataset(s).
@@ -193,7 +357,8 @@ def load_hdf5(
 
         # Load the object without user-specified key
         if isinstance(hobj, h5py.Dataset):
-            return handle_hdf5_types(hobj[()])
+            data_selection = () if selection is None else selection
+            return handle_hdf5_types(hobj[data_selection])
         elif isinstance(hobj, h5py.Group):
             return {k: _recursively_load(hobj[k]) for k in hobj}
         else:
@@ -205,8 +370,16 @@ def load_hdf5(
             f"The specified file '{file_path}' does not exist. Please check your file path or working directory."
         )
 
+    selection = _normalize_selection(selection)
+
     with h5py.File(file_path, "r") as hf:
         if key in (None, "", []):
+            if selection is not None:
+                raise ValueError(
+                    "`load_hdf5(key=None)` loads the full hierarchy as a dict and does not support `selection`. "
+                    "Use `load_ND_with_key(..., selection=...)` for measurement autodiscovery with partial reads, "
+                    "or provide an explicit `key`."
+                )
             file_dict = {k: _recursively_load(hf[k]) for k in hf.keys()}
             return file_dict
 
@@ -241,6 +414,56 @@ def load_hdf5(
                 f"`key` must be None, a string, or a list of strings but got key = '{key}'"
             )
 
+def _collect_hdf5_dataset_refs(hobj, ndims=None, selection=None, delimiter="/", _parent_key=None):
+    results = {}
+    for key, value in hobj.items():
+        full_key = f"{_parent_key}{delimiter}{key}" if _parent_key else key
+        if isinstance(value, h5py.Dataset):
+            selected_ndim = _selection_ndim(value.ndim, selection)
+            if selected_ndim is not None and selected_ndim in ndims:
+                results[full_key] = value
+        elif isinstance(value, h5py.Group):
+            results.update(
+                _collect_hdf5_dataset_refs(
+                    value,
+                    ndims=ndims,
+                    selection=selection,
+                    delimiter=delimiter,
+                    _parent_key=full_key,
+                )
+            )
+    return results
+
+def load_hdf5_ND_with_selection(
+    file_path: str,
+    ndims: Optional[List[int]] = None,
+    selection=None,
+) -> np.ndarray:
+    """Load exactly one ND HDF5 dataset, applying selection only after disambiguation."""
+    if ndims is None:
+        ndims = [3, 4]
+
+    selection = _normalize_selection(selection)
+
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(
+            f"The specified file '{file_path}' does not exist. Please check your file path or working directory."
+        )
+
+    with h5py.File(file_path, "r") as hf:
+        valid_datasets = _collect_hdf5_dataset_refs(hf, ndims=ndims, selection=selection)
+        if len(valid_datasets) == 1:
+            data_selection = () if selection is None else selection
+            return handle_hdf5_types(next(iter(valid_datasets.values()))[data_selection])
+        elif len(valid_datasets) == 0:
+            raise ValueError(
+                f"No eligible datasets found in file with ndims = {ndims}. Please check the file and file path."
+            )
+        else:
+            raise ValueError(
+                f"Multiple eligible ND datasets found: {list(valid_datasets.keys())}. Please specify the dataset key explicitly."
+            )
+
 def write_hdf5(file_path, data, dataset_name="meas", **kwargs):
     """
     Save an array as an HDF5 file.
@@ -252,6 +475,7 @@ def load_ND_with_key(
     file_path: str,
     key: Optional[str] = None,
     ndims: Optional[List[int]] = None,
+    selection=None,
 ) -> np.ndarray:
     """
     Load exactly one ND dataset from (possibly nested) files like .mat and .hdf5.
@@ -260,6 +484,7 @@ def load_ND_with_key(
         file_path (str): Path to the file.
         key (str, optional): Key to specify the dataset. If not provided, will search for all valid ND datasets.
         ndims (list): List of desired dimensions for filtering datasets.
+        selection: Optional NumPy/HDF5-style indexing object applied while loading.
 
     Returns:
         numpy.ndarray: The loaded dataset.
@@ -270,6 +495,8 @@ def load_ND_with_key(
 
     if ndims is None:
         ndims = [3, 4]
+
+    selection = _normalize_selection(selection)
 
     # Check if the file exists
     if not os.path.exists(file_path):
@@ -293,6 +520,14 @@ def load_ND_with_key(
 
     # Load the data using the selected loader.
     if key in (None, ""):
+        if ext in [".h5", ".hdf5"] or (ext == ".mat" and h5py.is_hdf5(file_path)):
+            return load_hdf5_ND_with_selection(file_path, ndims=ndims, selection=selection)
+        if selection is not None:
+            raise ValueError(
+                "Load-time `selection` is only supported for HDF5-backed .mat v7.3 files. "
+                "For legacy .mat files, load the dataset first and use `meas_crop` for post-load cropping."
+            )
+
         datasets_dict = load_func(file_path)  # None key would return a dict of the file
         valid_datasets = collect_ND_datasets(
             datasets_dict, ndims=ndims
@@ -310,7 +545,7 @@ def load_ND_with_key(
 
     elif isinstance(key, str):
         data_or_dict = load_func(
-            file_path, key
+            file_path, key, selection=selection
         )  # String key would normally return ndarray, but incorrectly specified key may point to a group or anything else
         if isinstance(data_or_dict, np.ndarray):
             return data_or_dict

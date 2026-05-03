@@ -41,11 +41,17 @@ class FilePathWithKey(BaseModel):
     **[bytes]** Number of bytes to skip between each diffraction pattern. Used for raw binary loading.
     """
 
+    selection: Optional[Any] = Field(default=None, description="Load-time slicing/indexing for array-like files")
+    """
+    Optional load-time slicing for array-like files, especially HDF5 and Zarr.
+    Use YAML-friendly ``[start, stop, step]`` slice specs, e.g.
+    ``[[0, 64], [0, 64], None, None]``.
+    """
+
     zarr_kwargs: Optional[Dict[str, Any]] = Field(default=None, description="Options for loading from .zarr")
     """
-    Optional settings for Zarr loading. Use ``selection`` for YAML-friendly slicing,
-    e.g. ``{'selection': [[0, 64], [0, 64], None, None]}``; remaining entries are
-    passed to ``zarr.open``.
+    Optional settings passed to ``zarr.open``. Do not use this for slicing or
+    array path selection; use the top-level ``selection`` and ``key`` fields.
     """
 
 
@@ -1400,14 +1406,14 @@ class InitParams(BaseModel):
       .. code-block:: yaml
 
           'meas_source': 'file'
-          'meas_params': {'path': '/data/scan.h5', 'key': '/entry/data'}
+          'meas_params': {'path': '/data/scan.h5', 'key': '/entry/data', 'selection': [[0, 64], [0, 64], null, null]}
 
     - **Zarr**:
 
       .. code-block:: yaml
 
           'meas_source': 'file'
-          'meas_params': {'path': '/data/scan.zarr', 'key': '/entry/data', 'zarr_kwargs': {'selection': [[0, 64], [0, 64], null, null]}}
+          'meas_params': {'path': '/data/scan.zarr', 'key': '/entry/data', 'selection': [[0, 64], [0, 64], null, null]}
 
     - **TIF**:
 

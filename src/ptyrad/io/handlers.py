@@ -9,8 +9,8 @@ from typing import List, Optional, Tuple
 
 import numpy as np
 
-from .generic import load_npy, load_raw, load_tif, load_zarr, write_npy, write_tif
-from .hierarchy import load_ND_with_key, write_hdf5
+from .generic import load_npy, load_raw, load_tif, write_npy, write_tif
+from .hierarchy import _normalize_selection, load_ND_with_key, load_zarr, write_hdf5
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +21,7 @@ def load_array_from_file(
     shape: Optional[Tuple[int, ...]] = None,
     offset: Optional[int] = None,
     gap: Optional[int] = None,
+    selection=None,
     zarr_kwargs: Optional[dict] = None,
 ) -> np.ndarray:
     """
@@ -34,8 +35,8 @@ def load_array_from_file(
         shape (tuple): Shape of the data for .raw files (optional).
         offset (int): Offset for .raw files (optional).
         gap (int): Gap for .raw files (optional).
-        zarr_kwargs (dict): Optional settings for .zarr files. Use `selection`
-            for YAML-friendly slicing; remaining entries are passed to zarr.open.
+        selection: Optional load-time slicing/indexing for .h5, .hdf5, .mat v7.3, and .zarr files.
+        zarr_kwargs (dict): Optional Zarr-specific settings passed to zarr.open.
 
     Returns:
         numpy.ndarray: The loaded array.
@@ -45,6 +46,7 @@ def load_array_from_file(
     """
 
     file_path = path  # The function signature is simplified for users, although I think file_path is clearer
+    selection = _normalize_selection(selection)
 
     # Check file existence
     if not os.path.exists(file_path):
@@ -55,18 +57,24 @@ def load_array_from_file(
     ext = ext.lower()
 
     if ext in [".tif", ".tiff"]:
+        if selection is not None:
+            raise ValueError("Load-time `selection` is not supported for TIFF files. Use `meas_crop` after loading instead.")
         return load_tif(file_path)
 
     elif ext == ".npy":
+        if selection is not None:
+            raise ValueError("Load-time `selection` is not supported for .npy files. Use `meas_crop` after loading instead.")
         return load_npy(file_path)
 
     elif ext in [".mat", ".h5", ".hdf5"]:
-        return load_ND_with_key(file_path, key, ndims)
+        return load_ND_with_key(file_path, key, ndims, selection=selection)
 
     elif ext == ".zarr":
-        return load_zarr(file_path, key=key, ndims=ndims, zarr_kwargs=zarr_kwargs)
+        return load_zarr(file_path, key=key, ndims=ndims, selection=selection, zarr_kwargs=zarr_kwargs)
 
     elif ext == ".raw":
+        if selection is not None:
+            raise ValueError("Load-time `selection` is not supported for .raw files. Use `meas_crop` after loading instead.")
         if shape is None:
             raise ValueError(
                 f"Please at least provide 'shape' of the expected data array to correctly load the .raw file {file_path}."
