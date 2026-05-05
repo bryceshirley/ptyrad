@@ -445,11 +445,10 @@ def idct_2d(x: torch.Tensor) -> torch.Tensor:
 # This is currently used in 'obj_z_recenter' constraint to shift the probe defocus.
 def near_field_evolution_torch(Npix_shape, dx, dz, lambd, dtype=torch.complex64, device='cuda'):
     """ Fresnel propagator """
-    # Translated and simplified from Yi's fold_slice Matlab implementation into PyTorch by Chia-Hao Lee
-    # The forward pass uses the propagator direcly constructed in `PtychoModel.get_propagators`` for efficiency.
+    # The forward pass uses the propagator directly constructed in `PtychoModel.get_propagators`` for efficiency.
 
-    ygrid = (torch.arange(-Npix_shape[0] // 2, Npix_shape[0] // 2, device=device) + 0.5) / Npix_shape[0]
-    xgrid = (torch.arange(-Npix_shape[1] // 2, Npix_shape[1] // 2, device=device) + 0.5) / Npix_shape[1]
+    ygrid = torch.fft.fftfreq(int(Npix_shape[0]), device=device)
+    xgrid = torch.fft.fftfreq(int(Npix_shape[1]), device=device)
 
     # Standard ASM
     k  = 2 * torch.pi / lambd
@@ -457,21 +456,19 @@ def near_field_evolution_torch(Npix_shape, dx, dz, lambd, dtype=torch.complex64,
     kx = 2 * torch.pi * xgrid / dx
     Ky, Kx = torch.meshgrid(ky, kx, indexing="ij")
     
-    # Cast to complex to safely handle evanescent waves (where kx^2 + ky^2 > k^2) for defensive programming (technically impossible in electron microscopy)
-    kz = torch.sqrt((k ** 2 - Kx ** 2 - Ky ** 2).to(dtype))
+    # Clamp to zero before sqrt to guard against tiny negative roundoff near the cutoff.
+    # Evanescent modes (kx²+ky²>k²) are practically impossible since lambda << dx for all practical usage.
+    kz = torch.sqrt(torch.clamp(k ** 2 - Kx ** 2 - Ky ** 2, min=0.0))
 
     # Safely handle scalar vs list vs array vs tensor for dz
     dz_tensor = torch.as_tensor(dz, device=device)
     is_scalar = dz_tensor.ndim == 0
-    
+
     # Ensure it's at least 1D, then reshape for broadcasting: turns (N_z,) into (N_z, 1, 1)
     dz_arr = torch.atleast_1d(dz_tensor)[:, None, None]
     
-    # Compute H: broadcasts (N_z, 1, 1) * (N_y, N_x) -> (N_z, N_y, N_x)
+    # Compute H: already corner-centered (DC at [0,0]) because fftfreq is corner-centered
     H = torch.exp(1j * dz_arr * kz)
-    
-    # Final H has zero frequency at the corner in k-space
-    H = ifftshift2(H)
 
     # Return a 2D array if the input was a scalar, otherwise return the 3D stack
     if is_scalar:
