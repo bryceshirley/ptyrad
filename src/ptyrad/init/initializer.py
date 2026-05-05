@@ -369,7 +369,7 @@ class Initializer:
         self.init_variables['meas_Npix']        = meas_Npix
         self.init_variables['simu_Npix']        = simu_Npix
         self.init_variables['simu_match_mode']  = simu_match_mode
-        self.init_variables['probe_shape']      = np.array([simu_Npix, simu_Npix]).astype(float) # Keep this at float for later init_pos
+        self.init_variables['probe_shape']      = (int(simu_Npix), int(simu_Npix))
         self.init_variables['N_scan_slow']      = N_scan_slow
         self.init_variables['N_scan_fast']      = N_scan_fast
         self.init_variables['N_scans']          = N_scans
@@ -389,6 +389,7 @@ class Initializer:
         probe = self._process_probe(probe)
         
         self.init_variables['probe'] = probe
+        self.init_variables['probe_shape'] = probe.shape[-2:]
 
         # Print summary
         logger.info(f"probe                         (pmode, Ny, Nx) = {probe.dtype}, {probe.shape}")
@@ -403,7 +404,7 @@ class Initializer:
         pos = self._load_pos()
         pos = self._process_pos(pos)
 
-        probe_shape = self.init_variables['probe_shape']
+        probe_shape = np.array(self.init_variables['probe_shape'], dtype=float)
         obj_lateral_extent = (1.2 * np.ceil(pos.max(0) - pos.min(0) + probe_shape)).astype(int)
         crop_pos = np.round(pos).astype('int16')
         probe_pos_shifts = (pos - crop_pos).astype('float32')
@@ -626,9 +627,10 @@ class Initializer:
         if (crop_pos.min(0) < 0).any():
             raise ValueError(f"Found invalid crop position. crop_pos.min(0) {crop_pos.min(0)} must be equal or larger than 0. Please check your position and object initialization.")
         
-        if (crop_pos.max(0) + simu_Npix - obj.shape[-2:] > 0).any():
-            raise ValueError(f"Found invalid crop position. crop_pos.max(0) {crop_pos.max(0)} + simu_Npix ({simu_Npix}) = {crop_pos.max(0) + simu_Npix} must be equal or smaller than object canvas lateral size (Ny, Nx) = {obj.shape[-2:]}. Please check your position and object initialization.")
-        logger.info(f"crop positions (yx_min={crop_pos.min(0)}, yx_max={crop_pos.max(0)+simu_Npix}) are well contained inside object canvas (Ny,Nx) = {obj.shape[-2:]}.")
+        probe_shape = np.array(probe.shape[-2:])
+        if (crop_pos.max(0) + probe_shape - obj.shape[-2:] > 0).any():
+            raise ValueError(f"Found invalid crop position. crop_pos.max(0) {crop_pos.max(0)} + probe_shape ({probe.shape[-2:]}) = {crop_pos.max(0) + probe_shape} must be equal or smaller than object canvas lateral size (Ny, Nx) = {obj.shape[-2:]}. Please check your position and object initialization.")
+        logger.info(f"crop positions (yx_min={crop_pos.min(0)}, yx_max={crop_pos.max(0)+probe_shape}) are well contained inside object canvas (Ny,Nx) = {obj.shape[-2:]}.")
         
         # Check obj tilts
         if len(obj_tilts) in [1, N_scans]:
@@ -1685,7 +1687,7 @@ class Initializer:
         # which was used for many APS instruments
         
         dx = self.init_variables['dx']
-        probe_shape = self.init_variables['probe_shape']
+        probe_shape = np.array(self.init_variables['probe_shape'], dtype=float)
         
         hdf5_path = params
         ppY = load_hdf5(hdf5_path, key='ppY')
@@ -1709,7 +1711,7 @@ class Initializer:
         scan_step_size = simu_params.get('scan_step_size', self.init_variables['scan_step_size'])
         N_scan_slow    = simu_params.get('N_scan_slow', self.init_variables['N_scan_slow'])
         N_scan_fast    = simu_params.get('N_scan_fast', self.init_variables['N_scan_fast'])
-        probe_shape    = simu_params.get('probe_shape', self.init_variables['probe_shape'])
+        probe_shape    = np.array(simu_params.get('probe_shape', self.init_variables['probe_shape']), dtype=float)
         
         logger.info(f"Simulating probe positions with dx = {dx:.4f}, scan_step_size = {scan_step_size:.4f}, N_scan_fast = {N_scan_fast}, N_scan_slow = {N_scan_slow}")
         pos = scan_step_size / dx * np.array([(y, x) for y in range(N_scan_slow) for x in range(N_scan_fast)]) # (N,2), each row is (y,x)
@@ -1764,7 +1766,7 @@ class Initializer:
             logger.info(f"Applying affine transformation to scan pattern with (scale, asymmetry, rotation, shear) = {(scale, asymmetry, rotation, shear)}")
             pos = pos - pos.mean(0)
             pos = pos @ compose_affine_matrix(scale, asymmetry, rotation, shear)
-            probe_shape = self.init_variables['probe_shape']
+            probe_shape = np.array(self.init_variables['probe_shape'], dtype=float)
             obj_shape = 1.2 * np.ceil(pos.max(0) - pos.min(0) + probe_shape)
             pos = pos + np.ceil((np.array(obj_shape) / 2) - (np.array(probe_shape) / 2))
         return pos
