@@ -307,13 +307,13 @@ def make_sigmoid_mask(Npix: int, relative_radius: float = 2/3, relative_width: f
     if center is None:
         center = (Npix // 2, Npix // 2)  # Use integer division for consistency
 
-    # Create a grid of coordinates
-    ky = torch.arange(Npix, dtype=torch.float32)
-    kx = torch.arange(Npix, dtype=torch.float32)
-    grid_ky, grid_kx = torch.meshgrid(ky, kx, indexing='ij')
+    # Create a grid of pixel-index coordinates
+    y = torch.arange(Npix, dtype=torch.float32)
+    x = torch.arange(Npix, dtype=torch.float32)
+    grid_y, grid_x = torch.meshgrid(y, x, indexing='ij')
 
     # Compute the distance from the specified center
-    kR = torch.sqrt((grid_ky - center[0])**2 + (grid_kx - center[1])**2)
+    kR = torch.sqrt((grid_y - center[0])**2 + (grid_x - center[1])**2)
 
     # Apply the scaled sigmoid function
     sigmoid_mask = scaled_sigmoid(kR, offset=Npix * relative_radius / 2, scale=relative_width * Npix)
@@ -442,20 +442,52 @@ def idct_2d(x: torch.Tensor) -> torch.Tensor:
     out = torch.fft.ifft(Xh_ext, dim=-2)[..., :H, :].real
     return out
 
+def make_freq_grid_2d(shape, indexing='ij', dtype=None, device=None):
+    """Return normalized (Fy, Fx) frequency grids, corner-centered (DC at [0,0]).
+
+    Values are dimensionless fftfreq in [-0.5, 0.5). Multiply by 2π/dx to get rad/Å.
+
+    Args:
+        shape: (Ny, Nx) tuple of ints
+        indexing: 'ij' or 'xy', default is 'ij'
+        dtype: optional torch dtype for the output
+        device: torch device
+
+    Returns:
+        (Fy, Fx): each of shape (Ny, Nx), dimensionless, range [-0.5, 0.5)
+    """
+    fy = torch.fft.fftfreq(int(shape[0]), dtype=dtype, device=device)
+    fx = torch.fft.fftfreq(int(shape[1]), dtype=dtype, device=device)
+    return torch.meshgrid(fy, fx, indexing=indexing)
+
+def make_real_grid_2d(shape, indexing='ij', dtype=None, device=None):
+    """Return normalized (Ry, Rx) real space grids, [0,N).
+
+    Values are px indices in [0, N). 
+    
+    Args:
+        shape: (Ny, Nx) tuple of ints
+        indexing: 'ij' or 'xy', default is 'ij'
+        dtype: optional torch dtype for the output
+        device: torch device
+
+    Returns:
+        (Ry, Rx): each of shape (Ny, Nx), unit in px, range [0, N)
+    """
+    ry = torch.arange(int(shape[0]), dtype=dtype, device=device)
+    rx = torch.arange(int(shape[1]), dtype=dtype, device=device)
+    return torch.meshgrid(ry, rx, indexing=indexing)
+
 # This is currently used in 'obj_z_recenter' constraint to shift the probe defocus.
 def near_field_evolution_torch(Npix_shape, dx, dz, lambd, dtype=torch.complex64, device='cuda'):
     """ Fresnel propagator """
     # The forward pass uses the propagator directly constructed in `PtychoModel.get_propagators`` for efficiency.
 
-    ygrid = torch.fft.fftfreq(int(Npix_shape[0]), device=device)
-    xgrid = torch.fft.fftfreq(int(Npix_shape[1]), device=device)
-
-    # Standard ASM
+    Fy, Fx = make_freq_grid_2d(Npix_shape, indexing='ij', device=device)
     k  = 2 * torch.pi / lambd
-    ky = 2 * torch.pi * ygrid / dx
-    kx = 2 * torch.pi * xgrid / dx
-    Ky, Kx = torch.meshgrid(ky, kx, indexing="ij")
-    
+    Ky = 2 * torch.pi * Fy / dx   # physical k-space, rad/Å
+    Kx = 2 * torch.pi * Fx / dx
+
     # Clamp to zero before sqrt to guard against tiny negative roundoff near the cutoff.
     # Evanescent modes (kx²+ky²>k²) are practically impossible since lambda << dx for all practical usage.
     kz = torch.sqrt(torch.clamp(k ** 2 - Kx ** 2 - Ky ** 2, min=0.0))
@@ -550,7 +582,9 @@ def get_center_of_mass(image, corner_centered=False):
     (ny, nx) = image.shape[-2:]
 
     if corner_centered:
-        grid_y, grid_x = torch.meshgrid(torch.fft.fftfreq(ny, 1 / ny, device=device), 
+        # fftfreq(n, d=1/n) → integer pixel indices in FFT order: [0,1,...,n//2-1, -n//2,...,-1]
+        # matches a corner-centered image (e.g. CBED/probe) where DC is at pixel [0,0]
+        grid_y, grid_x = torch.meshgrid(torch.fft.fftfreq(ny, 1 / ny, device=device),
                                         torch.fft.fftfreq(nx, 1 / nx, device=device), indexing='ij')
     else:
         grid_y, grid_x = torch.meshgrid(torch.arange(ny, device=device), 

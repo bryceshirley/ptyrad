@@ -250,7 +250,7 @@ def make_stem_probe(
     
     # Make k space sampling and probe forming aperture
     k = fftshift(fftfreq(Npix, dx)) # k is now in unit of Ang-1
-    kX,kY = np.meshgrid(k,k, indexing='xy')
+    kY, kX = np.meshgrid(k, k, indexing='ij')
     kR = np.sqrt(kX**2+kY**2)
     mask = (kR<=k_aperture)
     
@@ -327,31 +327,30 @@ def make_fzp_probe(
 
     dx_fzp = lambda_ * fl / Npix / dx  # pixel size in the FZP plane
 
-    # Coordinate in the FZP plane
-    lx_fzp = np.linspace(-dx_fzp * Npix / 2, dx_fzp * Npix / 2, Npix)
-    x_fzp, y_fzp = np.meshgrid(lx_fzp, lx_fzp)
+    # FZP plane: centered real-space coordinates, pixel size dx_fzp
+    # fftshift(fftfreq(N)) * N gives integer offsets [-N//2, ..., N//2-1] in standard FFT-compatible form
+    lx_fzp = np.fft.fftshift(np.fft.fftfreq(Npix)) * Npix * dx_fzp
+    y_fzp, x_fzp = np.meshgrid(lx_fzp, lx_fzp, indexing='ij')
 
-    
     T = np.exp(-1j * 2 * np.pi / lambda_ * (x_fzp**2 + y_fzp**2) / (2 * fl))
     C = (np.sqrt(x_fzp**2 + y_fzp**2) <= (D_FZP / 2)).astype(np.float64)  # circular function of FZP
     H = (np.sqrt(x_fzp**2 + y_fzp**2) >= (D_H / 2)).astype(np.float64)  # central block
 
-    
     IN = C * T * H
     M, N = IN.shape
     k = 2 * np.pi / lambda_
 
-    # Coordinate grid for input plane
-    lx = np.linspace(-dx_fzp * M / 2, dx_fzp * M / 2, M)
-    x, y = np.meshgrid(lx, lx)
+    # Input plane: same centered grid as FZP plane
+    lx = np.fft.fftshift(np.fft.fftfreq(M)) * M * dx_fzp
+    y, x = np.meshgrid(lx, lx, indexing='ij')
 
-    # Coordinate grid for output plane
-    fc = 1 / dx_fzp
-    fu = lambda_ * (fl + Ls) * fc
-    lu = ifftshift(np.linspace(-fu / 2, fu / 2, M))
-    u, v = np.meshgrid(lu, lu)
-
+    # Output plane: Fresnel Fourier sampling gives pixel size du = λ·|z| / (M·dx_fzp)
+    # fftfreq(M) * M gives integer offsets [0, 1, ..., M//2-1, -M//2, ..., -1] — already FFT-natural order
     z = fl + Ls
+    du = lambda_ * abs(z) / (M * dx_fzp)
+    lu = np.fft.fftfreq(M) * M * du
+    v, u = np.meshgrid(lu, lu, indexing='ij')
+
     if z > 0:
         # Propagation in the positive z direction
         pf = np.exp(1j * k * z) * np.exp(1j * k * (u**2 + v**2) / (2 * z))

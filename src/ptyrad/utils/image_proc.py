@@ -289,12 +289,12 @@ def mfft2(im):
     s[:, 0] += im[:, 0] - im[:, cols-1]
     s[:, cols-1] -= im[:, 0] - im[:, cols-1]
 
-    # Create grid for computing Poisson solution
-    cx, cy = np.meshgrid(2 * np.pi * np.arange(cols) / cols, 
-                          2 * np.pi * np.arange(rows) / rows)
+    # q[n] = 2π·n/N: DFT angular spatial frequency (rad/sample) used in discrete Laplacian eigenvalue
+    q_y, q_x = np.meshgrid(2 * np.pi * np.arange(rows) / rows,
+                            2 * np.pi * np.arange(cols) / cols, indexing='ij')
 
     # Generate smooth component from Poisson Eq with boundary condition
-    D = 2 * (2 - np.cos(cx) - np.cos(cy))
+    D = 2 * (2 - np.cos(q_y) - np.cos(q_x))
     D[0, 0] = np.inf  # Enforce zero mean & handle division by zero
     S = np.fft.fft2(s) / D
 

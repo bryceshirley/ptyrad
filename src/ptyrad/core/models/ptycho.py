@@ -14,7 +14,7 @@ from torch.nn.functional import interpolate
 from torchvision.transforms.functional import gaussian_blur
 
 from ptyrad.core.forward import multislice_forward
-from ptyrad.core.functional import imshift_batch, torch_phasor
+from ptyrad.core.functional import imshift_batch, make_freq_grid_2d, make_real_grid_2d, torch_phasor
 from ptyrad.io.dataloader import MeasDataLoader
 from ptyrad.utils.image_proc import center_crop
 
@@ -172,24 +172,17 @@ class PtychoModel(torch.nn.Module):
         # Note that the shift_object_grid is pre-generated for potential future usage of sub-px object shifts
         
         device = self.device
-        probe = self.get_complex_probe_view()
-        Npy, Npx = probe.shape[-2:] # Number of probe pixels in y and x directions
+        Npy, Npx = self.get_complex_probe_view().shape[-2:] # Number of probe pixels in y and x directions
         Noy, Nox = self.opt_objp.shape[-2:] # Number of object pixels in y and x directions
         
-        # Grids for obj_ROI selection
-        rpy, rpx = torch.meshgrid(torch.arange(Npy, dtype=torch.int32, device=device),
-                                  torch.arange(Npx, dtype=torch.int32, device=device), indexing='ij') # real space grid for probe in y and x directions
-        self.rpy_grid = rpy # real space grid with y-indices spans across probe extent
-        self.rpx_grid = rpx
+        # Real space grids: obj_ROI selection, real space grid spans across probe extent [0, Npix)
+        self.obj_ROI_grid =  torch.stack(make_real_grid_2d((Npy, Npx), indexing='ij', dtype=torch.int32, device=device), dim=0) # (2,Npy,Npx)
 
-        # Normalized k-space grids (fftfreq, dimensionless, DC at index 0, corner-centered, range [-0.5, 0.5))
-        kpy, kpx = torch.meshgrid(torch.fft.fftfreq(Npy, dtype=torch.float32, device=device),
-                                  torch.fft.fftfreq(Npx, dtype=torch.float32, device=device), indexing='ij')
-        koy, kox = torch.meshgrid(torch.fft.fftfreq(Noy, dtype=torch.float32, device=device),
-                                  torch.fft.fftfreq(Nox, dtype=torch.float32, device=device), indexing='ij')
-        self.shift_probes_grid = torch.stack([kpy, kpx], dim=0) # (2,Npy,Npx), for sub-px probe shifting via imshift_batch
-        self.shift_object_grid = torch.stack([koy, kox], dim=0) # (2,Noy,Nox), for sub-px object shifting (implemented for completeness, not used in PtyRAD)
-        self.propagator_grid = self.shift_probes_grid * (2 * torch.pi / self.dx) # (2,Npy,Npx), for Fresnel propagation, rad/Å, corner-centered
+        # Fourier space normalized frequency grids: probe shifting and Fresnel propagation. 
+        # Dimensionless fftfreq in [-0.5, 0.5), DC at corner index 0
+        self.shift_probes_grid = torch.stack(make_freq_grid_2d((Npy, Npx), indexing='ij', dtype=torch.float32, device=device), dim=0) # (2,Npy,Npx), for sub-px probe shifting via imshift_batch
+        self.shift_object_grid = torch.stack(make_freq_grid_2d((Noy, Nox), indexing='ij', dtype=torch.float32, device=device), dim=0) # (2,Noy,Nox), for sub-px object shifting (implemented for completeness, not used in PtyRAD)
+        self.propagator_grid = self.shift_probes_grid * (2 * torch.pi / self.dx) # (2,Npy,Npx), for Fresnel propagation, scale normalized fftfreq [-0.5, 0.5) → physical k-space [rad/Å]
     
     def create_optimizable_params_dict(self, lr_params):
         """ Sets the optimizer with lr_params """
@@ -282,11 +275,11 @@ class PtychoModel(torch.nn.Module):
         
         """
         # obja_patches = (N,B,D,H,W), N is the additional sample index within the input batch, B is now used for omode.
-        # rpy_grid is the y-grid (Ny,Nx), by adding the y coordinates from init_crop_pos (N,1) in a broadcast way, it becomes (N,Ny,Nx)
+        # rpy_grid is the obj_ROI_grid[0], i.e., y-grid (Ny,Nx), by adding the y coordinates from init_crop_pos (N,1) in a broadcast way, it becomes (N,Ny,Nx)
         # obj_ROI_grid_y = (N,Ny,Nx)
         
-        obj_ROI_grid_y = self.rpy_grid[None,:,:] + self.crop_pos[indices, None, None, 0]
-        obj_ROI_grid_x = self.rpx_grid[None,:,:] + self.crop_pos[indices, None, None, 1]
+        obj_ROI_grid_y = self.obj_ROI_grid[0, None, :, :] + self.crop_pos[indices, None, None, 0]
+        obj_ROI_grid_x = self.obj_ROI_grid[1, None, :, :] + self.crop_pos[indices, None, None, 1]
         
         obja_patches = self.opt_obja[:,:,obj_ROI_grid_y,obj_ROI_grid_x].permute(2,0,1,3,4).contiguous()
         objp_patches = self.opt_objp[:,:,obj_ROI_grid_y,obj_ROI_grid_x].permute(2,0,1,3,4).contiguous()
