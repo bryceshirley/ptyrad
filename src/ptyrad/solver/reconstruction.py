@@ -750,12 +750,19 @@ def time_sync(device=None):
     # Luckily these checks won't really affect the performance.
     
     from time import perf_counter
+
+    device_type = None
+    if device is not None:
+        try:
+            device_type = torch.device(device).type
+        except (TypeError, RuntimeError):
+            device_type = str(device).split(":", 1)[0]
     
     # Check if CUDA is available
-    if torch.cuda.is_available():
+    if torch.cuda.is_available() and device_type in (None, "cuda"):
         torch.cuda.synchronize(device)
     # Check if MPS (Metal Performance Shaders) is available (macOS only)
-    elif torch.backends.mps.is_available():
+    elif torch.backends.mps.is_available() and device_type in (None, "mps"):
         torch.mps.synchronize() # As of pytorch 2.10, torch.mps.synchronize doesn't take any arg
     # TODO: Refactor with torch.accelerator.synchronize() once min pytorch is bumped to >=2.7
     #       torch.accelerator provides a unified API across CUDA, MPS, and future accelerators.
