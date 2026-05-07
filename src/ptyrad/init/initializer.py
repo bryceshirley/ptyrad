@@ -404,8 +404,8 @@ class Initializer:
         pos = self._load_pos()
         pos = self._process_pos(pos)
 
-        probe_shape = np.array(self.init_variables['probe_shape'], dtype=float)
-        obj_lateral_extent = (1.2 * np.ceil(pos.max(0) - pos.min(0) + probe_shape)).astype(int)
+        probe_shape = self.init_variables['probe_shape']
+        obj_lateral_extent, _ = self._compute_obj_extent_and_center_shift(pos, probe_shape)
         crop_pos = np.round(pos).astype('int16')
         probe_pos_shifts = (pos - crop_pos).astype('float32')
         
@@ -1614,7 +1614,25 @@ class Initializer:
         return probe.astype('complex64')
    
     ###### Private methods for initializing positions ######
-    
+
+    @staticmethod
+    def _compute_obj_extent_and_center_shift(pos, probe_shape):
+        """
+        Compute the lateral object canvas size and the integer shift that places
+        the central scan position at the geometric center of that canvas.
+
+        Returns:
+            obj_extent (np.ndarray[int], shape (2,)): lateral canvas size (Ny, Nx);
+                same value stored as init_variables['obj_lateral_extent'].
+            center_shift (np.ndarray[int], shape (2,)): the (y, x) shift that places
+                the central scan position (pos = 0) such that the probe center lands
+                at obj_extent // 2.
+        """
+        probe_shape = np.asarray(probe_shape, dtype=int)
+        obj_extent = (1.2 * np.ceil(pos.max(0) - pos.min(0) + probe_shape)).astype(int)
+        center_shift = obj_extent // 2 - probe_shape // 2
+        return obj_extent, center_shift
+
     def _load_pos(self):
         """
         Load the probe positions from the specified source.
@@ -1687,15 +1705,15 @@ class Initializer:
         # which was used for many APS instruments
         
         dx = self.init_variables['dx']
-        probe_shape = np.array(self.init_variables['probe_shape'], dtype=float)
-        
+        probe_shape = self.init_variables['probe_shape']
+
         hdf5_path = params
         ppY = load_hdf5(hdf5_path, key='ppY')
         ppX = load_hdf5(hdf5_path, key='ppX')
         pos = np.stack((-ppY, -ppX), axis=1) / dx 
         pos = np.flipud(pos) # (N,2) in (pos_y_px, pos_x_px)
-        obj_shape = 1.2 * np.ceil(pos.max(0) - pos.min(0) + probe_shape)
-        pos = pos + np.ceil((np.array(obj_shape)/2) - (np.array(probe_shape)/2)) # Shift to obj coordinate      
+        _, center_shift = self._compute_obj_extent_and_center_shift(pos, probe_shape)
+        pos = pos + center_shift # Shift to obj coordinate
         return pos
     
     def _simulate_pos(self, simu_params: dict):
@@ -1711,13 +1729,13 @@ class Initializer:
         scan_step_size = simu_params.get('scan_step_size', self.init_variables['scan_step_size'])
         N_scan_slow    = simu_params.get('N_scan_slow', self.init_variables['N_scan_slow'])
         N_scan_fast    = simu_params.get('N_scan_fast', self.init_variables['N_scan_fast'])
-        probe_shape    = np.array(simu_params.get('probe_shape', self.init_variables['probe_shape']), dtype=float)
-        
+        probe_shape    = simu_params.get('probe_shape', self.init_variables['probe_shape'])
+
         logger.info(f"Simulating probe positions with dx = {dx:.4f}, scan_step_size = {scan_step_size:.4f}, N_scan_fast = {N_scan_fast}, N_scan_slow = {N_scan_slow}")
         pos = scan_step_size / dx * np.array([(y, x) for y in range(N_scan_slow) for x in range(N_scan_fast)]) # (N,2), each row is (y,x)
         pos = pos - pos.mean(0) # Center scan around origin
-        obj_shape = 1.2 * np.ceil(pos.max(0) - pos.min(0) + probe_shape)
-        pos = pos + np.ceil((np.array(obj_shape)/2) - (np.array(probe_shape)/2)) # Shift to obj coordinate
+        _, center_shift = self._compute_obj_extent_and_center_shift(pos, probe_shape)
+        pos = pos + center_shift # Shift to obj coordinate
         return pos
 
     def _process_pos(self, pos):
@@ -1766,9 +1784,9 @@ class Initializer:
             logger.info(f"Applying affine transformation to scan pattern with (scale, asymmetry, rotation, shear) = {(scale, asymmetry, rotation, shear)}")
             pos = pos - pos.mean(0)
             pos = pos @ compose_affine_matrix(scale, asymmetry, rotation, shear)
-            probe_shape = np.array(self.init_variables['probe_shape'], dtype=float)
-            obj_shape = 1.2 * np.ceil(pos.max(0) - pos.min(0) + probe_shape)
-            pos = pos + np.ceil((np.array(obj_shape) / 2) - (np.array(probe_shape) / 2))
+            probe_shape = self.init_variables['probe_shape']
+            _, center_shift = self._compute_obj_extent_and_center_shift(pos, probe_shape)
+            pos = pos + center_shift
         return pos
     
     def _pos_scan_add_random_displacement(self, pos, scan_rand_std):

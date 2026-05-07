@@ -680,8 +680,8 @@ def save_results(output_path, model, params, optimizer, scheduler, niter, indice
         for fov in result_modes['FOV']:
             if fov == 'crop':
                 fov_str = '_crop'
-                objp_crop = objp[:, :, y_min-1:y_max, x_min-1:x_max]
-                obja_crop = obja[:, :, y_min-1:y_max, x_min-1:x_max]
+                objp_crop = objp[:, :, y_min:y_max+1, x_min:x_max+1]
+                obja_crop = obja[:, :, y_min:y_max+1, x_min:x_max+1]
             elif fov == 'full':
                 fov_str = ''
                 objp_crop = objp
