@@ -25,9 +25,9 @@ class BatchSize(BaseModel):
 class ResultModes(BaseModel):
     model_config = {"extra": "forbid"}
     
-    obj_dim: List[int] = Field(default=[2, 3, 4], description="Object dimensions to save", min_items=1)
-    FOV: List[str] = Field(default=["crop"], description="Field of view options", min_items=1)
-    bit: List[str] = Field(default=["8"], description="Bit depth options", min_items=1)
+    obj_dim: List[int] = Field(default=[2, 3, 4], description="Object dimensions to save", min_length=1)
+    FOV: List[str] = Field(default=["crop"], description="Field of view options", min_length=1)
+    bit: List[str] = Field(default=["8"], description="Bit depth options", min_length=1)
 
     @field_validator("obj_dim")
     @classmethod

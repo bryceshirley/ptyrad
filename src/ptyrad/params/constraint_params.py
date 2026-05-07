@@ -40,8 +40,8 @@ class ProbeMaskR(BaseModel):
     power_thresh: float = Field(default=0.95, ge=0.0, le=1.0, description="Power threshold for probe modes")
     z_range: List[float] = Field(
         default=[-500, 500],
-        min_items=2,
-        max_items=2,
+        min_length=2,
+        max_length=2,
         description="Min and max range for focal plane search along Z-direction in Angstroms")
     z_steps: int = Field(default=101, ge=1, description="Number of steps for focal plane search along Z-direction")
 
@@ -149,8 +149,8 @@ class ObjaThresh(BaseModel):
     relax: float = Field(default=0.0, ge=0.0, le=1.0, description="Relaxation parameter for thresholding")
     thresh: List[float] = Field(
         default=[0.96, 1.04],
-        min_items=2,
-        max_items=2,
+        min_length=2,
+        max_length=2,
         description="Min and max thresholds for amplitude",)
 
 

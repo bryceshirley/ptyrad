@@ -178,7 +178,7 @@ class MeasResample(BaseModel):
     - ``on_the_fly`` : Resample the measurements during optimization, so it's more efficient for memory if you're "upsampling". 
     """
     
-    scale_factors: List[float] = Field(default=[2, 2], min_items=2, max_items=2, description="Resampling scale factors (2,) for measurements")
+    scale_factors: List[float] = Field(default=[2, 2], min_length=2, max_length=2, description="Resampling scale factors (2,) for measurements")
     """
     List of 2 floats as [ky_zoom, kx_zoom], currently only square detectors are supported, so ky_zoom must be the same as kx_zoom. 
     """
@@ -403,9 +403,9 @@ class ObjZResample(BaseModel):
     - Must be a **positive float** for all other modes.
     """
     @model_validator(mode="after")
-    def validate_value(cls, values):
-        mode = values.mode
-        value = values.value
+    def validate_value(self):
+        mode = self.mode
+        value = self.value
 
         if mode in ("scale_Nlayer", "scale_slice_thickness"):
             if not isinstance(value, (int, float)):
@@ -413,7 +413,7 @@ class ObjZResample(BaseModel):
             if value <= 0:
                 raise ValueError(f"For mode '{mode}', value must be > 0.")
             # force float if int was passed
-            values.value = float(value)
+            self.value = float(value)
 
         elif mode == "target_Nlayer":
             if not isinstance(value, int):
@@ -426,9 +426,9 @@ class ObjZResample(BaseModel):
                 raise ValueError("For mode 'target_slice_thickness', value must be a float > 0.")
             if value <= 0:
                 raise ValueError("For mode 'target_slice_thickness', value must be > 0.")
-            values.value = float(value)
+            self.value = float(value)
 
-        return values
+        return self
 
 
 class TiltParams(BaseModel):
@@ -978,7 +978,7 @@ class InitParams(BaseModel):
         and then use ``meas_reshape`` to make it into (N_scans, ky, kx).
     """
 
-    meas_reshape: Optional[List[int]] = Field(default=None, min_items=3, max_items=3, description="Reshape for diffraction patterns")
+    meas_reshape: Optional[List[int]] = Field(default=None, min_length=3, max_length=3, description="Reshape for diffraction patterns")
     """
     Applies additional reshaping (rearrange elements) to the loaded diffraction patterns with a list of 3 ints. 
     
@@ -995,7 +995,7 @@ class InitParams(BaseModel):
         We can put ``'meas_reshape': [-1, <Npix>, <Npix>]`` for convenient representation, make sure to replace <Npix> with your actual value in params files.
     """
 
-    meas_flipT: Optional[List[int]] = Field(default=None, min_items=3, max_items=3, description="Flip and transpose for diffraction patterns")
+    meas_flipT: Optional[List[int]] = Field(default=None, min_length=3, max_length=3, description="Flip and transpose for diffraction patterns")
     """
     Applies additional flipping and transposing to the loaded diffraction patterns with a list of 3 binary booleans (0 or 1)
     

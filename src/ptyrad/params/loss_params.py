@@ -48,7 +48,7 @@ class LossSimlar(BaseModel):
     state: bool = Field(default=False, description="Enable/disable loss_simlar term")
     weight: float = Field(default=0.1, ge=0.0, description="Weight of loss_simlar term")
     obj_type: Literal["amplitude", "phase", "both"] = Field(default="both", description="Object type for similarity")
-    scale_factor: List[float] = Field(default=[1.0, 1.0, 1.0], min_items=3, max_items=3, description="Scale factors for z, y, x")
+    scale_factor: List[float] = Field(default=[1.0, 1.0, 1.0], min_length=3, max_length=3, description="Scale factors for z, y, x")
     blur_std: float = Field(default=1.0, ge=0.0, description="Standard deviation for Gaussian blur")
 
 
