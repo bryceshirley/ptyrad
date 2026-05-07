@@ -46,8 +46,9 @@ recon_params:
     NITER: 200 # Total number of reconstruction iterations. 1 iteration means a full pass of all selected diffraction patterns.
     BATCH_SIZE: {'size': 32, 'grad_accumulation': 1} # Number of diffraction patterns processed simultaneously to get the gradient update.
     SAVE_ITERS: 10 # Number of completed iterations before saving the current reconstruction results (model, probe, object) and summary figures.
-    output_dir: 'output/PSO/'
+    output_dir: 'output/walkthrough/13_results_figures/'
     recon_dir_affixes: ['minimal', 'model', 'loss', 'constraint'] # Customizable affixes of reconstruction folder name with presets like 'minimal', 'default', 'all'. See docs for 19 more detailed controls.
+    prefix_time: false # type: boolean, preset strings, and time format strings. Set to true to prepend a date str like '20240903_' in front of the reconstruction folder name
     prefix: '' # Prefix this string to the reconstruction folder name. Note that a "_" will be automatically generated.
     postfix: 'results_figures' # Postfix this string to the reconstruction folder name. Note that a "_" will be automatically generated.
     
@@ -64,7 +65,7 @@ recon_params:
     result_modes: {'obj_dim': [2, 3, 4], 'FOV': ['crop'], 'bit': ['8', 'raw']} # Specifies which object output is saved by their final dimension ('obj_dim'), whether to save the full or cropped FOV ('FOV') of object, and whether to save the raw or normalized bit depth version of object and probe.
     
     ## NOTE: 'selected_figs' controls what figures are saved, 
-    ##       available options are 'loss', 'forward', 'probe_r_amp', 'probe_k_amp', 'probe_k_phase', 'pos', 'tilt', 'tilt_avg', 'slice_thickness', and 'all'.
-    selected_figs: ['loss', 'forward', 'probe_r_amp', 'pos'] # Selected figures that will be saved.
+    ##       available options are 'convergence', 'convergence_dynamic', 'loss', 'forward', 'probe_r_amp', 'probe_k_amp', 'probe_k_phase', 'pos', 'tilt', 'tilt_avg', 'slice_thickness', and 'all'.
+    selected_figs: ['convergence', 'forward', 'probe_r_amp', 'pos'] # Selected figures that will be saved. The suggested value is ['convergence', 'forward', 'probe_r_amp', 'pos'].
 
     compiler_configs: {'enable': true} # Set to {'enable': true} to enable PyTorch JIT compilation for a 1.3-1.9x speedup on supported hardware.

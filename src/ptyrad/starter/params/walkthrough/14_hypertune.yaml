@@ -81,8 +81,9 @@ recon_params:
     ##       generally we're not interested in the intermediate output files, so will set SAVE_ITERS to null to skip saving the large model files.
     SAVE_ITERS: null # Number of completed iterations before saving the current reconstruction results (model, probe, object) and summary figures.
 
-    output_dir: 'output/PSO/'
+    output_dir: 'output/walkthrough/14_hypertune/'
     recon_dir_affixes: ['minimal', 'model', 'loss', 'constraint'] # Customizable affixes of reconstruction folder name with presets like 'minimal', 'default', 'all'. See docs for 19 more detailed controls.
+    prefix_time: false # type: boolean, preset strings, and time format strings. Set to true to prepend a date str like '20240903_' in front of the reconstruction folder name
     prefix: '' # Prefix this string to the reconstruction folder name. Note that a "_" will be automatically generated.
     postfix: '' # Postfix this string to the reconstruction folder name. Note that a "_" will be automatically generated.
     save_result: ['model', 'objp', 'probe_prop'] # Selected results to save every SAVE_ITERS. 

@@ -33,11 +33,11 @@ init_params:
     ##       or use an object from PtychoShelves but pair it with a probe from PtyRAD.
     ##       While PtyRAD will do necessary preprocessing, the sampling (i.e., px size) must be compatible for each loaded component.
     probe_source           : 'PtyRAD' # Data source of the probe. Currently supporting 'simu', 'PtyRAD', 'PtyShv', 'py4DSTEM', and 'custom'
-    probe_params           : 'output/tBL_WSe2/20260205_full_N16384_dp128_flipT100_random32_p6_1obj_6slice_dz2/model_iter0200.hdf5' # Provide a str path of 'path/to/reconstruction_model.hdf5'
+    probe_params           : 'output/walkthrough/01_multi_slice/full_N16384_dp128_flipT100_random32_p6_1obj_6slice_dz2_orblur0.4_ozblur1.0/model_iter0200.hdf5' # Provide a str path of 'path/to/reconstruction_model.hdf5'
     pos_source             : 'PtyRAD' # Data source of the probe positions. Currently supporting 'simu', 'PtyRAD', 'PtyShv', 'py4DSTEM', 'foldslice_hdf5', and 'custom'
-    pos_params             : 'output/tBL_WSe2/20260205_full_N16384_dp128_flipT100_random32_p6_1obj_6slice_dz2/model_iter0200.hdf5' # Provide a str path of 'path/to/reconstruction_model.hdf5'
+    pos_params             : 'output/walkthrough/01_multi_slice/full_N16384_dp128_flipT100_random32_p6_1obj_6slice_dz2_orblur0.4_ozblur1.0/model_iter0200.hdf5' # Provide a str path of 'path/to/reconstruction_model.hdf5'
     obj_source             : 'PtyRAD' # Data source of the object. Currently supporting 'simu', 'PtyRAD', 'PtyShv', 'py4DSTEM', and 'custom'
-    obj_params             : 'output/tBL_WSe2/20260205_full_N16384_dp128_flipT100_random32_p6_1obj_6slice_dz2/model_iter0200.hdf5' # Provide a str path of 'path/to/reconstruction_model.hdf5'
+    obj_params             : 'output/walkthrough/01_multi_slice/full_N16384_dp128_flipT100_random32_p6_1obj_6slice_dz2_orblur0.4_ozblur1.0/model_iter0200.hdf5' # Provide a str path of 'path/to/reconstruction_model.hdf5'
 
 loss_params:
     loss_single: {'state': true, 'weight': 1.0, 'dp_pow': 0.5} # Amplitude noise model for typical dataset (dose-sufficient) under the maximum-likelihood formalism
@@ -51,13 +51,14 @@ recon_params:
     NITER: 200 # Total number of reconstruction iterations. 1 iteration means a full pass of all selected diffraction patterns.
     BATCH_SIZE: {'size': 32, 'grad_accumulation': 1} # Number of diffraction patterns processed simultaneously to get the gradient update.
     SAVE_ITERS: 10 # Number of completed iterations before saving the current reconstruction results (model, probe, object) and summary figures.
-    output_dir: 'output/tBL_WSe2/'
+    output_dir: 'output/walkthrough/04_resume_reconstruction/'
     recon_dir_affixes: ['minimal', 'constraint', 'loss'] # Customizable affixes of reconstruction folder name with presets like 'minimal', 'default', 'all'. See docs for 19 more detailed controls.
-    
+    prefix_time: false # type: boolean, preset strings, and time format strings. Set to true to prepend a date str like '20240903_' in front of the reconstruction folder name
+
     ## NOTE: PtyRAD generates the output folder name based on reconstruction conditions.
     ##       If resuming the exact same condition, the original result might get overridden.
     ##       In order to keep the full record, it's recommended to slightly postfix the output folder name to prevent colision.
-    ##       In this example, the original output folder is "20260204_full_N16384_dp128_flipT100_random32_p6_1obj_6slice_dz2/"
-    ##       After postfixing the customizable string, the new folder becomes "20260204_full_N16384_dp128_flipT100_random32_p6_1obj_6slice_dz2_r2/"
+    ##       In this example, the original output folder is "01_multislice/full_N16384_dp128_flipT100_random32_p6_1obj_6slice_dz2/"
+    ##       After postfixing the customizable string, the new folder becomes "04_resume_reconstruction/full_N16384_dp128_flipT100_random32_p6_1obj_6slice_dz2_r2/"
     prefix: '' # Prefix this string to the reconstruction folder name. Note that a "_" will be automatically generated.
     postfix: 'r2' # Postfix this string to the reconstruction folder name. Note that a "_" will be automatically generated.
