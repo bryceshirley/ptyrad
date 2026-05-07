@@ -147,13 +147,15 @@ def validate_params(args):
     """
     Validate parameter file
     """
+    import sys
     from ptyrad.params import load_params
-    
+
     try:
         _ = load_params(args.params_path, validate=True)
         print(f"Success! Params file: '{args.params_path}' is validated!")
     except Exception as e:
-        print(f"Invalid parameters: {e}")
+        print(f"Invalid parameters: {e}", file=sys.stderr)
+        sys.exit(1)
 
 def gui(args):
     """

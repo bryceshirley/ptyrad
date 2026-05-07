@@ -4,7 +4,7 @@ import subprocess
 import glob
 from pathlib import Path
 
-def validate_all_params():
+def main():
     """
     Finds and validates all YAML parameter files in the project.
     """
@@ -43,4 +43,4 @@ def validate_all_params():
     print(f"\nSummary: {success_count}/{len(yaml_files)} files passed validation.")
 
 if __name__ == "__main__":
-    validate_all_params()
+    main()
