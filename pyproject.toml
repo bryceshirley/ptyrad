@@ -27,12 +27,23 @@ dependencies = [
   "matplotlib",
   "optuna",
   "pydantic",
+  "PyYAML",
   "scikit-learn",
   "scipy",
   "tifffile",
   "torch>=2.4",
   "torchvision",
   "zarr"
+]
+
+[project.optional-dependencies]
+test = [
+  "pytest",
+]
+dev = [
+  "pytest",
+  "build",
+  "twine",
 ]
 
 [project.scripts]

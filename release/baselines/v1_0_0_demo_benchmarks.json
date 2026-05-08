@@ -1,0 +1,10 @@
+{
+  "benchmarks": {},
+  "policy": {
+    "quality_loss_rel_fail": 0.15,
+    "tensor_stats_rel_fail": 0.2,
+    "time_fail_rel": 1.0,
+    "time_warn_rel": 0.25
+  },
+  "version": 1
+}

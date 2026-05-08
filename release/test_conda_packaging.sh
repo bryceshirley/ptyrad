@@ -38,7 +38,7 @@ conda install --use-local ptyrad -y
 TEST_OUT_DIR="test_init"
 echo "🔍 Running integration test script..."
 
-if python tools/verify_ptyrad_init.py "$TEST_OUT_DIR"; then
+if python release/verify_ptyrad_init.py "$TEST_OUT_DIR"; then
     echo "✅ Integration test complete."
 else
     echo "❌ Integration test failed."
