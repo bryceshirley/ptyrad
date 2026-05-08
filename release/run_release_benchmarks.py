@@ -20,7 +20,6 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-import yaml
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -66,9 +65,7 @@ def parse_args() -> argparse.Namespace:
         help="Demo benchmark(s) to run.",
     )
     parser.add_argument("--n-iter", type=int, default=200)
-    parser.add_argument("--save-iters", type=int, default=None)
     parser.add_argument("--gpuid", default="0", help="GPU ID, 'cpu', or 'acc'.")
-    parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
         "--output-root",
         type=Path,
@@ -140,40 +137,15 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
-def prepare_params(demo: str, args: argparse.Namespace) -> Path:
-    source_path = DEMO_PARAMS[demo]
-    params = yaml.safe_load(source_path.read_text(encoding="utf-8"))
-    recon_params = params.setdefault("recon_params", {})
-    save_iters = args.save_iters if args.save_iters is not None else args.n_iter
-
-    recon_params["NITER"] = args.n_iter
-    recon_params["SAVE_ITERS"] = save_iters
-    recon_params["output_dir"] = str(args.output_root / demo)
-    recon_params["prefix_time"] = False
-    recon_params["prefix"] = "v1_0_0_release"
-    recon_params["postfix"] = f"seed{args.seed}"
-    recon_params.setdefault("save_result", ["model", "obj", "probe"])
-
-    prepared_dir = args.output_root / "_prepared_params"
-    prepared_dir.mkdir(parents=True, exist_ok=True)
-    prepared_path = prepared_dir / f"{demo}.yaml"
-    prepared_path.write_text(yaml.safe_dump(params, sort_keys=False), encoding="utf-8")
-    return prepared_path
-
-
-def run_benchmark(demo: str, prepared_path: Path, args: argparse.Namespace) -> tuple[int, float]:
+def run_benchmark(demo: str, source_path: Path, args: argparse.Namespace) -> tuple[int, float]:
+    output_dir = args.output_root / demo
     command = [
         sys.executable,
-        "-m",
-        "ptyrad",
-        "run",
-        str(prepared_path),
-        "--gpuid",
-        args.gpuid,
-        "--seed",
-        str(args.seed),
-        "--verbosity",
-        "INFO",
+        str(PROJECT_ROOT / "release" / "run_ptyrad_override.py"),
+        "--params_path", str(source_path),
+        "--n_iter", str(args.n_iter),
+        "--output_path", str(output_dir),
+        "--gpuid", args.gpuid,
     ]
     env = os.environ.copy()
     existing = env.get("PYTHONPATH")
@@ -395,18 +367,18 @@ def main() -> int:
     status_rank = {"pass": 0, "warn": 1, "fail": 2}
 
     for demo in args.benchmarks:
-        prepared_path = prepare_params(demo, args)
+        source_path = DEMO_PARAMS[demo]
         wall_s = math.nan
         run_returncode = 0
 
         if not args.skip_run:
-            run_returncode, wall_s = run_benchmark(demo, prepared_path, args)
+            run_returncode, wall_s = run_benchmark(demo, source_path, args)
 
         model_path = newest_model_file(demo, args)
         failures: list[str] = []
         warnings: list[str] = []
         metrics: dict[str, Any] = {
-            "params_path": str(prepared_path),
+            "params_path": str(source_path),
             "total_wall_s": float(wall_s),
         }
 
@@ -417,7 +389,7 @@ def main() -> int:
         else:
             try:
                 metrics, structural_problems = collect_metrics(model_path, wall_s)
-                metrics["params_path"] = str(prepared_path)
+                metrics["params_path"] = str(source_path)
                 failures.extend(structural_problems)
             except Exception as exc:
                 failures.append(f"failed to read model file: {exc}")
