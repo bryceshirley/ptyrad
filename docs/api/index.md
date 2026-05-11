@@ -13,6 +13,7 @@ For typical usage, see the Using PtyRAD and Tutorials sections.
    :toctree: ../_autosummary
    :recursive:
 
+   ptyrad.analysis
    ptyrad.cli
    ptyrad.core
    ptyrad.init

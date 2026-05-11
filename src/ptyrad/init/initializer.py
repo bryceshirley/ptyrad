@@ -849,15 +849,12 @@ class Initializer:
         if flipT_axes is None:
             return meas
 
-        # Validate length
-        if not isinstance(flipT_axes, (list, tuple)) or len(flipT_axes) != 3:
-            raise ValueError(f"Expected flipT_axes to be a list of 3 values, got: {flipT_axes}")
-
-        # Safely cast all entries to int
         try:
-            flipT_axes = [int(v) for v in flipT_axes]
+            flipT_axes = [int(v) for v in list(flipT_axes)]
         except Exception as e:
             raise ValueError(f"flipT_axes must contain values convertible to int (0 or 1). Got: {flipT_axes}") from e
+        if len(flipT_axes) != 3:
+            raise ValueError(f"Expected flipT_axes to contain 3 values, got: {flipT_axes}")
 
         logger.info(f"Flipping measurements with [flipud, fliplr, transpose] = {flipT_axes}")
 
@@ -1758,15 +1755,12 @@ class Initializer:
         if flipT_axes is None:
             return pos
 
-        # Validate length
-        if not isinstance(flipT_axes, (list, tuple)) or len(flipT_axes) != 3:
-            raise ValueError(f"Expected flipT_axes to be a list of 3 values, got: {flipT_axes}")
-
-        # Safely cast all entries to int
         try:
-            flipT_axes = [int(v) for v in flipT_axes]
+            flipT_axes = [int(v) for v in list(flipT_axes)]
         except Exception as e:
             raise ValueError(f"flipT_axes must contain values convertible to int (0 or 1). Got: {flipT_axes}") from e
+        if len(flipT_axes) != 3:
+            raise ValueError(f"Expected flipT_axes to contain 3 values, got: {flipT_axes}")
         
         logger.info(f"Flipping scan pattern with [flipup, fliplr, transpose] = {flipT_axes}")
         
