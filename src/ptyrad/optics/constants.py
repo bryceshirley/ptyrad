@@ -39,7 +39,7 @@ def get_EM_constants(kv: float, output_type: Literal['gamma', 'wavelength', 'sig
     elif output_type == 'wavelength':
         return get_wavelength_ang(kv)
     elif output_type == 'sigma':
-        return get_interaction_parameter_sigma
+        return get_interaction_parameter_sigma(kv)
     else:
         raise ValueError(f"output_type '{output_type}' not implemented yet, please use 'gamma', 'wavelength', or 'sigma'!")
 
