@@ -311,7 +311,7 @@ class MeasExport(BaseModel):
 class ProbeNormalization(BaseModel):
     model_config = {"extra": "forbid"}
     
-    mode: Literal["mean_total_ints", "max_total_ints", "total_intensity"] = Field(default="mean_total_ints", description="Mode to normalize probe intensity")
+    mode: Literal["mean_total_ints", "max_total_ints", "target_intensity"] = Field(default="mean_total_ints", description="Mode to normalize probe intensity")
     """
     Available options are ``mean_total_ints`` (default), ``max_total_ints``, and ``target_intensity``.
 
