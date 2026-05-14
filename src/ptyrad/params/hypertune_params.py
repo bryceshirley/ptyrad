@@ -16,17 +16,22 @@ class SamplerParams(BaseModel):
     name: Literal["RandomSampler", "TPESampler", "GPSampler",
                   "CmaEsSampler", "NSGAIISampler", "NSGAIIISampler",
                   "GridSampler", "QMCSampler", "BruteForceSampler"] = Field(default="TPESampler", description="Sampler algorithm for hyperparameter tuning")
-    configs: Dict[str, Any] = Field(default={}, description="Sampler configurations")
+    configs: Optional[Dict[str, Any]] = Field(default=None, description="Sampler configurations")
 
     @model_validator(mode='before')
     def set_default_sampler_config(cls, values: dict) -> dict:
+        if not isinstance(values, dict):
+            return values
         name = values.get('name', 'TPESampler')
-        if name == 'TPESampler' and 'configs' not in values:
-            values['configs'] = {
-                'multivariate': True, 
-                'group': True, 
-                'constant_liar': True
-            }
+        if values.get('configs') is None:
+            if name == 'TPESampler':
+                values['configs'] = {
+                    'multivariate': True,
+                    'group': True,
+                    'constant_liar': True
+                }
+            else:
+                values['configs'] = {}
         return values
 
 
@@ -35,16 +40,21 @@ class PrunerParams(BaseModel):
 
     name: Literal["MedianPruner", "PatientPruner", "PercentilePruner",
                   "SuccessiveHalvingPruner", "HyperbandPruner", "ThresholdPruner"] = Field(default="HyperbandPruner", description="Pruner algorithm for early termination")
-    configs: Dict[str, Any] = Field(default={}, description="Pruner configurations")
+    configs: Optional[Dict[str, Any]] = Field(default=None, description="Pruner configurations")
 
     @model_validator(mode='before')
     def set_default_pruner_config(cls, values: dict) -> dict:
+        if not isinstance(values, dict):
+            return values
         name = values.get('name', 'HyperbandPruner')
-        if name == 'HyperbandPruner' and 'configs' not in values:
-            values['configs'] = {
-                'min_resource': 5, 
-                'reduction_factor': 2
-            }
+        if values.get('configs') is None:
+            if name == 'HyperbandPruner':
+                values['configs'] = {
+                    'min_resource': 5,
+                    'reduction_factor': 2
+                }
+            else:
+                values['configs'] = {}
         return values
 
 
@@ -258,15 +268,17 @@ class HypertuneParams(BaseModel):
     
     sampler_params: SamplerParams = Field(default_factory=SamplerParams, description="Sampler configuration for hypertuning")
     """
-    Sampler is the optimization algorithm used for hyperparameter tuning. 
+    Required — a sampler is always needed; omit the field to use the default TPESampler.
+    Explicit null is rejected. `configs: null` (or omitted) falls back to the algorithm-specific defaults.
     See https://optuna.readthedocs.io/en/stable/reference/samplers/index.html for more details.
     """
-    
+
     pruner_params: Optional[PrunerParams] = Field(default_factory=PrunerParams, description="Pruner configuration for early termination")
     """
-    Pruning is early termination of unpromising trials to save computation budget. 
-    Set to `'pruner_params': null` to disable pruning (i.e., no early termination).
-    The recommended prunner is HyperbandPruner, see Optuna document for more details
+    Pruning is early termination of unpromising trials to save computation budget.
+    Set to `pruner_params: null` to disable pruning entirely (i.e., no early termination).
+    `configs: null` (or omitted) falls back to the algorithm-specific defaults.
+    The recommended prunner is HyperbandPruner, see Optuna document for more details.
     """
     
     storage_path: str = Field(default="sqlite:///hypertune.sqlite3", description="Path to SQLite database for hypertune")
