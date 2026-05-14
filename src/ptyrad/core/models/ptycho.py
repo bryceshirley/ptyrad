@@ -25,7 +25,7 @@ from ptyrad.utils.image_proc import center_crop
 # obj optimization is now split into objp and obja
 # mixed object modes are normalized by the init_omode_occu. By design this is a fixed value because optimizing omode_occu with obj simultaneously could be unstable
 # obj_ROI cropping is done with vectorization and the obj_ROI_grid is only generated once
-# probe with sub-px shifts are calculated only when probe_pos_shifts are enables for optimization
+# probe is always sub-px shifted by opt_probe_pos_shifts so the forward model uses exact positions, not the rounded integer crop_pos
 # All the sub-px shifted probes in a batch are processed together with vectorizaiton
 # Likewise, the multislice forward model is also fully vectorized across samples (in batch), pmode, and omode
 # Note that it's possible to reduce the peak-memory consumption by reducing the level of vectorizaiton and roll back to for loops
@@ -60,7 +60,6 @@ class PtychoModel(torch.nn.Module):
         dk (torch.Tensor): K-space sampling interval.
         scan_affine (affine.Affine): Affine transformation for scan.
         tilt_obj (bool): Whether object tilts are being optimized.
-        shift_probes (bool): Whether probe shifts are being optimized.
         probe_int_sum (torch.Tensor): Sum of squared probe intensities.
         optimizable_tensors (dict): Dictionary of tensors that can be optimized.
 
@@ -126,7 +125,6 @@ class PtychoModel(torch.nn.Module):
             self.length_unit            = init_variables['length_unit']                                                           # Saving this for reference
             self.scan_affine            = init_variables['scan_affine']                                                           # Saving this for reference
             self.tilt_obj               = bool(self.lr_params['obj_tilts']        != 0 or torch.any(self.opt_obj_tilts))          # Set tilt_obj to True if lr_params['obj_tilts'] is not 0 or we have any none-zero tilt values
-            self.shift_probes           = bool(self.lr_params['probe_pos_shifts'] != 0)                                           # Set shift_probes to True if lr_params['probe_pos_shifts'] is not 0
             self.change_thickness       = bool(self.lr_params['slice_thickness']  != 0)
             self.meas_Npix              = init_variables['meas_Npix']
             self.simu_Npix              = init_variables['simu_Npix']
@@ -261,7 +259,6 @@ class PtychoModel(torch.nn.Module):
         logger.info('### Model behavior ###')
         logger.info(f"Tilt propagator           : {self.tilt_obj}")
         logger.info(f"Change slice thickness    : {self.change_thickness}")
-        logger.info(f"Sub-px probe shift        : {self.shift_probes}")
         logger.info(f"Detector blur             : {True if self.detector_blur_std is not None else False}")
         logger.info(f"Preload data              : {self.preload_data}")
         logger.info(f"On-the-fly meas padding   : {True if self.meas_loader.meas_padded is not None else False}")
@@ -288,17 +285,11 @@ class PtychoModel(torch.nn.Module):
         
     def get_probes(self, indices):
         """ Get probes for each position """
-        # This function will return a probe tensor with (N, pmode, Ny, Nx)
-        # If you're not trying to optimize probe positions, there's not much point using sub-px shifted stationary probes
-        # So the function would broadcast the same probe across the batch dimension,
-        # and would only be returning multiple sub-px shifted probes if you're optimizing self.opt_probe_pos_shifts
+        # Always apply sub-px shifts from opt_probe_pos_shifts so the forward model uses the exact
+        # position (crop_pos is integer; opt_probe_pos_shifts carries the fractional residual).
 
         probe = self.get_complex_probe_view()
-        
-        if self.shift_probes:
-            probes = imshift_batch(probe, shifts = self.opt_probe_pos_shifts[indices], grid = self.shift_probes_grid)
-        else:
-            probes = torch.broadcast_to(probe, (indices.shape[0], *probe.shape)) # Broadcast a batch dimension, essentially using same probe for all samples
+        probes = imshift_batch(probe, shifts=self.opt_probe_pos_shifts[indices], grid=self.shift_probes_grid)
 
         return probes.contiguous()
     

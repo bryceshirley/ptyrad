@@ -206,7 +206,6 @@ def make_save_dict(output_path, model, params, optimizer, scheduler, niter, indi
                      'simu_match_mode'  : model.simu_match_mode,
                      'scan_affine'      : model.scan_affine,
                      'tilt_obj'         : model.tilt_obj,
-                     'shift_probes'     : model.shift_probes,
                      'probe_int_sum'    : model.probe_int_sum
                      },
                 'random_seed'           : model.random_seed,
