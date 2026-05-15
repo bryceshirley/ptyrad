@@ -2652,6 +2652,7 @@ dependencies = [
     { name = "tifffile", version = "2026.3.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "torch" },
     { name = "torchvision" },
+    { name = "tqdm" },
     { name = "ty" },
 ]
 
@@ -2672,6 +2673,7 @@ requires-dist = [
     { name = "tifffile" },
     { name = "torch", specifier = ">=2.0" },
     { name = "torchvision" },
+    { name = "tqdm", specifier = ">=4.67.3" },
     { name = "ty", specifier = ">=0.0.23" },
 ]
 

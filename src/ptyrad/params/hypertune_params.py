@@ -369,7 +369,7 @@ class HypertuneParams(BaseModel):
     Hypertune of different dataset or different search space (i.e., different optimizable parameters) are encouraged to use different study name or even separate database file
     """
 
-    error_metric: Literal["loss", "contrast"] = Field(
+    error_metric: Literal["loss", "contrast", "frc"] = Field(
         default="loss", description="Optimization metric for hypertune"
     )
     """
@@ -378,6 +378,14 @@ class HypertuneParams(BaseModel):
     while switch to 'contrast' with loaded reconstructed object/probe/pos to refine remaining hyperparameters.
     'contrast' is simply calculated by std(img)/mean(std) to reflect reconstruction quality of the object because 'loss' doesn't correlate that well.
     Note that `contrast` doesn't necessarily change monotonically with iterations, especially at early iterations so you may want to disable pruning and set NITER carefullly.
+    """
+
+    frc_split_method: Literal["binomial", "odd_even"] = Field(
+        default="binomial", description="Method to split dataset for FRC evaluation"
+    )
+    """
+    Splitting method for 'frc' error metric. 'binomial' physically models electron distribution
+    into halves, 'odd_even' splits positions based on scan pattern.
     """
 
     tune_params: TuneParams = Field(

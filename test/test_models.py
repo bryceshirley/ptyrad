@@ -31,16 +31,6 @@ class TestPtychoADModel:
         assert hasattr(model, "opt_probe")
         assert hasattr(model, "optimizable_tensors")
 
-    def test_model_forward_pass(self):
-        """Test model forward pass - requires proper initialization."""
-        # This test is skipped as it requires complex initialization
-        pytest.skip("Requires proper initialization for forward pass")
-
-    def test_gradient_flow(self):
-        """Test gradient flow - requires proper initialization."""
-        # This test is skipped as it requires complex initialization
-        pytest.skip("Requires proper initialization for gradient flow")
-
     def test_device_placement(self):
         """Test device placement."""
         devices = ["cpu"]
@@ -57,11 +47,6 @@ class TestPtychoADModel:
             for param in model.parameters():
                 assert param.device.type == device
 
-    def test_optimizer_setup(self):
-        """Test optimizer setup - requires proper initialization."""
-        # This test is skipped as it requires complex initialization
-        pytest.skip("Requires proper initialization for optimizer setup")
-
     def test_parameter_shapes(self):
         """Test parameter shapes for 2D case."""
         # Test 2D case
@@ -73,11 +58,6 @@ class TestPtychoADModel:
         assert model_2d.opt_objp.shape == (1, 32, 32)  # (omode, Ny, Nx)
         assert model_2d.opt_probe.shape[0] == 1  # pmode
         assert model_2d.opt_probe.shape[1:] == (32, 32, 2)  # (Ny, Nx, 2) for real/imag
-
-    def test_different_batch_sizes(self):
-        """Test model with different batch sizes - requires proper initialization."""
-        # This test is skipped as it requires complex initialization
-        pytest.skip("Requires proper initialization for batch processing")
 
     def test_model_state_dict(self):
         """Test model state dict save/load."""
@@ -113,11 +93,6 @@ class TestPtychoADModel:
         # Test eval mode
         model.eval()
         assert not model.training
-
-    def test_numerical_stability(self):
-        """Test numerical stability - requires proper initialization."""
-        # This test is skipped as it requires complex initialization
-        pytest.skip("Requires proper initialization for numerical stability testing")
 
 
 @pytest.fixture

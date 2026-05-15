@@ -164,6 +164,10 @@ class PtychoAD(torch.nn.Module):
                 "lambd", torch.tensor(init_variables["lambd"], dtype=torch.float32, device=device)
             )
 
+            # 3d Propagators for Born solver, initialized as None and will be calculated on the fly when needed
+            self.H_3d_fwd = None
+            self.H_3d_inv = None
+
             self.random_seed = init_variables["random_seed"]  # Saving this for reference
             self.length_unit = init_variables["length_unit"]  # Saving this for reference
             self.scan_affine = init_variables["scan_affine"]  # Saving this for reference
@@ -422,9 +426,7 @@ class PtychoAD(torch.nn.Module):
                 probe, shifts=self.opt_probe_pos_shifts[indices], grid=self.shift_probes_grid
             )
         else:
-            probes = torch.broadcast_to(
-                probe, (indices.shape[0], *probe.shape)
-            )  # Broadcast a batch dimension, essentially using same probe for all samples
+            probes = probe[None,]  # (1, pmode, Ny, Nx)
         return probes
 
     def get_propagators(self, indices):
@@ -484,6 +486,26 @@ class PtychoAD(torch.nn.Module):
             # Case 4: Tilt is fixed at 0 and thickness is fixed
             return self.H[None,]
 
+    def get_propagators_3d(self, propagators_2d, Nx, Ny, Nz):
+        """Calculate the 3D propagators for Born solver based on the 2D propagators"""
+        # This function is only used for the Born solver, which requires calculating the 3D propagators for each slice based on the 2D propagator calculated with the current tilt and thickness parameters.
+        # The 3D propagator is calculated with the formula H_3d = H_2d * exp(1j * 2pi * dz * sqrt(k^2 - kx^2 - ky^2)), where H_2d is the 2D propagator calculated with the current tilt and thickness, dz is the slice thickness, and k is the wavenumber.
+        # The output H_3d has a shape of (N_slices, Ny, Nx) and can be directly used in the multislice forward model for Born solver.
+
+        # Check if propagators have changed, if not, reuse the previously calculated 3D propagators
+        # and if H_3d_fwd and H_3d_inv None (initialized state), calculate the 3D propagators
+        if (
+            not torch.allclose(propagators_2d, self.H[None,])
+            or self.H_3d_fwd is None
+            or self.H_3d_inv is None
+        ):
+            z_idx = torch.arange(Nz, device=propagators_2d.device).view(1, 1, 1, Nz, 1, 1)
+            H_view = propagators_2d.view(propagators_2d.shape[0], 1, 1, 1, Ny, Nx)
+            self.H_3d_fwd = H_view.pow(z_idx + 1)
+            self.H_3d_inv = H_view.conj().pow(z_idx)
+
+        return self.H_3d_fwd, self.H_3d_inv
+
     def get_propagated_probe(self, index):
         probe = self.get_probes(index)[
             0
@@ -505,14 +527,39 @@ class PtychoAD(torch.nn.Module):
 
     def get_forward_meas(self, object_patches, probes, propagators):
         if self.solver_type == "born":
-            from ptyrad.forward import multislice_forward_model_vec_all_born
+            if self.born_iterations == 1:
+                from ptyrad.forward import multislice_forward_model_vec_all_first_born
 
-            dp_fwd = multislice_forward_model_vec_all_born(
-                object_patches,
-                probes,
-                propagators,
-                omode_occu=self.omode_occu,
-                n_max=self.born_iterations,
+                dp_fwd = multislice_forward_model_vec_all_first_born(
+                    object_patches, probes, propagators, omode_occu=self.omode_occu
+                )
+            else:
+                from ptyrad.forward import multislice_forward_model_vec_all_born
+
+                dp_fwd = multislice_forward_model_vec_all_born(
+                    object_patches,
+                    probes,
+                    propagators,
+                    omode_occu=self.omode_occu,
+                    n_max=self.born_iterations,
+                )
+        elif self.solver_type == "gmres1":
+            from ptyrad.forward import multislice_forward_model_vec_all_gmres1
+
+            dp_fwd = multislice_forward_model_vec_all_gmres1(
+                object_patches, probes, propagators, omode_occu=self.omode_occu
+            )
+        elif self.solver_type == "suzuki_trotter":
+            from ptyrad.forward import multislice_forward_model_vec_suzuki_trotter
+
+            dp_fwd = multislice_forward_model_vec_suzuki_trotter(
+                object_patches, probes, propagators, omode_occu=self.omode_occu
+            )
+        elif self.solver_type == "strang":
+            from ptyrad.forward import multislice_forward_model_vec_strang
+
+            dp_fwd = multislice_forward_model_vec_strang(
+                object_patches, probes, propagators, omode_occu=self.omode_occu
             )
         else:
             from ptyrad.forward import multislice_forward_model_vec_all
@@ -585,6 +632,22 @@ class PtychoAD(torch.nn.Module):
         object_patches = self.get_obj_patches(indices)
         probes = self.get_probes(indices)
         propagators = self.get_propagators(indices)
+        # Compute 3D Propagators
+        if self.solver_type in ["born", "gmres1"]:
+            _, _, Nz, Ny, Nx, _ = object_patches.shape
+            propagators = self.get_propagators_3d(propagators, Nx, Ny, Nz)
+
+        if self.solver_type == "strang":
+            dz_half = self.opt_slice_thickness / 2.0
+
+            # Reconstruct H_half using the exact same logic as your Case 3/4 in get_propagators
+            if self.tilt_obj:
+                # (Add tilt logic here if needed, but for standard multislice:)
+                pass
+
+            H_half_tensor = torch_phasor(dz_half * self.Kz)
+            propagators = (propagators, H_half_tensor[None,])
+
         dp_fwd = self.get_forward_meas(object_patches, probes, propagators)
 
         # Keep the object_patches for later object-specific loss

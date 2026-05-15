@@ -3,6 +3,7 @@ Reconstruction and hypertune workflows for ptychographic reconstructions
 
 """
 
+import concurrent.futures
 import logging
 import warnings
 from copy import deepcopy
@@ -16,7 +17,7 @@ from torch.utils.data import Dataset
 
 from ptyrad.constraints import CombinedConstraint
 from ptyrad.initialization import Initializer
-from ptyrad.losses import CombinedLoss, get_objp_contrast
+from ptyrad.losses import CombinedLoss, get_objp_contrast, get_objp_frc_auc
 from ptyrad.models import PtychoAD
 from ptyrad.save import copy_params_to_dir, make_output_folder, save_results
 from ptyrad.utils import (
@@ -211,6 +212,8 @@ class PtyRADSolver:
         """Performs hyperparameter tuning using Optuna."""
         import optuna
 
+        torch._inductor.config.triton.cudagraphs = False
+
         hypertune_params = self.params["hypertune_params"]
         params_path = self.params.get("params_path")
         n_trials = hypertune_params.get("n_trials")
@@ -237,7 +240,7 @@ class PtyRADSolver:
         vprint(" ")
 
         # Check error metric validity
-        valid_metrics = {"contrast", "loss"}
+        valid_metrics = {"contrast", "loss", "frc"}
         if error_metric not in valid_metrics:
             raise ValueError(
                 f"Invalid error metric: '{error_metric}'. Expected one of {valid_metrics}."
@@ -304,6 +307,19 @@ class PtyRADSolver:
                 log_dir=output_dir
             )  # Note that there's an internal flag of self.flush_file controls the actual file creation
             optuna_logger.addHandler(logger.file_handler)
+
+        if error_metric == "frc":
+            from ptyrad.split import generate_frc_splits
+
+            # This runs our PyTorch splitting function once, saves the files,
+            # and returns the exact paths for the GPU workers to use.
+            path_A, path_B = generate_frc_splits(
+                self.params, verbose=self.verbose, plot=False, device=self.device
+            )
+
+            # Inject the paths into the params dict so optuna_objective can find them
+            self.params["hypertune_params"]["split_A_path"] = path_A
+            self.params["hypertune_params"]["split_B_path"] = path_B
 
         study.optimize(
             lambda trial: optuna_objective(
@@ -453,7 +469,8 @@ def create_optimizer(optimizer_params, optimizable_params, verbose=True):
         ]  # LBFGS only takes 1 params group as an iterable
 
     optimizer = optimizer_class(optimizable_params, **optimizer_configs)
-    device = optimizable_params[0]["params"][0].device
+    # device = optimizable_params[0]["params"][0].device
+    device = optimizer.param_groups[0]["params"][0].device
 
     if ptyrad_path is not None and isinstance(ptyrad_path, str):
         try:
@@ -849,6 +866,12 @@ def recon_loop(
 
     # Optimization loop
     for niter in range(1, NITER + 1):
+        # if niter == 100 and model_instance.solver_type == "born":
+        #     model_instance.solver_type = "multislice"
+        #     vprint(" ", verbose=verbose)
+        #     vprint("### Swapped solver_type from 'born' to 'multislice' ###", verbose=verbose)
+        #     vprint(" ", verbose=verbose)
+
         # Toggle the grad calculation to enable or disable AD update on tensors at certain iterations
         toggle_grad_requires(model_instance, niter, verbose)
 
@@ -1392,128 +1415,293 @@ def optuna_objective(trial, params, init, loss_fn, constraint_fn, device="cuda",
             obj_tilts  # No need to update init_params['tilt_params'] because the pass-in value is only used when `tilt_params = 'custom'`
         )
 
-    # Create the model and optimizer, prepare indices, batches, and output_path
-    model = PtychoAD(init.init_variables, params["model_params"], device=device, verbose=verbose)
-    optimizer = create_optimizer(model.optimizer_params, model.optimizable_params, verbose=verbose)
-    indices, batches, output_path = prepare_recon(model, init, params)
+    # =========================================================
+    # DUAL-GPU PARALLEL FRC WORKFLOW
+    # =========================================================
+    if error_metric == "frc":
+        # Extract split paths from hypertune_params config
+        path_A = hypertune_params.get("split_A_path")
+        path_B = hypertune_params.get("split_B_path")
 
-    # Optimization loop
-    for niter in range(1, NITER + 1):
-        # Toggle the grad calculation to enable or disable AD update on tensors at certain iterations
-        toggle_grad_requires(model, niter, verbose)
+        if not path_A or not path_B:
+            raise ValueError(
+                "FRC metric requires 'split_A_path' and 'split_B_path' in 'hypertune_params'."
+            )
 
-        # Apply torch.compile to `recon_step``
-        if niter in model.compilation_iters:  # compilation_iters always contain niter=1
-            vprint(f"Setting up PyTorch compiler with {compiler_configs}", verbose=verbose)
-            torch._dynamo.reset()
-            recon_step_compiled = torch.compile(recon_step, **compiler_configs)
+        def run_split(split_path, target_device):
+            """Thread-safe worker to run a full reconstruction on a specific GPU."""
+            from copy import deepcopy
 
-        if model.random_seed is not None:
-            set_random_seed(
-                seed=model.random_seed + niter
-            )  # This ensures the batches order are different for each iter in a reproducible way
-        shuffle(batches)
-        batch_losses = recon_step_compiled(
-            batches,
-            grad_accumulation,
-            model,
-            optimizer,
-            loss_fn,
-            constraint_fn,
-            niter,
+            from ptyrad.constraints import CombinedConstraint
+            from ptyrad.initialization import Initializer
+            from ptyrad.losses import CombinedLoss
+            from ptyrad.models import PtychoAD
+
+            split_params = deepcopy(params)
+            split_params["init_params"]["meas_params"]["path"] = split_path
+            split_params["init_params"]["meas_params"]["key"] = "data"
+            split_params["init_params"]["meas_params"].pop("gap", None)
+            split_params["init_params"]["meas_params"].pop("offset", None)
+
+            split_params["recon_params"]["compiler_configs"] = {"enable": False}
+            split_params["recon_params"]["if_quiet"] = True
+
+            # Initialize and run init_all()
+            split_init = Initializer(
+                split_params["init_params"],
+                seed=split_params["init_params"].get("random_seed"),
+                verbose=False,
+            ).init_all()
+
+            split_model = PtychoAD(
+                split_init.init_variables,
+                split_params["model_params"],
+                device=target_device,
+                verbose=False,
+            )
+
+            split_optimizer = create_optimizer(
+                split_model.optimizer_params, split_model.optimizable_params, verbose=False
+            )
+            split_loss_fn = CombinedLoss(split_params["loss_params"], device=target_device)
+            split_constraint_fn = CombinedConstraint(
+                split_params["constraint_params"], device=target_device, verbose=False
+            )
+
+            split_indices, split_batches, _ = prepare_recon(split_model, split_init, split_params)
+            split_grad_acc = split_params["recon_params"]["BATCH_SIZE"].get("grad_accumulation", 1)
+
+            # Force eager mode for threading stability
+            step_fn = recon_step
+
+            last_losses = None
+            for niter in range(1, NITER + 1):
+                toggle_grad_requires(split_model, niter, verbose=False)
+                if split_model.random_seed is not None:
+                    set_random_seed(seed=split_model.random_seed + niter)
+                shuffle(split_batches)
+
+                # CHANGE: Capture the return value of the step function
+                last_losses = step_fn(
+                    split_batches,
+                    split_grad_acc,
+                    split_model,
+                    split_optimizer,
+                    split_loss_fn,
+                    split_constraint_fn,
+                    niter,
+                    verbose=False,
+                )
+
+            return split_model, last_losses, split_indices
+
+        # Launch both reconstructions simultaneously on separate GPUs using threads
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            future_A = executor.submit(run_split, path_A, "cuda:0")
+            future_B = executor.submit(run_split, path_B, "cuda:1")
+
+            model_A, losses_A, indices_A = future_A.result()
+            model_B, losses_B, indices_B = future_B.result()
+
+        # Evaluate FRC and Contrast
+        frc_error = compute_optuna_error(
+            model_A,
+            indices=None,
+            metric="frc",
+            model_B=model_B,
+            output_dir=output_dir,
+            trial_id=trial_id,
+        )
+        contrast_error = compute_optuna_error(model_A, indices_A, "contrast")
+
+        # --- THE COMBINED METRIC MATH ---
+        # Extract values and convert back to positive for the calculation
+        frc_auc = max(0.001, -1.0 * frc_error)
+        contrast_val = max(0.001, -1.0 * contrast_error)
+
+        # Apply the confidence weight
+        optuna_error = -1.0 * (contrast_val * frc_auc)
+
+        vprint(
+            f"Trial {trial_id} metrics -> FRC: {frc_auc:.4f}, Contrast: {contrast_val:.4f} | Combined Score: {optuna_error:.4f}",
             verbose=verbose,
         )
 
-        ## Saving intermediate results
-        if SAVE_ITERS is not None and niter % SAVE_ITERS == 0:
+        # Save results with the new combined score in the filename
+        if collate_results:
+            params_str = parse_hypertune_params_to_str(trial.params) if append_params else ""
+            collate_str = f"_SCORE_{optuna_error:.5f}_frc_{frc_auc:.2f}_con_{contrast_val:.2f}_{trial_id}{params_str}"
+
             save_results(
-                output_path, model, params, optimizer, niter, indices, batch_losses, collate_str=""
+                output_dir,
+                model_A,
+                params,
+                optimizer=None,
+                niter=NITER,
+                indices=indices_A,
+                batch_losses=losses_A,
+                collate_str=collate_str,
             )
             plot_summary(
-                output_path,
-                model,
-                niter,
-                indices,
-                init.init_variables,
+                output_dir,
+                model_A,
+                NITER,
+                indices=indices_A,
+                init_variables=init.init_variables,
                 selected_figs=selected_figs,
-                collate_str="",
+                collate_str=collate_str,
                 show_fig=False,
                 save_fig=True,
                 verbose=verbose,
             )
 
-        ## Pruning logic for optuna
-        if hypertune_params["pruner_params"] is not None:
-            optuna_error = compute_optuna_error(model, indices, error_metric)
-            trial.report(optuna_error, niter)
+        return optuna_error
 
-            # Handle pruning based on the intermediate value.
-            if trial.should_prune():
-                # Save the current results of the pruned trials
-                params_str = parse_hypertune_params_to_str(trial.params) if append_params else ""
-                collate_str = f"_error_{optuna_error:.5f}_{trial_id}{params_str}"
-                if collate_results:
-                    save_results(
-                        output_dir,
-                        model,
-                        params,
-                        optimizer,
-                        niter,
-                        indices,
-                        batch_losses,
-                        collate_str=collate_str,
-                    )
-                    plot_summary(
-                        output_dir,
-                        model,
-                        niter,
-                        indices,
-                        init.init_variables,
-                        selected_figs=selected_figs,
-                        collate_str=collate_str,
-                        show_fig=False,
-                        save_fig=True,
-                        verbose=verbose,
-                    )
-                raise optuna.exceptions.TrialPruned()
-
-    ## Final optuna_error evaluation (only needed if pruner never ran)
-    if hypertune_params["pruner_params"] is None:
-        optuna_error = compute_optuna_error(model, indices, error_metric)
-
-    ## Saving collate results and figs of the finished trials
-    params_str = parse_hypertune_params_to_str(trial.params) if append_params else ""
-    collate_str = f"_error_{optuna_error:.5f}_{trial_id}{params_str}"
-    if collate_results:
-        save_results(
-            output_dir,
-            model,
-            params,
-            optimizer,
-            niter,
-            indices,
-            batch_losses,
-            collate_str=collate_str,
+    # =========================================================
+    # STANDARD SINGLE-DATASET PIPELINE (Loss / Contrast)
+    # =========================================================
+    elif error_metric in ["loss", "contrast"]:
+        # Create the model and optimizer, prepare indices, batches, and output_path
+        model = PtychoAD(
+            init.init_variables, params["model_params"], device=device, verbose=verbose
         )
-        plot_summary(
-            output_dir,
-            model,
-            niter,
-            indices,
-            init.init_variables,
-            selected_figs=selected_figs,
-            collate_str=collate_str,
-            show_fig=False,
-            save_fig=True,
+        optimizer = create_optimizer(
+            model.optimizer_params, model.optimizable_params, verbose=verbose
+        )
+        indices, batches, output_path = prepare_recon(model, init, params)
+
+        # Optimization loop
+        for niter in range(1, NITER + 1):
+            # Toggle the grad calculation to enable or disable AD update on tensors at certain iterations
+            toggle_grad_requires(model, niter, verbose)
+
+            # Apply torch.compile to `recon_step``
+            if niter in model.compilation_iters:  # compilation_iters always contain niter=1
+                vprint(f"Setting up PyTorch compiler with {compiler_configs}", verbose=verbose)
+                torch._dynamo.reset()
+                recon_step_compiled = torch.compile(recon_step, **compiler_configs)
+
+            if model.random_seed is not None:
+                set_random_seed(
+                    seed=model.random_seed + niter
+                )  # This ensures the batches order are different for each iter in a reproducible way
+            shuffle(batches)
+            batch_losses = recon_step_compiled(
+                batches,
+                grad_accumulation,
+                model,
+                optimizer,
+                loss_fn,
+                constraint_fn,
+                niter,
+                verbose=verbose,
+            )
+
+            ## Saving intermediate results
+            if SAVE_ITERS is not None and niter % SAVE_ITERS == 0:
+                save_results(
+                    output_path,
+                    model,
+                    params,
+                    optimizer,
+                    niter,
+                    indices,
+                    batch_losses,
+                    collate_str="",
+                )
+                plot_summary(
+                    output_path,
+                    model,
+                    niter,
+                    indices,
+                    init.init_variables,
+                    selected_figs=selected_figs,
+                    collate_str="",
+                    show_fig=False,
+                    save_fig=True,
+                    verbose=verbose,
+                )
+
+            ## Pruning logic for optuna
+            if hypertune_params["pruner_params"] is not None:
+                # UPDATED CALL
+                optuna_error = compute_optuna_error(
+                    model, indices, error_metric, output_dir=output_dir, trial_id=trial_id
+                )
+                trial.report(optuna_error, niter)
+
+                # Handle pruning based on the intermediate value.
+                if trial.should_prune():
+                    # Save the current results of the pruned trials
+                    params_str = (
+                        parse_hypertune_params_to_str(trial.params) if append_params else ""
+                    )
+                    collate_str = f"_error_{optuna_error:.5f}_{trial_id}{params_str}"
+                    if collate_results:
+                        save_results(
+                            output_dir,
+                            model,
+                            params,
+                            optimizer,
+                            niter,
+                            indices,
+                            batch_losses,
+                            collate_str=collate_str,
+                        )
+                        plot_summary(
+                            output_dir,
+                            model,
+                            niter,
+                            indices,
+                            init.init_variables,
+                            selected_figs=selected_figs,
+                            collate_str=collate_str,
+                            show_fig=False,
+                            save_fig=True,
+                            verbose=verbose,
+                        )
+                    raise optuna.exceptions.TrialPruned()
+
+        ## Final optuna_error evaluation (only needed if pruner never ran)
+        if hypertune_params["pruner_params"] is None:
+            optuna_error = compute_optuna_error(
+                model, indices, error_metric, output_dir=output_dir, trial_id=trial_id
+            )
+
+        ## Saving collate results and figs of the finished trials
+        params_str = parse_hypertune_params_to_str(trial.params) if append_params else ""
+        collate_str = f"_error_{optuna_error:.5f}_{trial_id}{params_str}"
+        if collate_results:
+            save_results(
+                output_dir,
+                model,
+                params,
+                optimizer,
+                niter,
+                indices,
+                batch_losses,
+                collate_str=collate_str,
+            )
+            plot_summary(
+                output_dir,
+                model,
+                niter,
+                indices,
+                init.init_variables,
+                selected_figs=selected_figs,
+                collate_str=collate_str,
+                show_fig=False,
+                save_fig=True,
+                verbose=verbose,
+            )
+
+        vprint(
+            f"### Finished {NITER} iterations, averaged iter_t = {np.mean(model.iter_times):.3g} sec ###",
             verbose=verbose,
         )
+        vprint(" ", verbose=verbose)
 
-    vprint(
-        f"### Finished {NITER} iterations, averaged iter_t = {np.mean(model.iter_times):.3g} sec ###",
-        verbose=verbose,
-    )
-    vprint(" ", verbose=verbose)
-    return optuna_error
+        return optuna_error
 
 
 def get_optuna_suggest(trial, suggest, name, kwargs):
@@ -1527,15 +1715,24 @@ def get_optuna_suggest(trial, suggest, name, kwargs):
         raise (f"Optuna trail.suggest method '{suggest}' is not supported.")
 
 
-def compute_optuna_error(model, indices, metric):
+def compute_optuna_error(model, indices, metric, model_B=None, output_dir=None, trial_id=""):
     """
-    Helper function to compute the current error for Optuna
+    Helper function to compute the current error for Optuna.
+    Now supports passing directory and ID info for FRC summary plotting.
     """
     if metric == "contrast":
         return -1 * get_objp_contrast(model, indices)  # Negative for minimization
     elif metric == "loss":
         return model.loss_iters[-1][-1]
+    elif metric == "frc":
+        if model_B is None:
+            raise ValueError("FRC metric requires a second model (model_B) to compute correlation.")
+
+        # We pass output_dir and trial_id here to trigger the compulsory plotting
+        return get_objp_frc_auc(
+            model, model_B, margin=200, apod_width=20, output_dir=output_dir, trial_id=trial_id
+        )
     else:
         raise ValueError(
-            f"Unsupported hypertune error metric: '{metric}'. Expected 'contrast' or 'loss'."
+            f"Unsupported hypertune error metric: '{metric}'. Expected 'contrast', 'loss', or 'frc'."
         )

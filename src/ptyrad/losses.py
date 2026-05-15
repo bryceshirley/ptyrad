@@ -3,6 +3,10 @@ Loss functions and soft regularizations calculated using forward simulations aga
 
 """
 
+import os
+
+import matplotlib.pyplot as plt
+import numpy as np
 import torch
 from torch.nn.functional import interpolate
 from torchvision.transforms.functional import gaussian_blur
@@ -209,3 +213,207 @@ def get_objp_contrast(model, indices):
         contrast = torch.std(objp_crop) / (torch.mean(objp_crop) + 1e-8)  # Avoid division by zero
 
     return contrast
+
+
+"""
+Metric utility functions.
+
+This file has been adapted from the PTYPY package to torch.
+
+    :copyright: Copyright 2014 by the PTYPY team, see AUTHORS.
+    :license: see LICENSE for details.
+"""
+
+
+def remove_margins_torch(img, margin):
+    if margin == 0:
+        return img
+    if img.ndim == 2:
+        return img[margin:-margin, margin:-margin]
+    elif img.ndim == 3:
+        return img[:, margin:-margin, margin:-margin]
+    else:
+        raise ValueError("Input image must be 2D or 3D.")
+
+
+def apodization_torch(img, apod_width):
+    if apod_width == 0:
+        return torch.ones_like(img)
+    nr, nc = img.shape[-2:]
+    device = img.device
+
+    Nr = torch.fft.fftshift(torch.arange(nr, device=device, dtype=torch.float32))
+    Nc = torch.fft.fftshift(torch.arange(nc, device=device, dtype=torch.float32))
+
+    window1D1 = (
+        1.0
+        + torch.cos(2 * torch.pi * (Nr - ((nr - 2 * apod_width - 1) // 2)) / (1 + 2 * apod_width))
+    ) / 2.0
+    window1D2 = (
+        1.0
+        + torch.cos(2 * torch.pi * (Nc - ((nc - 2 * apod_width - 1) // 2)) / (1 + 2 * apod_width))
+    ) / 2.0
+
+    window1D1[apod_width:-apod_width] = 1.0
+    window1D2[apod_width:-apod_width] = 1.0
+
+    return torch.outer(window1D1, window1D2)
+
+
+def ringthickness_torch(nr, nc, device):
+    nmax = max(nr, nc)
+    x = (
+        torch.arange(-np.fix(nc / 2.0), np.ceil(nc / 2.0), device=device)
+        * np.floor(nmax / 2.0)
+        / np.floor(nc / 2.0)
+    )
+    y = (
+        torch.arange(-np.fix(nr / 2.0), np.ceil(nr / 2.0), device=device)
+        * np.floor(nmax / 2.0)
+        / np.floor(nr / 2.0)
+    )
+
+    x = torch.fft.ifftshift(x)
+    y = torch.fft.ifftshift(y)
+
+    Y, X = torch.meshgrid(y, x, indexing="ij")
+    sumsquares = X**2 + Y**2
+    index = torch.round(torch.sqrt(sumsquares)).to(torch.int64)
+    return index
+
+
+def fourierringcorrelation_torch(input1, input2, apod_width=0):
+    nr, nc = input1.shape
+
+    window = apodization_torch(input1, apod_width)
+    img1_apod = input1 * window
+    img2_apod = input2 * window
+
+    F1 = torch.fft.fft2(torch.fft.ifftshift(img1_apod))
+    F2 = torch.fft.fft2(torch.fft.ifftshift(img2_apod))
+
+    index = ringthickness_torch(nr, nc, input1.device)
+    index_flat = index.flatten()
+
+    num = (F1 * F2.conj()).real.flatten()
+    C1_raw = (torch.abs(F1) ** 2).flatten()
+    C2_raw = (torch.abs(F2) ** 2).flatten()
+
+    # Matches the len(rfftfreq(nmax)) logic in PTYPY
+    nmax = max(nr, nc)
+    num_bins = nmax // 2 + 1
+
+    C = torch.bincount(index_flat, weights=num)[:num_bins]
+    C1 = torch.bincount(index_flat, weights=C1_raw)[:num_bins]
+    C2 = torch.bincount(index_flat, weights=C2_raw)[:num_bins]
+    npts = torch.bincount(index_flat)[:num_bins]
+
+    FRC = C / torch.sqrt(C1 * C2 + 1e-12)
+    fn = torch.linspace(0, 1.0, num_bins, device=input1.device)
+
+    # 1-bit threshold
+    snrt = 1.0
+    npts_f = npts.float() + 1e-12
+    Tnum = snrt + (2 * np.sqrt(snrt) / torch.sqrt(npts_f)) + 1 / torch.sqrt(npts_f)
+    Tden = snrt + (2 * np.sqrt(snrt) / torch.sqrt(npts_f)) + 1
+    T = Tnum / Tden
+
+    return FRC, T, fn
+
+
+def get_objp_frc_auc(model_A, model_B, margin=0, apod_width=0, output_dir=None, trial_id=""):
+    """
+    Calculate FRC AUC between two models, generate a visual summary subplot,
+    and save the figure to the trial's result directory without interpolation.
+    """
+    with torch.no_grad():
+        # 1. Extract and project the object phase
+        # Grab the first layer [0], then sum across the modes (which is now dim=0)
+        img1 = model_A.opt_objp.detach()[0].sum(dim=0)
+        img2 = model_B.opt_objp.detach()[0].sum(dim=0).to(img1.device)
+
+        # 2. Fix canvas size mismatches
+        if img1.shape != img2.shape:
+            ny = min(img1.shape[0], img2.shape[0])
+            nx = min(img1.shape[1], img2.shape[1])
+            img1 = img1[:ny, :nx]
+            img2 = img2[:ny, :nx]
+
+        # 3. Remove margins
+        if margin > 0:
+            from ptyrad.losses import remove_margins_torch
+
+            img1 = remove_margins_torch(img1, margin)
+            img2 = remove_margins_torch(img2, margin)
+
+        # 4. Compute FRC
+        from ptyrad.losses import fourierringcorrelation_torch
+
+        FRC_curve, T, fn = fourierringcorrelation_torch(img1, img2, apod_width=apod_width)
+
+        # 5. Integrate AUC
+        auc = torch.trapz(FRC_curve, fn)
+        if torch.isnan(auc):
+            auc = torch.tensor(0.0, device=img1.device)
+
+        optuna_score = -1.0 * auc.item()
+
+    # =========================================================
+    # COMPULSORY PLOTTING & SAVING
+    # =========================================================
+    if output_dir is not None:
+        fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+
+        # Get phase maps
+        ph1 = img1.cpu()
+        ph2 = img2.cpu()
+
+        # Robust contrast: Ensure vmin and vmax are not identical
+        vmin = min(ph1.min().item(), ph2.min().item())
+        vmax = max(ph1.max().item(), ph2.max().item())
+        if vmin == vmax:  # Handle cases with zero signal
+            vmin, vmax = -0.1, 0.1
+
+        # Plot Phase A
+        im1 = axes[0].imshow(ph1, cmap="magma", vmin=vmin, vmax=vmax, interpolation="nearest")
+        axes[0].set_title(f"Phase A ({trial_id})")
+        fig.colorbar(im1, ax=axes[0], fraction=0.046, pad=0.04)
+
+        # Plot Phase B
+        im2 = axes[1].imshow(ph2, cmap="magma", vmin=vmin, vmax=vmax, interpolation="nearest")
+        axes[1].set_title(f"Phase B ({trial_id})")
+        fig.colorbar(im2, ax=axes[1], fraction=0.046, pad=0.04)
+
+        # --- NEW: Call the FRC plotting function for the 3rd axis ---
+        frc_plot(FRC_curve.cpu().numpy(), T.cpu().numpy(), fn.cpu().numpy(), ax=axes[2])
+        axes[2].set_title(f"FRC (AUC: {auc.item():.4f})")
+
+        plt.tight_layout()
+
+        # Save to the results directory
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir, exist_ok=True)
+
+        save_path = os.path.join(output_dir, f"frc_summary_{trial_id}.png")
+        plt.savefig(save_path, dpi=120)
+        plt.close(fig)
+
+    return optuna_score
+
+
+def frc_plot(FRC, T, fn, ax=None):
+    """
+    Plot raw FRC
+    """
+    if ax is None:
+        fig, ax = plt.subplots(1, 1, figsize=(5, 4))
+
+    # Plot raw discrete data
+    ax.plot(fn, FRC.real, "-b", linewidth=1.5, label="FRC")
+
+    ax.set_xlim(0, 1)
+    ax.set_ylim(-0.1, 1.1)
+    ax.set_xlabel("Spatial freq (Nyquist normalized)")
+    ax.set_ylabel("FRC Magnitude")
+    ax.legend(loc="upper right", fontsize="x-small")
+    ax.grid(True, which="both", linestyle="--", alpha=0.3)

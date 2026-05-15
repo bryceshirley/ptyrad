@@ -100,11 +100,146 @@ def multislice_forward_model_vec_all(object_patches, probe, H, omode_occu=None, 
 
 
 @torch.compile(mode="max-autotune")
+def multislice_forward_model_vec_strang(object_patches, probe, H_tuple, omode_occu=None, eps=1e-10):
+    """
+    Computes the multislice electron diffraction pattern using 2nd-order Strang Splitting.
+    Maintains the exact interface and output of the 1st-order vectorized forward model.
+    """
+    object_patches = object_patches.contiguous()
+    probe = probe.contiguous()
+    H, H_half = H_tuple
+
+    if omode_occu is None:
+        objp = object_patches[..., 1]
+        device = objp.device
+        dtype = objp.dtype
+        omode = objp.size(1)
+        omode_occu = torch.ones(omode, dtype=dtype, device=device) / omode
+
+    object_cplx = torch.polar(object_patches[..., 0], object_patches[..., 1]).contiguous()
+    n_slices = object_cplx.shape[2]
+
+    psi = probe[:, :, None, :, :].contiguous()
+
+    # --- STRANG SPLITTING ---
+    # Initial half-drift into the first slice
+    psi = ifft2(H_half[:, None, None] * fft2(psi))
+
+    for n in range(n_slices - 1):
+        object_slice = object_cplx[:, :, n, :, :]
+        psi = psi * object_slice[:, None, :, :, :]
+        psi = ifft2(H[:, None, None] * fft2(psi))
+
+    # Interacting with the last layer
+    object_slice = object_cplx[:, :, n_slices - 1, :, :]
+    psi = psi * object_slice[:, None, :, :, :]
+
+    # Final half-drift to the exit surface
+    psi = ifft2(H_half[:, None, None] * fft2(psi))
+    # --- END SPLITTING ---
+
+    dp_fwd = (
+        torch.sum(
+            (fftshift2(fft2(psi, norm="ortho"))).abs().square() * omode_occu[:, None, None],
+            dim=(1, 2),
+        )
+        + eps
+    )
+    return dp_fwd
+
+
+# @torch.compile(mode="max-autotune")
+def multislice_forward_model_vec_suzuki_trotter(
+    object_patches, probe, H, omode_occu=None, eps=1e-10
+):
+    """
+    Computes the multislice electron diffraction pattern using 4th-order Suzuki-Trotter Splitting.
+    Maintains the exact interface and output of the 1st-order vectorized forward model.
+    """
+    # Force memory to be C-contiguous for CUDAGraph safety
+    object_patches = object_patches.contiguous()
+    probe = probe.contiguous()
+    H = H.contiguous()
+
+    if omode_occu is None:
+        objp = object_patches[..., 1]
+        omode_occu = torch.ones(objp.size(1), dtype=objp.dtype, device=objp.device) / objp.size(1)
+
+    omode_occu = omode_occu.contiguous()
+
+    # Suzuki-Trotter fractional constants
+    p = 1.0 / (4.0 - 4.0 ** (1.0 / 3.0))
+    w2 = 1.0 - 4.0 * p
+
+    # Precompute fractional propagators
+    H_p_half = torch.pow(H, p / 2.0).contiguous()
+    H_p = torch.pow(H, p).contiguous()
+    H_mid = torch.pow(H, (p + w2) / 2.0).contiguous()
+
+    # Extract full amplitude and phase volumes
+    amp = object_patches[..., 0]
+    phase = object_patches[..., 1]
+
+    # Pre-calculate the fractional object transmissions for ALL slices at once.
+    # Applying fractional powers to real components before polar casting ensures
+    # Inductor doesn't crash on the backward pass.
+    O_p_cplx = torch.polar(amp**p, phase * p).contiguous()
+    O_w2_cplx = torch.polar(amp**w2, phase * w2).contiguous()
+
+    n_slices = object_patches.shape[2]
+    psi = probe[:, :, None, :, :].contiguous()
+
+    for n in range(n_slices):
+        # Slice the precomputed complex volumes and add the 'pmode' singleton dimension
+        # Shape: (N, omode, Nz, Ny, Nx) -> (N, 1, omode, Ny, Nx)
+        O_p = O_p_cplx[:, None, :, n, :, :]
+        O_w2 = O_w2_cplx[:, None, :, n, :, :]
+
+        # --- 4th ORDER S-T FRACTAL ---
+
+        # 1. Drift p/2
+        psi = ifft2(H_p_half[:, None, None] * fft2(psi))
+
+        # 2. Kick p, Drift p, Kick p
+        psi = psi * O_p
+        psi = ifft2(H_p[:, None, None] * fft2(psi))
+        psi = psi * O_p
+
+        # 3. Drift (p + w2)/2 (Merged boundary)
+        psi = ifft2(H_mid[:, None, None] * fft2(psi))
+
+        # 4. Kick w2 (The negative step)
+        psi = psi * O_w2
+
+        # 5. Drift (p + w2)/2 (Merged boundary)
+        psi = ifft2(H_mid[:, None, None] * fft2(psi))
+
+        # 6. Kick p, Drift p, Kick p
+        psi = psi * O_p
+        psi = ifft2(H_p[:, None, None] * fft2(psi))
+        psi = psi * O_p
+
+        # 7. Drift p/2
+        psi = ifft2(H_p_half[:, None, None] * fft2(psi))
+
+        # --- END FRACTAL ---
+
+    dp_fwd = (
+        torch.sum(
+            (fftshift2(fft2(psi, norm="ortho"))).abs().square() * omode_occu[:, None, None],
+            dim=(1, 2),
+        )
+        + eps
+    )
+    return dp_fwd
+
+
+@torch.compile(mode="max-autotune")
 def multislice_forward_model_vec_all_born(
     object_patches: torch.Tensor,
     probe: torch.Tensor,
     H: torch.Tensor,
-    omode_occu: torch.Tensor = None,
+    omode_occu: torch.Tensor,
     eps: float = 1e-10,
     n_max: int = 1,
 ) -> torch.Tensor:
@@ -141,8 +276,8 @@ def multislice_forward_model_vec_all_born(
         probe (torch.Tensor): Tensor of shape (N, pmode, Ny, Nx) or (1, pmode, Ny, Nx) with complex64 values,
             representing the probe(s). N is the number of samples in the batch, pmode is the
             number of probe modes. By default, N is 1, assuming the same probe for all samples.
-        H (torch.Tensor): Tensor of shape (N, Ky, Kx) or (1, Ky, Kx) with complex64 values, representing the Fresnel
-            propagator that propagates the wave by a slice thickness.
+        H (torch.Tensor): Tuple of tensors of shape (N, Ky, Kx) or (1, Ky, Kx) with complex64 values,
+            representing the Fresnel propagator that propagates the wave by a slice thickness.
         omode_occu (torch.Tensor): Tensor of shape (omode,) with float32 values.
         eps (float, optional): A small value added for numerical stability. Defaults to 1e-10.
         n_max (int): Maximum order of the Born series iterations (orders of scattering).
@@ -154,7 +289,8 @@ def multislice_forward_model_vec_all_born(
     # Ensure contiguity of incoming base tensors
     object_patches = object_patches.contiguous()
     probe = probe.contiguous()
-    H = H.contiguous()
+    kernel_fwd = H[0].contiguous()
+    kernel_inv = H[1].contiguous()
 
     N_batch, omode, Nz, Ny, Nx, _ = object_patches.shape
 
@@ -162,104 +298,213 @@ def multislice_forward_model_vec_all_born(
         omode_occu = (
             torch.ones(omode, dtype=object_patches.dtype, device=object_patches.device) / omode
         )
+    norm_weight = omode_occu / (Nx * Ny)
 
     # ==========================================
-    # 1. Precompute Nilpotent Scattering (Object)
+    # 1. Scattering Operator (Object)
     # ==========================================
     amplitude = object_patches[..., 0]
     phase = object_patches[..., 1]
 
     # In the Bidiagonal formulation, obj acts as the spatial scattering potential
-    obj = 1.0 - torch.polar(torch.sqrt(amplitude), phase).contiguous()
-
-    # Broadcast to (N, 1, omode, Nz, Ny, Nx) to allow cross-mode broadcasting with probe
-    obj = obj.unsqueeze(1)
-
-    # ==========================================
-    # 2. Compute Propagation Kernels
-    # ==========================================
-    # Elevate H to 6D: (N or 1, 1, 1, 1, Ny, Nx)
-    z_idx = torch.arange(Nz, device=H.device).view(1, 1, 1, Nz, 1, 1)
-    H_view = H.view(H.shape[0], 1, 1, 1, Ny, Nx)
-
-    kernel_fwd = H_view.pow(z_idx + 1)
-    kernel_inv = H_view.conj().pow(z_idx)
-
-    # 2D Exit kernel for the final reduction to the detector plane
-    k_fwd_exit = kernel_fwd[:, :, :, -1:, :, :]
+    obj = (torch.polar(amplitude, phase) - 1.0).unsqueeze(1)
 
     # ============================================
-    # 3. Compute 0th Order Field and Detector Wave
+    # 2. Compute 0th Order Field and Detector Wave
     # ============================================
-    # Elevate probe to 6D: (N or 1, pmode, 1, 1, Ny, Nx)
-    probe_view = probe.view(probe.shape[0], probe.shape[1], 1, 1, Ny, Nx)
-    probe_k = fft2(probe_view)
-
-    # If probe is (1,...) and kernel_fwd is (N,...), this automatically broadcasts them
-    Psi_0_hat_3D = kernel_fwd * probe_k
+    probe_k = fft2(probe).view(-1, probe.shape[1], 1, 1, Ny, Nx)
 
     # Extract the 0th order detector wave in k-space
-    Psi_M_hat = Psi_0_hat_3D[:, :, :, -1, :, :]
+    Psi_M_hat = probe_k.squeeze(3)
 
     # Compute the 0th order internal spatial wave
-    Psi_0_spatial = ifft2(Psi_0_hat_3D)
+    Psi_0_hat_3D = kernel_fwd * probe_k
+    Psi_state_active = ifft2(Psi_0_hat_3D)
 
     # ==========================================
-    # 4. Combinatorial Born Series Loop
+    # 3. Combinatorial Born Series Loop
     # ==========================================
-
-    # Track exactly ONE state variable: the spatial 3D wave.
-    Psi_state_3D = Psi_0_spatial
-
     for n in range(1, n_max + 1):
-        # Spatial Scattering Source and project to k-space
-        # The negative sign correctly mirrors the physics: Object = I - S -> scattered wave must be subtracted!
-        W_spatial = -obj * torch.roll(Psi_state_3D, shifts=1, dims=3)
+        # Object physically cannot scatter at or below slice 'n' for the n-th bounce.
+        W_spatial_active = obj[:, :, :, n:, :, :] * Psi_state_active[:, :, :, :-1, :, :]
+        W_hat_active = fft2(W_spatial_active)
 
-        # Enforce Nilpotency IN SPATIAL DOMAIN before FFT
-        W_spatial[:, :, :, 0, :, :] = 0.0
+        k_inv_active = kernel_inv[:, :, :, n:, :, :]
+        scattered_k = W_hat_active * k_inv_active
 
-        # Project to k-space
-        W_hat = fft2(W_spatial)
-
-        if n == n_max:
-            # HIGHEST BORN ORDER requested:
-            # Skip the 3D cumsum. Run parallel reduction directly to the 2D detector.
-            Psi_n_M_hat = torch.sum(W_hat * kernel_inv, dim=3, keepdim=True) * k_fwd_exit
-
-            # Contribution to the detector plane from this highest order n_max
-            Psi_M_hat = Psi_M_hat + Psi_n_M_hat.squeeze(3)
-
-            # No IFFT needed since there are no more scattering events to propagate through.
-            # We are already in k-space at the far field.
-        else:
+        if n < n_max:
             # INTERMEDIATE BORN ORDER:
-            # Compute full 3D internal field via parallel cumsum.
-            Psi_n_hat_3D = torch.cumsum(W_hat * kernel_inv, dim=3) * kernel_fwd
+            # 1. Compute the cumulative sum for the internal 3D state
+            cumsum_scattered = torch.cumsum(scattered_k, dim=3)
 
-            # Contribution to the detector plane from this intermediate order n
-            Psi_M_hat = Psi_M_hat + Psi_n_hat_3D[:, :, :, -1, :, :]
+            # 2. The detector contribution is just the last slice of the cumsum (free sum!)
+            Psi_M_hat = Psi_M_hat + cumsum_scattered[:, :, :, -1, :, :]
 
-            # OVERWRITE STATE: Immediately transform to spatial domain for the next loop.
-            Psi_state_3D = ifft2(Psi_n_hat_3D)
+            # 3. Propagate the internal 3D state forward for the next bounce
+            k_fwd_active = kernel_fwd[:, :, :, n:, :, :]
+            Psi_state_active = ifft2(cumsum_scattered * k_fwd_active)
+        else:
+            # Contribution to the detector plane from this highest order n_max
+            Psi_M_hat = Psi_M_hat + torch.sum(scattered_k, dim=3)
 
     # ==========================================
-    # 5. Detector Measurement (Corrected Incoherent Sum)
+    # 5. Detector Measurement (Incoherent Sum)
     # ==========================================
-    # 1. Take absolute square of the k-space wave
-    # Shape: (N, pmode, omode, Ny, Nx)
-    intensity_k = Psi_M_hat.abs().square()
+    dp_fwd = fftshift2(
+        torch.sum(Psi_M_hat.abs().square() * norm_weight.view(1, 1, -1, 1, 1), dim=(1, 2)) + eps
+    )
 
-    # 2. Weight by object mode occupancy
-    # Shape: (N, pmode, omode, Ny, Nx) * (omode,) -> (N, pmode, omode, Ny, Nx)
-    weighted_intensity = intensity_k * omode_occu.view(1, 1, -1, 1, 1)
+    return dp_fwd
 
-    # 3. Sum over ALL incoherent modes (pmode and omode)
-    # Result: (N, Ny, Nx)
-    dp_fwd = torch.sum(weighted_intensity, dim=(1, 2))
 
-    # 4. Final Shift and Normalization
-    dp_fwd = fftshift2(dp_fwd)
-    dp_fwd = (dp_fwd / (Nx * Ny)) + eps
+@torch.compile(mode="max-autotune")
+def multislice_forward_model_vec_all_first_born(
+    object_patches: torch.Tensor,
+    probe: torch.Tensor,
+    H: torch.Tensor,
+    omode_occu: torch.Tensor,
+    eps: float = 1e-10,
+) -> torch.Tensor:
+    """
+    Parallel First-Born Forward Model.
+    """
+    object_patches = object_patches.contiguous()
+    probe = probe.contiguous()
+    kernel_fwd = H[0].contiguous()
+    kernel_inv = H[1].contiguous()
+
+    N_batch, omode, Nz, Ny, Nx, _ = object_patches.shape
+
+    if omode_occu is None:
+        omode_occu = (
+            torch.ones(omode, dtype=object_patches.dtype, device=object_patches.device) / omode
+        )
+    norm_weight = omode_occu / (Nx * Ny)
+
+    # ============================================
+    # 1. Compute Probe in K-Space
+    # ============================================
+    probe_k = fft2(probe).view(-1, probe.shape[1], 1, 1, Ny, Nx)
+    Psi_M_hat = probe_k.squeeze(3)
+
+    # ==========================================
+    # 2. 0th Order Spatial Field
+    # ==========================================
+    k_fwd_active = kernel_fwd[:, :, :, :-1, :, :]
+    Psi_state_active = ifft2(k_fwd_active * probe_k)
+
+    # ==========================================
+    # 3. Object Potential
+    # ==========================================
+    amplitude = object_patches[:, :, 1:, :, :, 0]
+    phase = object_patches[:, :, 1:, :, :, 1]
+
+    obj_active = (torch.polar(amplitude, phase) - 1.0).unsqueeze(1)
+
+    # ==========================================
+    # 4. First Born Scattering
+    # ==========================================
+    W_spatial_active = obj_active * Psi_state_active
+    W_hat_active = fft2(W_spatial_active)
+
+    k_inv_active = kernel_inv[:, :, :, 1:, :, :]
+    scattered_k = W_hat_active * k_inv_active
+
+    # ==========================================
+    # 5. Detector Measurement
+    # ==========================================
+    Psi_M_hat = Psi_M_hat + torch.sum(scattered_k, dim=3)
+
+    dp_fwd = fftshift2(
+        torch.sum(Psi_M_hat.abs().square() * norm_weight.view(1, 1, -1, 1, 1), dim=(1, 2)) + eps
+    )
+
+    return dp_fwd
+
+
+@torch.compile(mode="max-autotune")
+def multislice_forward_model_vec_all_gmres1(
+    object_patches: torch.Tensor,
+    probe: torch.Tensor,
+    H: torch.Tensor,
+    omode_occu: torch.Tensor,
+    eps: float = 1e-10,
+) -> torch.Tensor:
+    """
+    Parallel Forward Model using 1 Iteration of GMRES.
+    Highly optimized: Mathematically simplified to bypass explicit Arnoldi orthogonalization.
+    """
+    object_patches = object_patches.contiguous()
+    probe = probe.contiguous()
+    kernel_fwd = H[0].contiguous()
+    kernel_inv = H[1].contiguous()
+
+    N_batch, omode, Nz, Ny, Nx, _ = object_patches.shape
+
+    if omode_occu is None:
+        omode_occu = (
+            torch.ones(omode, dtype=object_patches.dtype, device=object_patches.device) / omode
+        )
+    norm_weight = omode_occu / (Nx * Ny)
+
+    # ============================================
+    # 1. Compute Probe in K-Space (x_0)
+    # ============================================
+    probe_k = fft2(probe).view(-1, probe.shape[1], 1, 1, Ny, Nx)
+    Psi_M_hat = probe_k.squeeze(3)  # This is our initial guess: x_0_hat
+
+    # ==========================================
+    # 2. 0th Order Spatial Field
+    # ==========================================
+    k_fwd_active = kernel_fwd[:, :, :, :-1, :, :]
+    Psi_state_active = ifft2(k_fwd_active * probe_k)
+
+    # ==========================================
+    # 3. Object Potential
+    # ==========================================
+    amplitude = object_patches[:, :, 1:, :, :, 0]
+    phase = object_patches[:, :, 1:, :, :, 1]
+    obj_active = (torch.polar(amplitude, phase) - 1.0).unsqueeze(1)
+    # ==========================================
+    # 4. Initial Residual (r_0 = S * x_0)
+    # ==========================================
+    W_spatial_active = obj_active * Psi_state_active
+    W_hat_active = fft2(W_spatial_active)
+
+    k_inv_active = kernel_inv[:, :, :, 1:, :, :]
+    scattered_k = W_hat_active * k_inv_active
+
+    # r_0 = c - A(x_0) = x_0 - (x_0 - Scatter(x_0)) = Scatter(x_0)
+    r0_hat = torch.sum(scattered_k, dim=3)
+
+    # ==========================================
+    # 5. Apply Operator directly to Initial Residual
+    # ==========================================
+    # We apply A(r_0) = r_0 - Scatter(r_0) without normalizing r_0 first
+    r0_spatial = ifft2(k_fwd_active * r0_hat.unsqueeze(3))
+    W_r0_spatial = obj_active * r0_spatial
+    W_r0_hat = fft2(W_r0_spatial)
+
+    scatter_r0 = torch.sum(W_r0_hat * k_inv_active, dim=3)
+    z_hat = r0_hat - scatter_r0  # This represents A(r0_hat)
+
+    # ==========================================
+    # 6. GMRES 1D Least Squares (Direct Projection)
+    # ==========================================
+    # Mathematically identical to Arnoldi for k=1, but skips w_perp and normalization.
+    # alpha = <z_hat, r0_hat> / ||z_hat||^2
+    num = torch.sum(torch.conj(z_hat) * r0_hat, dim=(-2, -1), keepdim=True)
+    den = torch.sum(z_hat.abs().square(), dim=(-2, -1), keepdim=True) + eps
+    alpha = num / den
+
+    # Update solution
+    x1_hat = Psi_M_hat + alpha * r0_hat
+
+    # ==========================================
+    # 7. Detector Measurement
+    # ==========================================
+    dp_fwd = fftshift2(
+        torch.sum(x1_hat.abs().square() * norm_weight.view(1, 1, -1, 1, 1), dim=(1, 2)) + eps
+    )
 
     return dp_fwd

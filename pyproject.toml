@@ -37,6 +37,7 @@ dependencies = [
   "torchvision",
   "ty>=0.0.23",
   "pytest-cov>=7.0.0",
+  "tqdm>=4.67.3",
 ]
 
 [project.scripts]
