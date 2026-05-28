@@ -7,6 +7,8 @@ from typing import Optional
 
 import torch
 
+from ptyrad.core.functional import approx_torch_quantile
+
 logger = logging.getLogger(__name__)
 
 
@@ -156,8 +158,8 @@ class ConvergenceMonitor:
         Returns (bg_change, fg_change) as floats.
         """
         flat_curr = current.flatten()
-        p_lo = torch.quantile(flat_curr, percentile_range[0] / 100.0).item()
-        p_hi = torch.quantile(flat_curr, percentile_range[1] / 100.0).item()
+        p_lo = approx_torch_quantile(flat_curr, percentile_range[0] / 100.0).item()
+        p_hi = approx_torch_quantile(flat_curr, percentile_range[1] / 100.0).item()
         flat_diff = (current - reference).abs().flatten()
         bg_mask = flat_curr < p_lo
         fg_mask = flat_curr > p_hi
