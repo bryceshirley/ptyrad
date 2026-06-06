@@ -32,7 +32,7 @@ pip install ptyrad
 If you're using Windows with NVIDIA CUDA GPU, you will also need to install the GPU version of PyTorch with:
 
 ```sh
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118 --force-reinstall
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128 --force-reinstall
 ```
 
 *PtyRAD* can also be installed via `conda`. For detailed instructions on installing *PtyRAD* on different machines or pinning specific CUDA versions, see [the installation guide](https://ptyrad.readthedocs.io/en/latest/installation.html).

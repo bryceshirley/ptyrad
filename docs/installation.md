@@ -35,11 +35,11 @@ Assuming you have created and activated a fresh Python environment for *PtyRAD*,
 
 ```bash
 pip install ptyrad
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118 --force-reinstall
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128 --force-reinstall
 ```
 :::{admonition} Specify CUDA version
 :class: dropdown note
-PyTorch ships with the specified CUDA runtime (the `/cu118` in the url) so please make sure your machine has a compatible GPU driver. Run `nvidia-smi` in your terminal to see the maximum supported CUDA runtime version. You can modify the url if your machine supports newer CUDA runtime.
+PyTorch ships with the specified CUDA runtime (the `/cu128` in the url) so please make sure your machine has a compatible GPU driver. Run `nvidia-smi` in your terminal to see the maximum supported CUDA runtime version. You can modify the url if your machine supports newer CUDA runtime.
 :::
 
 ::::
