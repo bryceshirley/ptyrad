@@ -43,6 +43,7 @@ exclude_patterns = ['src/ptyrad/starter/',
                     '**.ipynb_checkpoints',
                     '_build'] # Exclude api could also make the build much faster
 autosummary_generate = True # This controls the api autosummary, which is quite slow. Toggle off for faster build while testing other pages.
+autosummary_generate_overwrite = True # Always regenerate stale autosummary files to prevent warnings from removed/renamed members.
 
 # Autodoc Pydantic configuration
 autodoc_pydantic_model_show_json = False # Looks ugly since my fields are often pydantic models as well
