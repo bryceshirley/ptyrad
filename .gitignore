@@ -4,6 +4,8 @@ __pycache__
 /data/
 /output/
 /params/
+/logs/
+/scripts/
 torch_compile_debug/
 .claude/
 
