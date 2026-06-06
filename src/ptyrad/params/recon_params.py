@@ -76,6 +76,7 @@ class ConvergenceMonitorParams(BaseModel):
     )
     """
     Which optimizable tensors to track convergence for.
+
     - 'obja': mean absolute change of (1 - obja) in the scanned ROI, split into background
       (pixels below p_low) and signal (pixels above p_high) regions. Stored as obja_bg / obja_fg.
       The 1-obja transform maps vacuum → 0 and material → >0 for a consistent sign convention.
@@ -84,6 +85,7 @@ class ConvergenceMonitorParams(BaseModel):
     - 'probe': fractional intensity change (sum|ΔI|/sum(I)) of mode-summed probe intensity
       (robust to mode-order switching).
     - 'probe_pos_shifts': RMS displacement change in Å between consecutive snapshots.
+
     'slice_thickness' and 'obj_tilts' are excluded — they are already recorded every iteration
     via model.dz_iters and model.avg_tilt_iters and plotted directly by the dashboard.
     """
@@ -110,8 +112,8 @@ class ConvergenceMonitorParams(BaseModel):
     )
     """
     Percentile range [p_low, p_high] used to separate background from signal pixels when computing
-    obja and objp convergence metrics. The background metric tracks mean |Δ| for pixels below p_low
-    (vacuum/near-vacuum region), and the signal metric tracks mean |Δ| for pixels above p_high
+    obja and objp convergence metrics. The background metric tracks mean abs(Δ) for pixels below p_low
+    (vacuum/near-vacuum region), and the signal metric tracks mean abs(Δ) for pixels above p_high
     (material region). The middle range [p_low, p_high] is excluded to avoid the transition boundary.
     Has no effect on probe or probe_pos_shifts metrics.
     """
@@ -347,24 +349,26 @@ class ReconParams(BaseModel):
     """
     This list specifies the selected figures that will be plotted/saved at each save interval.
     Available keys:
-    - 'convergence' / 'convergence_full' : Unified time-series dashboard showing the full iteration
-                          history from iter 0 (no zoom). Saved as summary_convergence.png (fixed
-                          name, overwritten each cycle). Works even when convergence_monitor is null
-                          — tensor panels are simply absent. Recommended default.
-    - 'convergence_dynamic' : Same dashboard but each panel is zoomed to its most informative
-                          x-range via the Kneedle algorithm. Useful for inspecting the long tail
-                          of an qualitatively converged run. Saved as summary_convergence_dynamic.png.
-    - 'loss'            : Standalone loss curve with zoom inset (iter-stamped). Covered by 'convergence'.
-    - 'learning_rates'  : Standalone LR schedule (iter-stamped). Covered by 'convergence'.
-    - 'slice_thickness' : Standalone slice thickness curve with zoom inset (iter-stamped). Covered by 'convergence'.
-    - 'tilt_avg'        : Standalone avg tilt curves with zoom inset (iter-stamped). Covered by 'convergence'.
-    - 'forward'         : Forward pass snapshot (probe, object patches, model DP vs measured DP).
-    - 'probe_r_amp'     : Probe modes amplitude in real space.
-    - 'probe_k_amp'     : Probe modes amplitude in Fourier space.
-    - 'probe_k_phase'   : Probe modes phase in Fourier space.
-    - 'pos'             : Scan positions overlay (init vs optimized).
-    - 'tilt'            : Object tilt quiver plot (snapshot).
-    - 'all'             : All of the above.
+
+    - 'convergence' / 'convergence_full': Unified time-series dashboard showing the full iteration
+      history from iter 0 (no zoom). Saved as summary_convergence.png (fixed name, overwritten each
+      cycle). Works even when convergence_monitor is null — tensor panels are simply absent.
+      Recommended default.
+    - 'convergence_dynamic': Same dashboard but each panel is zoomed to its most informative x-range
+      via the Kneedle algorithm. Useful for inspecting the long tail of a qualitatively converged run.
+      Saved as summary_convergence_dynamic.png.
+    - 'loss': Standalone loss curve with zoom inset (iter-stamped). Covered by 'convergence'.
+    - 'learning_rates': Standalone LR schedule (iter-stamped). Covered by 'convergence'.
+    - 'slice_thickness': Standalone slice thickness curve with zoom inset (iter-stamped). Covered by 'convergence'.
+    - 'tilt_avg': Standalone avg tilt curves with zoom inset (iter-stamped). Covered by 'convergence'.
+    - 'forward': Forward pass snapshot (probe, object patches, model DP vs measured DP).
+    - 'probe_r_amp': Probe modes amplitude in real space.
+    - 'probe_k_amp': Probe modes amplitude in Fourier space.
+    - 'probe_k_phase': Probe modes phase in Fourier space.
+    - 'pos': Scan positions overlay (init vs optimized).
+    - 'tilt': Object tilt quiver plot (snapshot).
+    - 'all': All of the above.
+
     Suggested value: ['convergence', 'forward', 'probe_r_amp', 'pos'].
     """
 

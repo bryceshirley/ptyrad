@@ -417,22 +417,22 @@ def orthogonalize_modes_vec(modes, sort=False):
     further guard against float32 precision loss on any backend.
     Falls back silently to the original modes if the result is invalid.
 
-    Note: 
-    
+    Note:
+
     - MPS does not support complex128 or eigh; the entire double-precision
-    computation is moved to CPU, which routes through the stable Hermitian
-    LAPACK path on macOS. Results are cast back to the original device/dtype
-    only after validation.
-    
-    - The use of eigh and A = 0.5 * (A + A.conj().T) are suggested in PR #34 by 
-    @SoverHHH, @EdwardPooh, and @dong-zehao
+      computation is moved to CPU, which routes through the stable Hermitian
+      LAPACK path on macOS. Results are cast back to the original device/dtype
+      only after validation.
+
+    - The use of eigh and A = 0.5 * (A + A.conj().T) are suggested in PR #34 by
+      @SoverHHH, @EdwardPooh, and @dong-zehao
 
     - This is a highly vectorized PyTorch implementation of ``ptycho\\+core\\probe_modes_ortho.m``
-    from PtychoShelves. The expected shape of `modes` input is (pmode, Ny, Nx) to be consistent with ptyrad.
-    
+      from PtychoShelves. The expected shape of `modes` input is (pmode, Ny, Nx) to be consistent with ptyrad.
+
     - Matlab's dot(p2,p1) for complex input would implictly apply with the complex conjugate,
-    so Matlab's dot() != torch.dot because torch.dot doesn't automatically apply the complex conjugate.
-    This is pointed out by @dong-zehao in issue #11.
+      so Matlab's dot() != torch.dot because torch.dot doesn't automatically apply the complex conjugate.
+      This is pointed out by @dong-zehao in issue #11.
     '''
     
     orig_modes_dtype = modes.dtype
