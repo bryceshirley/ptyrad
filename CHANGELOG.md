@@ -5,6 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0] - 2026-06-05
+### Added
+- Add `ptyrad/analysis/` subpackage and `Analyzer` as public API to extract object, probe, and positions from PtyRAD output `model.hdf5` with offline plotting capability
+- Add N-dimensional Zarr support for diffraction patterns with key specification, autodiscovery, and flexible slicing
+- Add load-time slicing for hdf5 and Zarr datasets via top-level `'selection'` key, enabling efficient loading of N-D dataset subsets
+- Add `simu_Npix` and `simu_match_mode` to `init_params` to allow simulation with farther kMax or finer dx sampling than the experimental patterns; simulated patterns are downsampled or center-cropped to match experimental data instead of padding/upsampling the experimental side
+- Add `probe_mask_r` constraint back for experimental real-space probe masking; refine `near_field_evolution` propagators to accept a sequence of dz for convenient propagated probe calculation and defocus search
+- Add learning rate scheduler support as `scheduler_params` under `model_params` with `step_unit` control for per-iter or per-batch advancement
+- Add `ConvergenceMonitor` with `convergence_monitor_params` in params and `plot_convergence_dashboard` for automated convergence tracking and visualization. Includes kneedle algorithm to automatically determine plotting zoom range; probe metric is fractional intensity change and object metric is mean absolute change with percentile masking
+- Add `verbosity` option to `hypertune_params` for logging control during Optuna trials. Default `WARNING` mutes normal reconstruction logs; `INFO` emits iteration times; requires outer `--verbosity DEBUG` for full debug output
+- Add `plot_raw` to `plot_forward_pass` and `dpi` option to `plot_probe_modes`
+- Add initial test suite under `tests/` and `tools/test_all_walkthrough.py` for walkthrough params validation
+- Expose `plot_learning_rates_schedule` to the public API in `plotting`
+### Changed
+- Use `approx_torch_quantile` for convergence dashboard plots to handle tensors with more than 16.7M elements
+- Enable explicit `configs: null` for `sampler_params` and `pruner_params` under `hypertune_params` as suggested by @sezelt
+- Centralize detector-related transformations (crop, resample, PSF) into `get_detector_pattern` for cleaner forward pass
+- Collect individual loss terms per batch into pre-allocated GPU tensors and transfer to CPU once per iteration, reducing CPU–GPU syncs inside `recon_step`
+- Cache intermediate `model_dp.pow()` in `loss_single` and `loss_poissn` to reduce redundant `.pow()` calls from 3 to 2
+- Enable `compiler_configs['fullgraph']=True` for development with a safety check on DDP and a separate internal `optim_compiler_configs` to enforce optimizer compilation
+- Internal clean up of grid creation: prefer `fftfreq` convention and `indexing='ij'` throughout; use `fftfreq` grid for Fresnel propagator centering
+- Update pydantic field args from deprecated `min_items`/`max_items` to `min_length`/`max_length`
+- Fix CLI `validate-params` to correctly catch validation errors and emit exit code 1
+- Fix incorrect pydantic validation that was blocking `probe_normalization` mode `'target_intensity'`
+- Fix `get_EM_constants` return value when `output_type = 'sigma'`
+- Fix 1-pixel offset between PtyRAD and quanpty fields of view
+- Fix `time_sync` bug that raised `ValueError: Expected a cuda device, but got: cpu` on CPU runs
+- Remove premature `simu_Npix >= meas_Npix` pydantic validation that was too strict
+- Update default `selected_figs` keys to include `convergence_dashboard`; remove `threshold` from `convergence_monitor_params`
+- Swap constraint order so `probe_mask_k` runs before `ortho_pmode` since orthogonalization does not change bandwidth
+### Removed
+- Remove `PtychoModel.shift_probes` bool flag for more natural probe-position handling behavior
+
 ## [0.1.0b13] - 2026-03-01
 ### Added
 - Add `src/ptyrad/starter/` folder to enable `ptyrad init` for fast working directory setup including example, walkthrough, and templates params files with package installation
