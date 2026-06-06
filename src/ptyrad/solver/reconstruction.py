@@ -307,7 +307,7 @@ def prepare_recon(model, init, params):
         output_path = make_output_folder(output_dir, indices, init_params, recon_params, model, constraint_params, loss_params, recon_dir_affixes)
         fig_grouping.savefig(safe_filename(output_path + "/summary_pos_grouping.png"))
         if copy_params and not if_hypertune:
-            # Save params.yml to separate reconstruction folder for normal mode. Hypertune mode params copying is handled at hypertune()
+            # Save params.yaml to separate reconstruction folder for normal mode. Hypertune mode params copying is handled at hypertune()
             copy_params_to_dir(params_path, output_path, params)
     else:
         output_path = None

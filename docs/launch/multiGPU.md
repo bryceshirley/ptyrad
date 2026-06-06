@@ -31,8 +31,8 @@ module load cuda/11.8
 source activate ptyrad
 
 ## Set the params_path variable
-## Make sure the path specified inside params.yml is reachable from your root (i.e., `ptyrad/`)
-PARAMS_PATH="params/examples/PSO.yml"
+## Make sure the path specified inside params.yaml is reachable from your root (i.e., `ptyrad/`)
+PARAMS_PATH="params/examples/PSO.yaml"
 echo params_path = ${PARAMS_PATH}
 
 ## The gpuid is used to assign the device for PtyRAD, it can be either 'acc', 'cpu', or an integer

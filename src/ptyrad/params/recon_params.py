@@ -374,7 +374,7 @@ class ReconParams(BaseModel):
 
     copy_params: bool = Field(default=True, description="Copy params file to output folder")
     """
-    Set to true if you want to copy the .yml params file to the hypertune folder (hypertune mode) or individual reconstruction folders (reconsturction mode). 
+    Set to true if you want to copy the .yaml params file to the hypertune folder (hypertune mode) or individual reconstruction folders (reconsturction mode). 
     Suggested value is true for better record keeping, although most information is saved in model.pt and can be loaded by ckpt = torch.load('model.pt'), params = ckpt['params'].
     """
 

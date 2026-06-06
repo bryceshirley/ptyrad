@@ -255,7 +255,7 @@ def copy_params_to_dir(params_path, output_dir, params=None):
 
     elif params is not None:
         # If no file exists, dump the params dictionary to a YAML file
-        output_path = os.path.join(output_dir, "params_dumped.yml")
+        output_path = os.path.join(output_dir, "params_dumped.yaml")
         with open(output_path, "w") as f:
             yaml.safe_dump(params, f, sort_keys=False)
 
