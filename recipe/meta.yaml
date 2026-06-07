@@ -1,5 +1,5 @@
 {% set name = "ptyrad" %}
-{% set version = "0.1.0b13.post1" %}
+{% set version = "0.1.0b13.post3" %}
 {% set python_min = "3.10" %}
 
 package:
@@ -35,6 +35,7 @@ requirements:
     - scipy
     - tifffile
     - torchvision
+    - zarr
 
 
 test:

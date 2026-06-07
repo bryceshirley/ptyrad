@@ -1,0 +1,28 @@
+# Large data / output dirs — not needed for building the package
+output/
+data/
+params/
+logs/
+
+# Non-source dirs
+scripts/
+notebooks/
+docs/
+release/
+recipe/
+tests/
+_build/
+dist/
+*.egg-info/
+
+# Generated / cache
+__pycache__/
+torch_compile_debug/
+.claude/
+.git/
+*.sqlite3
+*.tif
+*.h5
+*.hdf5
+*.npy
+*.npz
