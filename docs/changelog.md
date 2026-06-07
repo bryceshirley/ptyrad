@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.0.0] - 2026-06-05
+## [1.0.0] - 2026-06-07
 ### Added
 - Add `ptyrad/analysis/` subpackage and `Analyzer` as public API to extract object, probe, and positions from PtyRAD output `model.hdf5` with offline plotting capability
 - Add N-dimensional Zarr support for diffraction patterns with key specification, autodiscovery, and flexible slicing
