@@ -98,6 +98,97 @@ def multislice_forward_model_vec_all(object_patches, probe, H, omode_occu=None, 
     )  # Add eps for numerical stability
     return dp_fwd
 
+@torch.compile(mode="max-autotune")
+def multislice_forward_model_vec_linduda(object_patches, probe, H, delta, L_op=None, omode_occu=None, eps=1e-10, M=1):
+    """
+    Computes the multislice electron diffraction pattern with multiple incoherent probe
+    and object modes using a vectorized forward model, extended with a Lie-Trotter 
+    higher-order correction solver.
+
+    ... [Args Docstring unchanged, but note L_op addition] ...
+        L_op (torch.Tensor, optional): The exact unwrapped analytical L operator (e.g., i * k_z * delta).
+            Must be provided if M > 0 to avoid phase wrapping artifacts from torch.log(H).
+    """
+
+    object_patches = object_patches.contiguous()
+    probe = probe.contiguous()
+    H = H.contiguous()
+
+    if omode_occu is None:
+        objp = object_patches[..., 1]
+        device = objp.device
+        dtype = objp.dtype
+        omode = objp.size(1)
+        omode_occu = torch.ones(omode, dtype=dtype, device=device) / omode
+
+    object_cplx = torch.polar(
+        object_patches[..., 0], object_patches[..., 1]
+    ).contiguous()
+    n_slices = object_cplx.shape[2]
+
+    psi = probe[:, :, None, :, :].contiguous()
+
+    # Precompute the L operator WITHOUT torch.log(H) to avoid phase wrapping
+    if M > 0:
+        if L_op is None:
+            # Fallback (DANGEROUS for high angles/thick slices)
+            L_op_expanded = torch.log(H)[:, None, None]
+        else:
+            # Safe analytic operator
+            L_op_expanded = L_op[:, None, None].contiguous()
+
+    for n in range(n_slices - 1):
+        object_slice = object_cplx[:, :, n, :, :]
+        
+        # --- Extended Solver: Lie-Trotter Cross Term Application ---
+        if M > 0:
+            # Construct N_op directly from raw patches to avoid phase wrapping!
+            amp_slice = object_patches[:, :, n, :, :, 0]
+            phase_slice = object_patches[:, :, n, :, :, 1]
+            
+            # N_op = ln(amp) + i * phase
+            N_op = torch.complex(torch.log(amp_slice + eps), phase_slice)[:, None, :, :, :]
+            
+            dpsi = psi
+            psi_out = psi.clone()
+            
+            # Taylor series expansion for exp(Omega_{Delta z})
+            for m in range(1, M + 1):
+                # 1. Apply N then L
+                N_dpsi = N_op * dpsi
+                L_N_dpsi = ifft2(L_op_expanded * fft2(N_dpsi))
+                
+                # 2. Apply L then N
+                L_dpsi = ifft2(L_op_expanded * fft2(dpsi))
+                N_L_dpsi = N_op * L_dpsi
+                
+                # Calculate Omega_{Delta z} * dpsi
+                Omega_dpsi = -0.5 / delta * (L_N_dpsi + N_L_dpsi)
+                
+                # Update current term and accumulate
+                dpsi = Omega_dpsi / m
+                psi_out = psi_out + dpsi
+                
+            psi = psi_out
+        # -----------------------------------------------------------
+
+        psi = psi * object_slice[:, None, :, :, :]
+        psi = ifft2(H[:, None, None] * fft2(psi))
+
+    # Last layer interaction
+    object_slice = object_cplx[:, :, n_slices - 1, :, :]
+    psi = psi * object_slice[:, None, :, :, :]
+
+    dp_fwd = (
+        torch.sum(
+            (fftshift2(fft2(psi, norm="ortho"))).abs().square() * omode_occu[:, None, None],
+            dim=(1, 2),
+        )
+        + eps
+    )
+    
+    return dp_fwd
+
 
 @torch.compile(mode="max-autotune")
 def multislice_forward_model_vec_strang(object_patches, probe, H_tuple, omode_occu=None, eps=1e-10):

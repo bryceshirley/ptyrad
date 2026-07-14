@@ -136,6 +136,15 @@ class ModelParams(BaseModel):
     - =Nz: Full multislice equivalent
     """
 
+    linduda_order: int = Field(
+        default=1,
+        ge=1,
+        description="Order of Linduda approximation when solver_type='linduda'",
+    )
+    """
+    When using the Linduda approximation solver, this controls the order of the approximation.
+    """
+
     obj_preblur_std: float | None = Field(
         default=None,
         ge=0.0,

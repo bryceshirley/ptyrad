@@ -80,6 +80,7 @@ class PtychoAD(torch.nn.Module):
             self.obj_preblur_std = model_params["obj_preblur_std"]
             self.solver_type = model_params.get("solver_type", "multislice")
             self.born_iterations = model_params.get("born_iterations", 1)
+            self.linduda_order = model_params.get("linduda_order", 2)
             if init_variables.get("on_the_fly_meas_padded", None) is not None:
                 self.meas_padded = torch.tensor(
                     init_variables["on_the_fly_meas_padded"], dtype=torch.float32, device=device
@@ -369,6 +370,8 @@ class PtychoAD(torch.nn.Module):
         vprint(f"Solver type               : {self.solver_type}")
         if self.solver_type == "born":
             vprint(f"Born iterations           : {self.born_iterations}")
+        elif self.solver_type == "linduda":
+            vprint(f"Linduda order             : {self.linduda_order}")
         vprint(" ")
 
     def get_obj_ROI(self, indices):
@@ -560,6 +563,13 @@ class PtychoAD(torch.nn.Module):
 
             dp_fwd = multislice_forward_model_vec_strang(
                 object_patches, probes, propagators, omode_occu=self.omode_occu
+            )
+        elif self.solver_type == "linduda":
+            from ptyrad.forward import multislice_forward_model_vec_linduda
+
+            dp_fwd = multislice_forward_model_vec_linduda(
+                object_patches, probes, propagators, omode_occu=self.omode_occu,
+                delta=self.opt_slice_thickness.detach(), M=self.linduda_order
             )
         else:
             from ptyrad.forward import multislice_forward_model_vec_all
