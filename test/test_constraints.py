@@ -7,11 +7,11 @@ during ptychographic reconstruction based on iteration-based scheduling.
 Note: Many tests are simplified due to the complexity of the constraint system.
 """
 
-from test.utils import set_random_seed
-
 import pytest
 import torch
+
 from ptyrad.constraints import CombinedConstraint
+from test.utils import set_random_seed
 
 
 class TestCombinedConstraint:

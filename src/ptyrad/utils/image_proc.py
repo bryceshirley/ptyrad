@@ -578,9 +578,9 @@ def imshift_batch(img, shifts, grid):
         - The img is automatically broadcast to `(Nb, *img.shape)`, so if a batch of images are passed in, each image would be shifted independently
     """
 
-    assert (
-        img.shape[-2:] == grid.shape[-2:]
-    ), f"Found incompatible dimensions. img.shape[-2:] = {img.shape[-2:]} while grid.shape[-2:] = {grid.shape[-2:]}"
+    assert img.shape[-2:] == grid.shape[-2:], (
+        f"Found incompatible dimensions. img.shape[-2:] = {img.shape[-2:]} while grid.shape[-2:] = {grid.shape[-2:]}"
+    )
 
     ndim = img.ndim  # Get the total img ndim so that the shift is dimension-indepent
     shifts = shifts[

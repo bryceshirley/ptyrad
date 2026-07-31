@@ -17,7 +17,7 @@ logger = CustomLogger(
 )
 
 
-params_path = ["params/PSO_reconstruct_linduda.yml","params/PSO_reconstruct_ms.yml"]
+params_path = ["params/PSO_reconstruct_linduda.yml", "params/PSO_reconstruct_ms.yml"]
 
 print_system_info()
 
