@@ -12,12 +12,13 @@ import time
 from datetime import datetime
 
 import torch
-from ptyrad.load import load_params
-from ptyrad.reconstruction import PtyRADSolver
-from ptyrad.utils import CustomLogger, print_system_info, set_gpu_device
 
 # For a clean progress bar
 from tqdm import tqdm
+
+from ptyrad.load import load_params
+from ptyrad.reconstruction import PtyRADSolver
+from ptyrad.utils import CustomLogger, print_system_info, set_gpu_device
 
 
 def run_reconstruction(solver, slice_thickness, base_params, start_time, gpu_id):

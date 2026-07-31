@@ -606,6 +606,14 @@ def plot_summary(
 
     iter_str = "_iter" + str(niter).zfill(4)
 
+    # Save losses to a text file
+    if save_fig:
+        np.savetxt(
+            safe_filename(output_path + f"/summary_loss{collate_str}{iter_str}.txt"),
+            np.array(model.loss_iters),
+            header="iter, loss",
+        )
+
     # loss curves
     if "loss" in selected_figs or "all" in selected_figs:
         fig_loss = plot_loss_curves(
@@ -710,17 +718,17 @@ def plot_summary(
     tilts = model.opt_obj_tilts.detach().cpu().numpy()
     tilts = np.broadcast_to(tilts, (len(pos), 2))  # tilts has to be (N_scan, 2)
 
-    if "pos" in selected_figs or "all" in selected_figs:
-        fig_scan_pos, ax = plot_scan_positions(
-            pos=pos[indices], init_pos=init_pos[indices], dot_scale=1, show_fig=False, pass_fig=True
-        )
-        ax.set_title(f"Scan positions at iter {niter}", fontsize=16)
-        if show_fig:
-            fig_scan_pos.show()
-        if save_fig:
-            fig_scan_pos.savefig(
-                safe_filename(output_path + f"/summary_scan_pos{collate_str}{iter_str}.png")
-            )
+    # if "pos" in selected_figs or "all" in selected_figs:
+    #     fig_scan_pos, ax = plot_scan_positions(
+    #         pos=pos[indices], init_pos=init_pos[indices], dot_scale=1, show_fig=False, pass_fig=True
+    #     )
+    #     ax.set_title(f"Scan positions at iter {niter}", fontsize=16)
+    #     if show_fig:
+    #         fig_scan_pos.show()
+    #     if save_fig:
+    #         fig_scan_pos.savefig(
+    #             safe_filename(output_path + f"/summary_scan_pos{collate_str}{iter_str}.png")
+    #         )
 
     if "tilt" in selected_figs or "all" in selected_figs:
         fig_obj_tilts, ax = plot_obj_tilts(

@@ -5,15 +5,14 @@ This module tests the main optimization model that holds optimizable tensors
 and interacts with loss and constraints for ptychographic reconstruction.
 """
 
-from test.utils import (
-    create_minimal_init_variables_2d,
-    minimal_model_params,
-)
-
 import pytest
 import torch
 
 from src.ptyrad.models import PtychoAD
+from test.utils import (
+    create_minimal_init_variables_2d,
+    minimal_model_params,
+)
 
 
 class TestPtychoADModel:

@@ -5,11 +5,11 @@ This module tests the CombinedLoss class which implements various loss functions
 used for ptychographic reconstruction, including Gaussian and Poisson statistics.
 """
 
-from test.utils import set_random_seed
-
 import pytest
 import torch
+
 from ptyrad.losses import CombinedLoss
+from test.utils import set_random_seed
 
 
 class TestCombinedLoss:

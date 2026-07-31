@@ -39,6 +39,52 @@ class CombinedLoss(torch.nn.Module):
         self.loss_params = loss_params
         self.mse = torch.nn.MSELoss(reduction="mean")
 
+        # Cache for analytical gradient calculation
+        self.last_model_DP = None
+        self.last_measured_DP = None
+
+    def get_residual(self) -> torch.Tensor:
+        """
+        Computes dL / d(model_DP) analytically for active loss functions.
+        Returns tensor matching model_DP shape [Batch, Y, X].
+        """
+        if self.last_model_DP is None or self.last_measured_DP is None:
+            raise RuntimeError("Must call loss_fn(...) forward before calling get_residual().")
+
+        model_DP = self.last_model_DP
+        measured_DP = self.last_measured_DP
+        residual = torch.zeros_like(model_DP)
+
+        # 1. Residual for loss_single (Gaussian / RMSE)
+        single_params = self.loss_params.get("loss_single", {})
+        if single_params.get("state", False):
+            dp_pow = single_params.get("dp_pow", 0.5)
+            weight = single_params.get("weight", 1.0)
+            data_mean = measured_DP.pow(dp_pow).mean()
+
+            diff = model_DP.pow(dp_pow) - measured_DP.pow(dp_pow)
+            norm = (diff.pow(2).mean() ** 0.5) + 1e-12
+
+            # Derivative d/dI [ ||I_pred^p - I_meas^p||_2 / data_mean ]
+            d_single = (weight / (data_mean * norm * model_DP.numel())) * diff * dp_pow * model_DP.pow(dp_pow - 1.0)
+            residual = residual + d_single
+
+        # 2. Residual for loss_poissn (Poisson NLL)
+        poissn_params = self.loss_params.get("loss_poissn", {})
+        if poissn_params.get("state", False):
+            dp_pow = poissn_params.get("dp_pow", 1.0)
+            eps = poissn_params.get("eps", 1e-6)
+            weight = poissn_params.get("weight", 1.0)
+            data_mean = measured_DP.pow(dp_pow).mean()
+
+            # Derivative d/dI [ - (I_meas^p * log(I_pred^p + eps) - I_pred^p) / data_mean ]
+            d_poissn = (weight / (data_mean * model_DP.numel())) * (
+                1.0 - measured_DP.pow(dp_pow) / (model_DP.pow(dp_pow) + eps)
+            ) * dp_pow * model_DP.pow(dp_pow - 1.0)
+            residual = residual + d_poissn
+
+        return residual
+
     def get_loss_single(self, model_DP, measured_DP):
         """Computes the loss based on Gaussian statistics of the diffraction patterns."""
         # Calculate loss_single
@@ -176,6 +222,9 @@ class CombinedLoss(torch.nn.Module):
         Combines all the loss components and returns the total loss and individual losses.
 
         """
+        self.last_model_DP = model_DP.detach() 
+        self.last_measured_DP = measured_DP.detach()
+        
         losses = []
         losses.append(self.get_loss_single(model_DP, measured_DP))
         losses.append(self.get_loss_poissn(model_DP, measured_DP))

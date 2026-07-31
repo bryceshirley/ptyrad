@@ -4,11 +4,10 @@ Test the reconstruction module functionality in reconstruction.py
 This module tests the ptychographic reconstruction solver and workflows.
 """
 
-from test.utils import minimal_model_params
-
 import pytest
 
 from src.ptyrad.reconstruction import PtyRADSolver
+from test.utils import minimal_model_params
 
 
 class TestReconstruction:
@@ -102,10 +101,9 @@ class TestReconstruction:
 
     def test_optimizer_creation(self):
         """Test optimizer creation utility function."""
-        from test.utils import create_minimal_init_variables_2d, minimal_model_params
-
         from src.ptyrad.models import PtychoAD
         from src.ptyrad.reconstruction import create_optimizer
+        from test.utils import create_minimal_init_variables_2d, minimal_model_params
 
         # Create minimal model for testing
         init_vars = create_minimal_init_variables_2d()

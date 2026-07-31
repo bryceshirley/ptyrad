@@ -6,6 +6,7 @@ that compute diffraction patterns from object patches and probes using vectorize
 """
 
 import torch
+
 from ptyrad.forward import (
     multislice_forward_model_vec_all,
     multislice_forward_model_vec_all_born,
@@ -233,9 +234,9 @@ class TestBornForward:
                 32,
                 32,
             ), f"Expected shape ({batch_size}, 32, 32), got {dp.shape}"
-            assert torch.all(
-                dp >= 0
-            ), f"Batch size {batch_size}: Diffraction patterns should be non-negative"
+            assert torch.all(dp >= 0), (
+                f"Batch size {batch_size}: Diffraction patterns should be non-negative"
+            )
 
     def test_born_different_patch_sizes(self):
         """Test Born approximation with different patch sizes."""
@@ -280,9 +281,9 @@ class TestBornForward:
                 32,
                 32,
             ), f"Device {device}: Expected shape (2, 32, 32), got {dp.shape}"
-            assert torch.all(
-                dp >= 0
-            ), f"Device {device}: Diffraction patterns should be non-negative"
+            assert torch.all(dp >= 0), (
+                f"Device {device}: Diffraction patterns should be non-negative"
+            )
 
     def test_numerical_stability(self):
         """Test numerical stability with small values."""
@@ -315,9 +316,9 @@ class TestBornForward:
                 32,
                 32,
             ), f"Expected shape ({batch_size}, 32, 32), got {dp.shape}"
-            assert torch.all(
-                dp >= 0
-            ), f"Batch size {batch_size}: Diffraction patterns should be non-negative"
+            assert torch.all(dp >= 0), (
+                f"Batch size {batch_size}: Diffraction patterns should be non-negative"
+            )
 
     def test_different_patch_sizes(self):
         """Test forward model with different patch sizes."""
@@ -362,6 +363,6 @@ class TestBornForward:
                 32,
                 32,
             ), f"Device {device}: Expected shape (2, 32, 32), got {dp.shape}"
-            assert torch.all(
-                dp >= 0
-            ), f"Device {device}: Diffraction patterns should be non-negative"
+            assert torch.all(dp >= 0), (
+                f"Device {device}: Diffraction patterns should be non-negative"
+            )

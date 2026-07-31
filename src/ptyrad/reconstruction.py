@@ -1,6 +1,5 @@
 """
 Reconstruction and hypertune workflows for ptychographic reconstructions
-
 """
 
 import concurrent.futures
@@ -13,6 +12,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.distributed as dist
+from torch.fft import fft2, fftshift, ifft2, ifftshift
 from torch.utils.data import Dataset
 
 from ptyrad.constraints import CombinedConstraint
@@ -21,8 +21,10 @@ from ptyrad.losses import CombinedLoss, get_objp_contrast, get_objp_frc_auc
 from ptyrad.models import PtychoAD
 from ptyrad.save import copy_params_to_dir, make_output_folder, save_results
 from ptyrad.utils import (
+    fftshift2,
     get_blob_size,
     get_time,
+    ifftshift2,
     ndarrays_to_tensors,
     parse_hypertune_params_to_str,
     parse_sec_to_time_str,
@@ -33,45 +35,20 @@ from ptyrad.utils import (
 )
 from ptyrad.visualization import plot_pos_grouping, plot_summary
 
-# This suppresses the '..._inductor/compile_fx.py:236: UserWarning: TensorFloat32 tensor cores for float32 matrix multiplication available but not enabled.
-# Consider setting `torch.set_float32_matmul_precision('high')` for better performance.'
-# Although I didn't see much effect on performance because there's very little matrix multiplication in PtyRAD.
 torch.set_float32_matmul_precision("high")
 
-# The actual performance is significantly better than 'eager' so I supress this for clarity
 warnings.filterwarnings(
     "ignore",
     message="Torchinductor does not support code generation for complex operators. Performance may be worse than eager.",
 )
-
-# This will show up torch.compile but it's harmless
 warnings.filterwarnings("ignore", message=".*Profiler function.*will be ignored.*")
-
-# This will show up with DDP via accelerate but this doesn't affect multi GPU
 warnings.filterwarnings("ignore", message=".*No device id is provided.*")
-
-# This will show up when multiGPU + compile but has no affect
 warnings.filterwarnings("ignore", message=".*Dynamo does not know how to trace.*")
 
 
 class PtyRADSolver:
     """
     A wrapper class to perform ptychographic reconstruction or hyperparameter tuning.
-
-    The PtyRADSolver class initializes the necessary components for ptychographic
-    reconstruction and provides methods to execute the reconstruction or perform
-    hyperparameter tuning using Optuna.
-
-    Attributes:
-        params (dict): Dictionary containing all the parameters required for
-            initialization, loss functions, constraints, model, and optional
-            hyperparameter tuning.
-        if_hypertune (bool): A flag to indicate whether hyperparameter tuning should
-            be performed instead of regular reconstruction. Defaults to False.
-        verbose (bool): A flag to control the verbosity of the output. Defaults to True unless
-            if_quiet is set to True.
-        device (str): The device to run the computations on (e.g., 'cuda' for GPU, 'cpu' for CPU).
-            Defaults to None to let `accelerate` automatically decide.
     """
 
     def __init__(self, params, device=None, seed=None, acc=None, logger=None):
@@ -84,7 +61,6 @@ class PtyRADSolver:
         self.random_seed = seed
         self.logger = logger
 
-        # model and optimizer are instantiate inside reconstruct() and hypertune()
         self.init_initializer()
         self.init_loss()
         self.init_constraint()
@@ -92,18 +68,14 @@ class PtyRADSolver:
         vprint(" ")
 
     def init_initializer(self):
-        """Initializes the variables and objects needed for the reconstruction process."""
-        # These components are organized into individual methods so we can re-initialize some of them if needed
         vprint("### Initializing Initializer ###")
         self.init = Initializer(self.params["init_params"], seed=self.random_seed).init_all()
         vprint(" ")
 
     def init_loss(self):
-        """Initializes the loss function using the provided parameters."""
         vprint("### Initializing loss function ###")
         loss_params = self.params["loss_params"]
 
-        # Print loss params
         vprint("Active loss types:")
         for key, value in loss_params.items():
             if value.get("state", False):
@@ -113,11 +85,9 @@ class PtyRADSolver:
         vprint(" ")
 
     def init_constraint(self):
-        """Initializes the constraint function using the provided parameters."""
         vprint("### Initializing constraint function ###")
         constraint_params = self.params["constraint_params"]
 
-        # Print constraint params
         vprint("Active constraint types:")
         for key, value in constraint_params.items():
             if value.get("start_iter", None) is not None:
@@ -129,13 +99,10 @@ class PtyRADSolver:
         vprint(" ")
 
     def reconstruct(self):
-        """Executes the ptychographic reconstruction process by creating the model,
-        optimizer, and running the reconstruction loop."""
         params = self.params
         device = self.device
         logger = self.logger
 
-        # Create the model and optimizer, prepare indices, batches, and output_path
         model = PtychoAD(
             self.init.init_variables, params["model_params"], device=device, verbose=self.verbose
         )
@@ -160,16 +127,12 @@ class PtyRADSolver:
                 verbose=self.verbose,
             )
             params["recon_params"]["GROUP_MODE"] = "random"
-            # `batches` would be replaced by a random DataLoader if we use_acc_device because I haven't figured out how to do specified indices in DataLoader
-            # In other words, only `random` grouping is available for accelerate-powered multiGPU and mixed-precision
             indices, batches, output_path = prepare_recon(model, self.init, params)
             ds = IndicesDataset(indices)
             dl = torch.utils.data.DataLoader(
                 ds, batch_size=params["recon_params"]["BATCH_SIZE"]["size"], shuffle=True
-            )  # This will do the batching
-            batches = self.accelerator.prepare(
-                dl
-            )  # Note that `batches` is replaced by a DataLoader (accelerate mode) that is also an iterable object
+            )
+            batches = self.accelerator.prepare(dl)
             model, optimizer = self.accelerator.prepare(model, optimizer)
 
             vprint(
@@ -190,9 +153,8 @@ class PtyRADSolver:
             )
 
         if logger is not None and logger.flush_file:
-            logger.flush_to_file(
-                log_dir=output_path
-            )  # Note that output_path can be None, and there's an internal flag of self.flush_file controls the actual file creation
+            logger.flush_to_file(log_dir=output_path)
+
         recon_loop(
             model,
             self.init,
@@ -209,7 +171,6 @@ class PtyRADSolver:
         self.optimizer = optimizer
 
     def hypertune(self):
-        """Performs hyperparameter tuning using Optuna."""
         import optuna
 
         torch._inductor.config.triton.cudagraphs = False
@@ -227,19 +188,17 @@ class PtyRADSolver:
         pruner = create_optuna_pruner(pruner_params)
         logger = self.logger
 
-        # Print hypertune params
         vprint("### Hypertune params ###")
         for key, value in hypertune_params.items():
-            if key == "tune_params":  # Check if 'tune_params' exists
+            if key == "tune_params":
                 vprint("Active tune_params:")
                 for param, param_config in value.items():
-                    if param_config.get("state", False):  # Print only if 'state' is True
+                    if param_config.get("state", False):
                         vprint(f"    {param.ljust(12)}: {param_config}")
             else:
                 vprint(f"{key.ljust(16)}: {value}")
         vprint(" ")
 
-        # Check error metric validity
         valid_metrics = {"contrast", "loss", "frc"}
         if error_metric not in valid_metrics:
             raise ValueError(
@@ -247,40 +206,33 @@ class PtyRADSolver:
             )
 
         copy_params = self.params["recon_params"]["copy_params"]
-        output_dir = self.params["recon_params"]["output_dir"]  # This will be later modified
+        output_dir = self.params["recon_params"]["output_dir"]
         prefix_time = self.params["recon_params"]["prefix_time"]
         prefix = self.params["recon_params"]["prefix"]
         postfix = self.params["recon_params"]["postfix"]
 
-        # Retrieve Optuna's logger
         optuna_logger = logging.getLogger("optuna")
         optuna_logger.setLevel(logging.INFO)
-        # Remove any existing console handlers from Optuna's logger to avoid duplicate logs
         for handler in optuna_logger.handlers:
-            if isinstance(handler, logging.StreamHandler):  # StreamHandler is the console handler
+            if isinstance(handler, logging.StreamHandler):
                 optuna_logger.removeHandler(handler)
-        # Redirect Optuna's logger to custom logger
         optuna_logger.addHandler(logger.buffer_handler)
         optuna_logger.addHandler(logger.console_handler)
 
-        # Create a study object and optimize the objective function
         study = optuna.create_study(
             direction="minimize",
             sampler=sampler,
-            pruner=pruner,  # In Optuna default, setting pruner=None will change to a MedianPruner which is a bit odd. In PtyRAD optuna_objective we will skip the pruning if pruner=None.
-            storage=storage_path,  # Specify the storage URL here.
+            pruner=pruner,
+            storage=storage_path,
             study_name=study_name,
             load_if_exists=True,
         )
 
-        # Modify the 'output_dir' and reset the params dict specifically for hypertune mode
-        # Note this will change the params saved with model.pt, but has no effect to the 'copy_params'
         prefix = prefix + "_" if prefix != "" else ""
         postfix = "_" + postfix if postfix != "" else ""
 
-        # Attach time string if prefix_time is true or non-empty str
         if prefix_time is True or (isinstance(prefix_time, str) and prefix_time):
-            time_str = get_time(prefix_time)  # e.g. '20250606'
+            time_str = get_time(prefix_time)
             prefix = f"{time_str}_{prefix}"
         sampler_str = sampler_params["name"]
         pruner_str = "_" + pruner_params["name"] if pruner_params is not None else ""
@@ -294,7 +246,6 @@ class PtyRADSolver:
         if copy_params:
             copy_params_to_dir(params_path, output_dir, self.params)
 
-        # Set output_dir to None if the user doesn't want to create the output_dir at all
         if (
             not copy_params
             and self.params["recon_params"]["SAVE_ITERS"] is None
@@ -303,21 +254,16 @@ class PtyRADSolver:
             output_dir = None
 
         if logger is not None and logger.flush_file:
-            logger.flush_to_file(
-                log_dir=output_dir
-            )  # Note that there's an internal flag of self.flush_file controls the actual file creation
+            logger.flush_to_file(log_dir=output_dir)
             optuna_logger.addHandler(logger.file_handler)
 
         if error_metric == "frc":
             from ptyrad.split import generate_frc_splits
 
-            # This runs our PyTorch splitting function once, saves the files,
-            # and returns the exact paths for the GPU workers to use.
             path_A, path_B = generate_frc_splits(
                 self.params, verbose=self.verbose, plot=False, device=self.device
             )
 
-            # Inject the paths into the params dict so optuna_objective can find them
             self.params["hypertune_params"]["split_A_path"] = path_A
             self.params["hypertune_params"]["split_B_path"] = path_B
 
@@ -341,10 +287,7 @@ class PtyRADSolver:
         for key, value in study.best_params.items():
             vprint(f"\t{key}: {value}")
 
-    # Wrapper function to run either "reconstruction" or "hypertune" modes
     def run(self):
-        """A wrapper method to run the solver in either reconstruction or hyperparameter
-        tuning mode based on the if_hypertune flag"""
         start_t = time_sync()
         solver_mode = "hypertune" if self.if_hypertune else "reconstruct"
 
@@ -364,16 +307,11 @@ class PtyRADSolver:
         if self.logger is not None and self.logger.flush_file:
             self.logger.close()
 
-        # End the process properly when in DDP mode
         if dist.is_initialized():
             dist.destroy_process_group()
 
 
 class IndicesDataset(Dataset):
-    """
-    The Dataset class used specifically for the multiGPU mode for DDP
-    """
-
     def __init__(self, indices):
         self.indices = indices
 
@@ -384,49 +322,29 @@ class IndicesDataset(Dataset):
         return self.indices[idx]
 
 
-###### Reconstruction workflow related functions ######
-# These are called within PtyRADSolver, and the detailed walkthrough notebook
-
-
 def create_optimizer(optimizer_params, optimizable_params, verbose=True):
     def _fix_optimizer_state_dict_format(optim_state_dict: dict) -> dict:
-        """
-        Fix HDF5-loaded optimizer state dict by:
-        - Recovering integer keys (HDF5 forces strings as keys).
-        - Converting param_groups from dicts back to list format, if needed.
-        - Converting any remaining param indices to lists.
-
-        Args:
-            op_state_dict (dict): Loaded optimizer state dict (e.g. from HDF5).
-
-        Returns:
-            dict: Fixed optimizer state dict.
-        """
         fixed = {}
 
         for key, val in optim_state_dict.items():
-            # If the value is a dict (like 'state'), fix its integer keys
             if isinstance(val, dict):
                 fixed_val = {}
                 for nested_key, nested_val in val.items():
                     try:
-                        fixed_nested_key = int(nested_key)  # Convert '0', '1' etc. to 0, 1
+                        fixed_nested_key = int(nested_key)
                     except (ValueError, TypeError):
-                        fixed_nested_key = nested_key  # Keep string keys as-is
+                        fixed_nested_key = nested_key
                     fixed_val[fixed_nested_key] = nested_val
                 fixed[key] = fixed_val
             else:
                 fixed[key] = val
 
-        # Fix param_groups format if it was accidentally stored as a dict
         if isinstance(fixed.get("param_groups"), dict):
             param_groups_dict = fixed["param_groups"]
-            # Convert {0: {...}, 1: {...}} -> [{...}, {...}]
             fixed["param_groups"] = [
                 param_groups_dict[k] for k in sorted(param_groups_dict, key=lambda x: int(x))
             ]
 
-        # Ensure 'params' field is a list of ints, not tensors or ndarrays
         for group in fixed.get("param_groups", []):
             if isinstance(group.get("params"), torch.Tensor):
                 group["params"] = group["params"].tolist()
@@ -435,11 +353,8 @@ def create_optimizer(optimizer_params, optimizable_params, verbose=True):
 
         return fixed
 
-    # Extract the optimizer name and configs
     optimizer_name = optimizer_params["name"]
-    optimizer_configs = (
-        optimizer_params.get("configs") or {}
-    )  # if "None" is provided or missing, it'll default an empty dict {}
+    optimizer_configs = optimizer_params.get("configs") or {}
     ptyrad_path = optimizer_params.get("load_state")
 
     vprint(
@@ -447,7 +362,6 @@ def create_optimizer(optimizer_params, optimizable_params, verbose=True):
         verbose=verbose,
     )
 
-    # Get the optimizer class from torch.optim
     optimizer_class = getattr(torch.optim, optimizer_name, None)
 
     if optimizer_class is None:
@@ -466,10 +380,9 @@ def create_optimizer(optimizer_params, optimizable_params, verbose=True):
         )
         optimizable_params = [
             p["params"][0] for p in optimizable_params if p["params"][0].requires_grad
-        ]  # LBFGS only takes 1 params group as an iterable
+        ]
 
     optimizer = optimizer_class(optimizable_params, **optimizer_configs)
-    # device = optimizable_params[0]["params"][0].device
     device = optimizer.param_groups[0]["params"][0].device
 
     if ptyrad_path is not None and isinstance(ptyrad_path, str):
@@ -478,7 +391,6 @@ def create_optimizer(optimizer_params, optimizable_params, verbose=True):
 
             optim_state_dict = load_ptyrad(ptyrad_path)["optim_state_dict"]
             optim_state_dict = _fix_optimizer_state_dict_format(optim_state_dict)
-            # Convert 'state' to tensors on the right device, while 'param_groups' are kept as generic scalars/arrays/boolean/None/list of int
             optim_state_dict["state"] = ndarrays_to_tensors(
                 optim_state_dict["state"], device=device
             )
@@ -494,38 +406,11 @@ def create_optimizer(optimizer_params, optimizable_params, verbose=True):
 
 
 def prepare_recon(model, init, params):
-    """
-    Prepares the indices, batches, and output path for ptychographic reconstruction.
-
-    This function parses the necessary parameters and generates the indices for scanning,
-    creates batches based on the probe positions, and sets up the output directory for
-    saving results. It also plots and saves a figure illustrating the grouping of probe
-    positions.
-
-    Args:
-        model (PtychoAD): The ptychographic model containing the object, probe,
-            probe positions, and other relevant parameters.
-        init (Initializer): The initializer object containing the initialized variables
-            needed for reconstruction.
-        params (dict): A dictionary containing various parameters needed for the
-            reconstruction process, including experimental parameters, loss parameters,
-            constraint parameters, and reconstruction settings.
-
-    Returns:
-        tuple: A tuple containing the following:
-            - indices (numpy.ndarray): Array of indices for scanning positions.
-            - batches (list of numpy.ndarray): List of batches where each batch contains
-              indices grouped according to the selected grouping mode.
-            - output_path (str): The path to the directory where reconstruction results
-              and figures will be saved.
-    """
     verbose = not params["recon_params"]["if_quiet"]
     vprint("### Generating indices, batches, and output_path ###", verbose=verbose)
-    # Parse the variables
+
     init_variables = init.init_variables
-    init_params = (
-        init.init_params
-    )  # These could be modified by Optuna, hence can be different from params['init_params]
+    init_params = init.init_params
     params_path = params.get("params_path")
     loss_params = params.get("loss_params")
     constraint_params = params.get("constraint_params")
@@ -542,11 +427,13 @@ def prepare_recon(model, init, params):
     copy_params = recon_params["copy_params"]
     if_hypertune = params.get("hypertune_params", {}).get("if_hypertune", False)
 
-    # Generate the indices, batches, and fig_grouping
     pos = (model.crop_pos + model.opt_probe_pos_shifts).detach().cpu().numpy()
-    probe_int = model.get_complex_probe_view().abs().pow(2).sum(0).detach().cpu().numpy()
+
+    probe_view = model.get_complex_probe_view()
+    probe_int = probe_view.abs().pow(2).sum(0).detach().cpu().numpy()
+
     dx = init_variables["dx"]
-    d_out = get_blob_size(dx, probe_int, output="d90", verbose=verbose)  # d_out unit is in Ang
+    d_out = get_blob_size(dx, probe_int, output="d90", verbose=verbose)
     indices = select_scan_indices(
         init_variables["N_scan_slow"],
         init_variables["N_scan_fast"],
@@ -573,11 +460,10 @@ def prepare_recon(model, init, params):
         pass_fig=True,
     )
     vprint(
-        f"The effective batch size (i.e., how many probe positions are simultaneously used for 1 update of ptychographic parameters) is batch_size * grad_accumulation = {batch_size} * {grad_accumulation} = {batch_size * grad_accumulation}",
+        f"The effective batch size is batch_size * grad_accumulation = {batch_size} * {grad_accumulation} = {batch_size * grad_accumulation}",
         verbose=verbose,
     )
 
-    # Create the output path, save fig_grouping, and copy params file
     if SAVE_ITERS is not None:
         output_path = make_output_folder(
             output_dir,
@@ -592,7 +478,6 @@ def prepare_recon(model, init, params):
         )
         fig_grouping.savefig(safe_filename(output_path + "/summary_pos_grouping.png"))
         if copy_params and not if_hypertune:
-            # Save params.yml to separate reconstruction folder for normal mode. Hypertune mode params copying is handled at hypertune()
             copy_params_to_dir(params_path, output_path, params, verbose=verbose)
     else:
         output_path = None
@@ -607,12 +492,10 @@ def select_scan_indices(
 ):
     N_scans = N_scan_slow * N_scan_fast
     vprint(f"Selecting indices with the '{mode}' mode ", verbose=verbose)
-    # Generate flattened indices for the entire FOV
-    if mode == "full":
-        indices = np.arange(N_scans)
-        return indices
 
-    # Set default values for subscan params
+    if mode == "full":
+        return np.arange(N_scans)
+
     if subscan_slow is None and subscan_fast is None:
         vprint(
             "Subscan params are not provided, setting subscans to default as half of the total scan for both directions",
@@ -621,7 +504,6 @@ def select_scan_indices(
         subscan_slow = N_scan_slow // 2
         subscan_fast = N_scan_fast // 2
 
-    # Generate flattened indices for the center rectangular region
     if mode == "center":
         vprint(f"Choosing subscan with {(subscan_slow, subscan_fast)}", verbose=verbose)
         start_row = (N_scan_slow - subscan_slow) // 2
@@ -636,7 +518,6 @@ def select_scan_indices(
             ]
         )
 
-    # Generate flattened indices for the entire FOV with sub-sampled indices
     elif mode == "sub":
         vprint(f"Choosing subscan with {(subscan_slow, subscan_fast)}", verbose=verbose)
         full_indices = np.arange(N_scans).reshape(N_scan_slow, N_scan_fast)
@@ -654,26 +535,6 @@ def select_scan_indices(
 
 
 def make_batches(indices, pos, batch_size, mode="random", seed=None, verbose=True):
-    """Make batches from input indices"""
-    # Input:
-    #   indices: int, (Ns,) array. indices could be a subset of all indices.
-    #   pos: int/float (N,2) array. Always pass in the full positions.
-    #   batch_size: int. The number of indices of each mini-batch
-    #   mode: str. Choose between 'random', 'compact', or 'sparse' grouping.
-    # Output:
-    #   batches: A list of `num_batch` arrays, or [batch0, batch1, ...]
-    # Note:
-    #   The actual batch size would only be "close" if it's not divisible by len(indices) for 'random' grouping
-    #   For 'compact' or 'sparse', it's generally fluctuating around the specified batch size
-    #   'sparse' can be quite slow for large scan positions (like 256x256 takes more than 10min, and 128x128 takes more than 1min on a CPU)
-    #   PtychoShelves automatically switches to 'random' for len(pos) > 1e3 and relying on the random statistics
-    #   To check the correctness of each grouping, you may visualize the pos
-    #   Also we want to make sure we're not missing any indices, so we can do:
-    #
-    #   flatten_indices = np.concatenate(batches)
-    #   flatten_indices.sort()
-    #   indices.sort()
-    #   all(flatten_indices == indices)
     from time import time
 
     try:
@@ -699,7 +560,7 @@ def make_batches(indices, pos, batch_size, mode="random", seed=None, verbose=Tru
     t_start = time()
     if mode == "random":
         rng = np.random.default_rng(seed=seed)
-        shuffled_indices = rng.permutation(indices)  # This will make a shuffled copy
+        shuffled_indices = rng.permutation(indices)
         random_batches = np.array_split(shuffled_indices, num_batch)
         vprint(
             f"Generated {num_batch} '{mode}' groups of ~{batch_size} scan positions in {time() - t_start:.3f} sec",
@@ -707,10 +568,8 @@ def make_batches(indices, pos, batch_size, mode="random", seed=None, verbose=Tru
         )
         return random_batches
 
-    else:  # Either 'compact' or 'sparse'
-        # Choose the selected pos from indices
+    else:
         pos_s = pos[indices]
-        # Kmeans for clustering
         kmeans = MiniBatchKMeans(
             init="k-means++",
             n_init=10,
@@ -722,7 +581,6 @@ def make_batches(indices, pos, batch_size, mode="random", seed=None, verbose=Tru
         kmeans.fit(pos_s)
         labels = kmeans.labels_
 
-        # Separate data points into groups
         compact_batches = []
         for batch_idx in range(num_batch):
             batch_indices_s = np.where(labels == batch_idx)[0]
@@ -735,121 +593,66 @@ def make_batches(indices, pos, batch_size, mode="random", seed=None, verbose=Tru
             )
             return compact_batches
 
-        else:  # 'sparse' mode
+        else:
             from scipy.spatial.distance import cdist
 
-            sparse_indices = (
-                indices.copy()
-            )  # Make a deep copy of indices so that we may pop elements from sparse_indices later
-
-            # Initialize the list to store groups
+            sparse_indices = indices.copy()
             sparse_batches = []
 
-            # Calculate the centroid for each compact group as initial start for sparse groups
-            # The idea is the centroids of each compact group are naturally sparse
             centroids = np.array([np.mean(pos[cbatch], axis=0) for cbatch in compact_batches])
-            pairwise_distances = cdist(
-                pos, pos
-            )  # Calculate the dist for ALL pos can keep the absolute index and skip the conversion between indexing
+            pairwise_distances = cdist(pos, pos)
 
-            used_indices = []  # This list stores the indices used for initialization of the sparse groups
-            # Find the indices closest to the centroids of compact groups, these indices are the initial point for each sparse group
+            used_indices = []
             for batch_idx in range(num_batch):
-                distances = np.linalg.norm(
-                    pos_s - centroids[batch_idx], axis=1
-                )  # Note that this distances is only for selected pos (pos_s = pos[indices])
-                closest_idx_s = np.argmin(
-                    distances
-                )  # closest_idx_s is the position of min distances
-                closest_idx = indices[
-                    closest_idx_s
-                ]  # closest_idx is the actual index that is closest to the centroid
+                distances = np.linalg.norm(pos_s - centroids[batch_idx], axis=1)
+                closest_idx_s = np.argmin(distances)
+                closest_idx = indices[closest_idx_s]
                 sparse_batches.append([closest_idx])
                 used_indices.append(closest_idx_s)
-            sparse_indices = np.delete(
-                sparse_indices, used_indices
-            )  # Delete the used_indices after the entire loop, this helps keep indexing correct and consistent
-            # Deleting elements in a loop would make indexing very challenging
+            sparse_indices = np.delete(sparse_indices, used_indices)
 
-            # Iterate through remaining points
             for idx in sparse_indices:
                 min_distances = []
-                # Iterate through groups
                 for batch_idx in range(num_batch):
                     distances = pairwise_distances[sparse_batches[batch_idx], idx]
                     min_distances.append(np.min(distances))
 
                 max_group_index = np.argmax(min_distances)
-
-                # Add the point to the group with the farthest minimal distance
                 sparse_batches[max_group_index].append(idx)
 
-            # Final check because this procedure is fairly complicated
             flatten_indices = np.concatenate(sparse_batches)
             flatten_indices.sort()
             indices.sort()
-            assert all(
-                flatten_indices == indices
-            ), "Sorry, something went wrong with the sparse grouping, please try 'random' for now"
+            assert all(flatten_indices == indices), (
+                "Sorry, something went wrong with the sparse grouping, please try 'random' for now"
+            )
             vprint(
                 f"Generated {num_batch} '{mode}' groups of ~{batch_size} scan positions in {time() - t_start:.3f} sec",
                 verbose=verbose,
             )
 
-            # Final process to make batches a list of arrays
             sparse_batches = [np.array(batch) for batch in sparse_batches]
             return sparse_batches
 
 
 def parse_torch_compile_configs(configs):
-    """
-    Convert user-facing CompilerConfigs to dict suitable for torch.compile
-
-    Note:
-        The params.yaml defines as 'enable': bool = False,
-        while torch.compile takes only 'disable': bool, so a conversion is needed.
-    """
     if "enable" in configs:
         configs["disable"] = not configs.pop("enable")
     return configs
 
 
 def recon_loop(
-    model, init, params, optimizer, loss_fn, constraint_fn, indices, batches, output_path, acc=None
+    model,
+    init,
+    params,
+    optimizer,
+    loss_fn,
+    constraint_fn,
+    indices,
+    batches,
+    output_path,
+    acc=None,
 ):
-    """
-    Executes the iterative optimization loop for ptychographic reconstruction.
-
-    This function performs the iterative reconstruction process by optimizing the model
-    parameters over a specified number of iterations. During each iteration, it applies
-    the loss and constraint functions, updates the model, and logs the loss values.
-    Intermediate results are saved at specified intervals, and a summary is plotted.
-
-    Args:
-        model (PtychoAD): The ptychographic model containing the parameters and variables
-            to be optimized.
-        init (Initializer): The initializer object containing the initialized variables
-            needed for reconstruction.
-        params (dict): A dictionary containing various parameters for the reconstruction
-            process, including experimental parameters, source parameters, loss parameters,
-            constraint parameters, and reconstruction settings.
-        optimizer (torch.optim.Optimizer): The optimizer used to update the model parameters.
-        loss_fn (CombinedLoss): The loss function object used to compute the loss during
-            each iteration.
-        constraint_fn (CombinedConstraint): The constraint function object applied during
-            each iteration to enforce specific constraints on the model.
-        indices (numpy.ndarray): Array of indices for scanning positions.
-        batches (list of numpy.ndarray): List of batches where each batch contains indices
-            grouped according to the selected grouping mode.
-        output_path (str): The path to the directory where reconstruction results and
-            figures will be saved.
-
-    Returns:
-        list: A list of tuples, where each tuple contains the iteration number, the loss
-            value for that iteration, and the time taken for that iteration.
-    """
-
-    # Parse the variables
     init_variables = init.init_variables
     recon_params = params.get("recon_params")
     NITER = recon_params["NITER"]
@@ -859,27 +662,61 @@ def recon_loop(
     compiler_configs = parse_torch_compile_configs(recon_params["compiler_configs"])
     verbose = not recon_params["if_quiet"]
 
-    # Use the method on the wrapped model (DDP) if it exists
+    # Read block size configuration (default to 4 if unspecified)
+    block_size = recon_params.get("stochastic_block_size", 4)
+
     model_instance = model.module if hasattr(model, "module") else model
+
+    # =========================================================================
+    # OPTIMIZER ISOLATION SETUP
+    # Separate parameter groups for probe vs object updates
+    # =========================================================================
+    probe_params = [
+        p for name, p in model_instance.named_parameters() if "probe" in name and p.requires_grad
+    ]
+    object_params = [
+        p
+        for name, p in model_instance.named_parameters()
+        if "probe" not in name and p.requires_grad
+    ]
+
+    if hasattr(optimizer, "defaults"):
+        opt_class = optimizer.__class__
+        opt_kwargs = optimizer.defaults
+        probe_optimizer = opt_class(probe_params, **opt_kwargs) if probe_params else None
+        object_optimizer = opt_class(object_params, **opt_kwargs) if object_params else None
+    else:
+        probe_optimizer = optimizer
+        object_optimizer = optimizer
 
     vprint("### Start the PtyRAD iterative ptycho reconstruction ###", verbose=verbose)
 
-    # Optimization loop
-    for niter in range(1, NITER + 1):
-        # if niter == 100 and model_instance.solver_type == "born":
-        #     model_instance.solver_type = "multislice"
-        #     vprint(" ", verbose=verbose)
-        #     vprint("### Swapped solver_type from 'born' to 'multislice' ###", verbose=verbose)
-        #     vprint(" ", verbose=verbose)
+    recon_step_compiled = recon_step
 
-        # Toggle the grad calculation to enable or disable AD update on tensors at certain iterations
+    for niter in range(1, NITER + 1):
         toggle_grad_requires(model_instance, niter, verbose)
 
-        # Apply torch.compile to `recon_step``
-        if niter in model_instance.compilation_iters:  # compilation_iters always contain niter=1
-            vprint(f"Setting up PyTorch compiler with {compiler_configs}", verbose=verbose)
+        if niter in model_instance.compilation_iters:
+            vprint(
+                f"Setting up PyTorch compiler with {compiler_configs}",
+                verbose=verbose,
+            )
             torch._dynamo.reset()
             recon_step_compiled = torch.compile(recon_step, **compiler_configs)
+
+        stochastic_slice_blocks = None
+        if model_instance.solver_type == "stochastic_born":
+            Nz = model_instance.opt_objp.shape[1]
+
+            # controlled seed randomization: dynamically seed generator per epoch
+            base_seed = model_instance.random_seed if model_instance.random_seed is not None else 42
+            epoch_rng = np.random.RandomState(base_seed + niter)
+
+            # Randomly shuffle full set of slice indices using isolated RNG state
+            shuffled_indices = epoch_rng.permutation(Nz).tolist()
+            stochastic_slice_blocks = [
+                shuffled_indices[i : i + block_size] for i in range(0, Nz, block_size)
+            ]
 
         batch_losses = recon_step_compiled(
             batches,
@@ -889,22 +726,26 @@ def recon_loop(
             loss_fn,
             constraint_fn,
             niter,
+            stochastic_slice_blocks=stochastic_slice_blocks,
+            probe_optimizer=probe_optimizer,
+            object_optimizer=object_optimizer,
             verbose=verbose,
             acc=acc,
         )
 
-        # Only log the main process
         if acc is None or acc.is_main_process:
-            ## Saving intermediate results
             if SAVE_ITERS is not None and niter % SAVE_ITERS == 0:
                 with torch.no_grad():
-                    # Note that `params` stores the original params from the configuration file,
-                    # while `model` contains the actual params that could be updated by meas_crop, meas_pad, or meas_resample
                     save_results(
-                        output_path, model_instance, params, optimizer, niter, indices, batch_losses
+                        output_path,
+                        model_instance,
+                        params,
+                        optimizer,
+                        niter,
+                        indices,
+                        batch_losses,
                     )
 
-                    ## Saving summary
                     plot_summary(
                         output_path,
                         model_instance,
@@ -932,125 +773,447 @@ def recon_step(
     loss_fn,
     constraint_fn,
     niter,
+    stochastic_slice_blocks=None,
+    probe_optimizer=None,
+    object_optimizer=None,
     verbose=True,
     acc=None,
+    **kwargs,
 ):
-    """
-    Performs one iteration (or step) of the ptychographic reconstruction in the optimization loop.
-
-    This function executes a single iteration of the reconstruction process, including:
-    - Computing the forward model to generate diffraction patterns.
-    - Calculating the loss by comparing the modeled and measured diffraction patterns.
-    - Performing a backward pass to compute gradients and update the model parameters using the optimizer.
-    - Applying iteration-wise constraints after all batches are processed.
-
-    Args:
-        batches (list of numpy.ndarray): List of batches where each batch contains indices
-            grouped according to the selected grouping mode.
-        model (PtychoAD): The ptychographic model containing the parameters and variables
-            to be optimized.
-        optimizer (torch.optim.Optimizer): The optimizer used to update the model parameters.
-        loss_fn (CombinedLoss): The loss function object used to compute the loss for each batch.
-        constraint_fn (CombinedConstraint): The constraint function object applied after each iteration
-            to enforce specific constraints on the model.
-        niter (int): The current iteration number in the optimization loop.
-        verbose (bool, optional): If True, prints progress information during the batch processing.
-            Defaults to True.
-
-    Returns:
-        tuple: A tuple containing:
-            - batch_losses (dict): A dictionary where each key corresponds to a loss component name,
-              and the value is a list of loss values computed for each batch in the iteration.
-            - iter_t (float): The total time taken to complete the iteration.
-    """
     batch_losses = {name: [] for name in loss_fn.loss_params.keys()}
     start_iter_t = time_sync()
 
-    # Use the method on the wrapped model (DDP) if it exists
-    model_instance = model.module if hasattr(model, "module") else model
+    # Safely unwrap DDP and TorchDynamo wrappers to access custom methods
+    model_instance = model
+    while hasattr(model_instance, "module") or hasattr(model_instance, "_orig_mod"):
+        if hasattr(model_instance, "module"):
+            model_instance = model_instance.module
+        if hasattr(model_instance, "_orig_mod"):
+            model_instance = model_instance._orig_mod
 
-    # Run the iteration with closure for LBFGS optimizer
-    if isinstance(optimizer, torch.optim.LBFGS):
-        # Make nested list of batches for the closure with internal grad accumulation over mini-batches
+
+    st_version = 2
+    if model_instance.solver_type == "stochastic_born" and st_version == 0:
+        for batch_idx, batch in enumerate(batches):
+            start_batch_t = time_sync()
+
+            # -----------------------------------------------------------------
+            # PHASE 1: Probe Update
+            # -----------------------------------------------------------------
+            probe_optimizer.zero_grad(set_to_none=True)
+
+            # Forward pass with object detached from autograd
+            model_DP = model_instance.forward_probe_update(batch)
+            measured_DP = model_instance.get_measurements(batch)
+            object_patches = model_instance._current_object_patches
+
+            loss_batch_probe, _ = loss_fn(
+                model_DP, measured_DP, object_patches, model_instance.omode_occu
+            )
+            loss_batch_probe = loss_batch_probe / grad_accumulation
+
+            if acc is not None:
+                acc.backward(loss_batch_probe)
+            else:
+                loss_batch_probe.backward()
+
+            probe_optimizer.step()
+
+            # -----------------------------------------------------------------
+            # PHASE 1.5: Refresh Cache with Newly Updated Probe
+            # -----------------------------------------------------------------
+            with torch.no_grad():
+                _, Psi_probe_k, Psi_state, u_stack = model_instance.get_born_components(batch)
+                total_u = u_stack.sum(dim=3)
+
+            # -----------------------------------------------------------------
+            # PHASE 2: Stochastic Object Block Updates
+            # -----------------------------------------------------------------
+            for block_indices in stochastic_slice_blocks:
+                opt = object_optimizer if object_optimizer is not None else optimizer
+                opt.zero_grad(set_to_none=True)
+
+                with torch.no_grad():
+                    active_u_block = u_stack[:, :, :, block_indices, :, :].sum(dim=3)
+                    scatter_background = total_u - active_u_block
+                    cache_k = Psi_probe_k + scatter_background
+
+                model_DP = model_instance.forward_stochastic_block(
+                    batch, block_indices, cache_k, Psi_state
+                )
+
+                measured_DP = model_instance.get_measurements(batch)
+                object_patches = model_instance._current_object_patches
+
+                loss_batch, losses = loss_fn(
+                    model_DP, measured_DP, object_patches, model_instance.omode_occu
+                )
+                loss_batch = loss_batch / grad_accumulation
+
+                if acc is not None:
+                    acc.backward(loss_batch)
+                else:
+                    loss_batch.backward()
+
+                opt.step()
+
+                # Refresh cache for updated block
+                with torch.no_grad():
+                    updated_u_block = model_instance.compute_block_u(
+                        batch, block_indices, Psi_state
+                    )
+                    u_stack[:, :, :, block_indices, :, :] = updated_u_block
+                    total_u = scatter_background + updated_u_block.sum(dim=3)
+
+            batch_t = time_sync() - start_batch_t
+            model_instance.clear_cache()
+
+            if acc is not None:
+                acc.wait_for_everyone()
+            for loss_name, loss_value in zip(loss_fn.loss_params.keys(), losses, strict=False):
+                batch_losses[loss_name].append(loss_value.detach().cpu().numpy())
+
+            if batch_idx in np.linspace(0, len(batches) - 1, num=6, dtype=int):
+                vprint(
+                    f"Done batch {batch_idx + 1} with {len(batch)} indices ({batch[:5].tolist()}...) in {batch_t:.3f} sec",
+                    verbose=verbose,
+                )
+    elif model_instance.solver_type == "stochastic_born" and st_version == 1:
+        from ptyrad.forward_models import detector
+        for batch_idx, batch in enumerate(batches):
+            start_batch_t = time_sync()
+
+            # -----------------------------------------------------------------
+            # PHASE 1: Probe Update
+            # -----------------------------------------------------------------
+            probe_optimizer.zero_grad(set_to_none=True)
+
+            # Forward pass with object detached from autograd
+            model_DP = model_instance.forward_probe_update(batch)
+            measured_DP = model_instance.get_measurements(batch)
+            object_patches = model_instance._current_object_patches
+
+            loss_batch_probe, _ = loss_fn(
+                model_DP, measured_DP, object_patches, model_instance.omode_occu
+            )
+            loss_batch_probe = loss_batch_probe / grad_accumulation
+
+            if acc is not None:
+                acc.backward(loss_batch_probe)
+            else:
+                loss_batch_probe.backward()
+
+            probe_optimizer.step()
+
+            # -----------------------------------------------------------------
+            # PHASE 1.5: Refresh Cache with Newly Updated Probe
+            # -----------------------------------------------------------------
+            with torch.no_grad():
+                dp_fwd, Psi_probe_k, Psi_state, u_stack = model_instance.get_born_components(batch)
+                total_u = u_stack.sum(dim=3)
+                
+            # -----------------------------------------------------------------
+            # PHASE 2: Zero-Recompute Analytical SBCD
+            # -----------------------------------------------------------------
+            for block_indices in stochastic_slice_blocks:
+                opt = object_optimizer if object_optimizer is not None else optimizer
+                # Zero out gradients for full object parameters
+                opt.zero_grad(set_to_none=True)
+
+                # --- LOCAL AUTOGRAD FOR REGULARIZATIONS ---
+                # We detach the block and let autograd handle ONLY the cheap regularizations
+                with torch.no_grad():
+                    object_patches = model_instance.get_obj_patches(batch)
+                    
+                object_block = object_patches[:, :, block_indices, :, :, :].detach().clone()
+                object_block.requires_grad_(True)
+                
+                reg_loss_sparse = loss_fn.get_loss_sparse(object_block[..., 1], model_instance.omode_occu)
+                reg_loss_simlar = loss_fn.get_loss_simlar(object_block, model_instance.omode_occu)
+                
+                grad_reg_a = torch.zeros_like(object_block[..., 0])
+                grad_reg_p = torch.zeros_like(object_block[..., 1])
+                
+                reg_loss_total = (reg_loss_sparse + reg_loss_simlar) / grad_accumulation
+                if reg_loss_total.item() != 0:
+                    reg_loss_total.backward()
+                    grad_reg_a = object_block.grad[..., 0]
+                    grad_reg_p = object_block.grad[..., 1]
+                # -------------------------------------------
+
+                with torch.no_grad():
+                    model_instance._current_object_patches = object_patches
+                    active_u_sum = u_stack[:, :, :, block_indices, :, :].sum(dim=3)
+                    
+                    loss_batch, losses = loss_fn(
+                        dp_fwd, measured_DP, object_patches, model_instance.omode_occu
+                    )
+                    
+                    residual = loss_fn.get_residual()
+                    if grad_accumulation > 1:
+                        residual = residual / grad_accumulation
+                        
+                    Psi_hat_k = Psi_probe_k + total_u
+
+                    # 1. Compute Analytical Data-Fidelity Gradients
+                    grad_obja, grad_objp = model_instance.stochastic_born_analytical_block_grad(
+                        indices=batch,
+                        residual=residual,
+                        Psi_hat_k=Psi_hat_k,
+                        Psi_state_active=Psi_state,
+                        slice_indices=block_indices,
+                    )
+                    
+                    # 2. Inject the Autograd Regularization Gradients
+                    grad_obja += grad_reg_a
+                    grad_objp += grad_reg_p
+
+                    # 3. Accumulate to global variables & Step
+                    model_instance.accumulate_block_gradients(
+                        batch, block_indices, grad_obja, grad_objp
+                    )
+                    opt.step()
+
+                    # 4. Refresh wavefield cache for the next block
+                    u_block_new = model_instance.compute_block_u(batch, block_indices, Psi_state) 
+                    u_stack[:, :, :, block_indices, :, :] = u_block_new
+                    total_u += u_block_new.sum(dim=3) - active_u_sum
+                    Psi_hat_k = Psi_probe_k + total_u
+                    
+                    Ny, Nx = Psi_hat_k.shape[-2], Psi_hat_k.shape[-1]
+                    norm_weight = (model_instance.omode_occu / (Nx * Ny)).view(1, 1, -1, 1, 1)
+                    dp_fwd = detector(Psi_hat_k, norm_weight)
+                    
+                    if getattr(model_instance, "detector_blur_std", None) is not None and model_instance.detector_blur_std != 0:
+                        from torchvision.transforms.functional import gaussian_blur
+                        dp_fwd = gaussian_blur(dp_fwd, kernel_size=5, sigma=model_instance.detector_blur_std)
+
+
+            batch_t = time_sync() - start_batch_t
+            model_instance.clear_cache()
+
+            if acc is not None:
+                acc.wait_for_everyone()
+            for loss_name, loss_value in zip(loss_fn.loss_params.keys(), losses, strict=False):
+                batch_losses[loss_name].append(loss_value.detach().cpu().numpy())
+
+            if batch_idx in np.linspace(0, len(batches) - 1, num=6, dtype=int):
+                vprint(
+                    f"Done batch {batch_idx + 1} with {len(batch)} indices ({batch[:5].tolist()}...) in {batch_t:.3f} sec",
+                    verbose=verbose,
+                )
+    elif model_instance.solver_type == "stochastic_born" and st_version == 2:
+        from ptyrad.forward_models import detector
+        for batch_idx, batch in enumerate(batches):
+            start_batch_t = time_sync()
+
+            # -----------------------------------------------------------------
+            # PHASE 1: The Forward Cache (One Pass Only)
+            # -----------------------------------------------------------------
+            with torch.no_grad():
+                measured_DP = model_instance.get_measurements(batch)
+                
+                # Fetch initial cache using P_old and O_old
+                dp_fwd, Psi_probe_k, Psi_state, u_stack = model_instance.get_born_components(batch)
+                total_u = u_stack.sum(dim=3)
+                
+                model_instance._current_object_patches = model_instance.get_obj_patches(batch)
+                
+            # -----------------------------------------------------------------
+            # PHASE 2: Object Step (SBCD)
+            # -----------------------------------------------------------------
+            for block_indices in stochastic_slice_blocks:
+                opt = object_optimizer if object_optimizer is not None else optimizer
+                opt.zero_grad(set_to_none=True)
+
+                # --- LOCAL AUTOGRAD FOR REGULARIZATIONS ---
+                with torch.no_grad():
+                    object_patches = model_instance.get_obj_patches(batch)
+                    
+                object_block = object_patches[:, :, block_indices, :, :, :].detach().clone()
+                object_block.requires_grad_(True)
+                
+                reg_loss_sparse = loss_fn.get_loss_sparse(object_block[..., 1], model_instance.omode_occu)
+                reg_loss_simlar = loss_fn.get_loss_simlar(object_block, model_instance.omode_occu)
+                
+                grad_reg_a = torch.zeros_like(object_block[..., 0])
+                grad_reg_p = torch.zeros_like(object_block[..., 1])
+                
+                reg_loss_total = (reg_loss_sparse + reg_loss_simlar) / grad_accumulation
+                if reg_loss_total.item() != 0:
+                    reg_loss_total.backward()
+                    grad_reg_a = object_block.grad[..., 0]
+                    grad_reg_p = object_block.grad[..., 1]
+                # -------------------------------------------
+
+                with torch.no_grad():
+                    model_instance._current_object_patches = object_patches
+                    active_u_sum = u_stack[:, :, :, block_indices, :, :].sum(dim=3)
+                    
+                    # 1. Update detector state using the newly modified object components
+                    Psi_hat_k = Psi_probe_k + total_u
+                    Ny, Nx = Psi_hat_k.shape[-2], Psi_hat_k.shape[-1]
+                    norm_weight = (model_instance.omode_occu / (Nx * Ny)).view(1, 1, -1, 1, 1)
+                    dp_fwd = detector(Psi_hat_k, norm_weight)
+                    
+                    if getattr(model_instance, "detector_blur_std", None) is not None and model_instance.detector_blur_std != 0:
+                        from torchvision.transforms.functional import gaussian_blur
+                        dp_fwd = gaussian_blur(dp_fwd, kernel_size=5, sigma=model_instance.detector_blur_std)
+                    
+                    loss_batch, losses = loss_fn(
+                        dp_fwd, measured_DP, object_patches, model_instance.omode_occu
+                    )
+                    
+                    residual = loss_fn.get_residual()
+                    if grad_accumulation > 1:
+                        residual = residual / grad_accumulation
+                        
+                    # 2. Compute Analytical Data-Fidelity Gradients
+                    grad_obja, grad_objp = model_instance.stochastic_born_analytical_block_grad(
+                        indices=batch,
+                        residual=residual,
+                        Psi_hat_k=Psi_hat_k,
+                        Psi_state_active=Psi_state,
+                        slice_indices=block_indices,
+                    )
+                    
+                    # 3. Inject the Autograd Regularization Gradients
+                    grad_obja += grad_reg_a
+                    grad_objp += grad_reg_p
+
+                    # 4. Accumulate to global variables & Step
+                    model_instance.accumulate_block_gradients(
+                        batch, block_indices, grad_obja, grad_objp
+                    )
+                    opt.step()
+
+                    # 5. Refresh wavefield cache (Swaps out old u_block for new u_block)
+                    u_block_new = model_instance.compute_block_u(batch, block_indices, Psi_state) 
+                    u_stack[:, :, :, block_indices, :, :] = u_block_new
+                    total_u += u_block_new.sum(dim=3) - active_u_sum
+
+            # -----------------------------------------------------------------
+            # PHASE 3: Analytical Probe Step
+            # -----------------------------------------------------------------
+            with torch.no_grad():
+                probe_optimizer.zero_grad(set_to_none=True)
+                
+                # The object loop finished, so total_u perfectly reflects O_new
+                Psi_hat_k = Psi_probe_k + total_u
+                Ny, Nx = Psi_hat_k.shape[-2], Psi_hat_k.shape[-1]
+                norm_weight = (model_instance.omode_occu / (Nx * Ny)).view(1, 1, -1, 1, 1)
+                
+                dp_fwd = detector(Psi_hat_k, norm_weight)
+                if getattr(model_instance, "detector_blur_std", None) is not None and model_instance.detector_blur_std != 0:
+                    from torchvision.transforms.functional import gaussian_blur
+                    dp_fwd = gaussian_blur(dp_fwd, kernel_size=5, sigma=model_instance.detector_blur_std)
+                
+                # Fetch fully updated O_new to pass to the loss and gradient function
+                object_patches = model_instance.get_obj_patches(batch)
+                model_instance._current_object_patches = object_patches
+                
+                loss_batch_probe, losses = loss_fn(
+                    dp_fwd, measured_DP, object_patches, model_instance.omode_occu
+                )
+                
+                residual = loss_fn.get_residual()
+                if grad_accumulation > 1:
+                    residual = residual / grad_accumulation
+                
+                # Compute analytical probe gradient
+                grad_probe_real = model_instance.stochastic_born_analytical_probe_grad(
+                    indices=batch,
+                    residual=residual,
+                    Psi_hat_k=Psi_hat_k,
+                    linearise_obj=True
+                )
+                
+                if model_instance.opt_probe.grad is None:
+                    model_instance.opt_probe.grad = torch.zeros_like(model_instance.opt_probe)
+                model_instance.opt_probe.grad += grad_probe_real
+                
+            probe_optimizer.step()
+
+            # -----------------------------------------------------------------
+            # Clean up and log
+            # -----------------------------------------------------------------
+            batch_t = time_sync() - start_batch_t
+            model_instance.clear_cache()
+
+            if acc is not None:
+                acc.wait_for_everyone()
+            
+            # The losses generated in Phase 3 are the definitive ones for this batch state
+            for loss_name, loss_value in zip(loss_fn.loss_params.keys(), losses, strict=False):
+                batch_losses[loss_name].append(loss_value.detach().cpu().numpy())
+
+            if batch_idx in np.linspace(0, len(batches) - 1, num=6, dtype=int):
+                vprint(
+                    f"Done batch {batch_idx + 1} with {len(batch)} indices ({batch[:5].tolist()}...) in {batch_t:.3f} sec",
+                    verbose=verbose,
+                )
+
+    elif isinstance(optimizer, torch.optim.LBFGS):
         num_batch = len(batches)
         batch_indices = np.arange(num_batch)
         if model.random_seed is not None:
-            set_random_seed(
-                seed=model.random_seed + niter
-            )  # This ensures batch_indices is different for each iter in a reproducible way
+            set_random_seed(seed=model.random_seed + niter)
         np.random.shuffle(batch_indices)
         accu_batch_indices = np.array_split(batch_indices, num_batch // grad_accumulation)
 
         def closure():
             optimizer.zero_grad()
             total_loss = 0
-            # Run grad accumulation inside the closure for LBFGS, note that each closure is ideally 1 full iter with grad_accu
             for batch_idx in accu_batch_idx:
                 batch = batches[batch_idx]
-                model_DP = model(
-                    batch
-                )  # Forward pass is handled automatically by DDP, but methods/attributes should use the unwrapped model
+                model_DP = model(batch)
                 measured_DP = model_instance.get_measurements(batch)
                 object_patches = model_instance._current_object_patches
                 loss_batch, losses = loss_fn(
                     model_DP, measured_DP, object_patches, model_instance.omode_occu
                 )
-                total_loss += loss_batch  # LBFGS uses the returned loss to perform the line-search so it's better to return the loss that's associated to all the batches
+                total_loss += loss_batch
             total_loss = total_loss / len(accu_batch_idx)
             acc.backward(total_loss) if acc is not None else total_loss.backward()
             return total_loss, losses
 
-        # Iterate through all accumulated batches. accu_batches = [[batch1],[batch2],[batch3]...], batches = [[accu_batches1],[accu_batches2],[accu_batches3]...]
         for accu_batch_idx in accu_batch_indices:
             optimizer.step(lambda: closure()[0])
 
-        # This extra evaluation on accumulated batches is just to get the `losses` for logging purpose
         _, losses = closure()
         optimizer.zero_grad()
-
-        # Clear the model cache after the mini-batch
         model_instance.clear_cache()
 
-        # Append losses and log batch progress
         if acc is not None:
             acc.wait_for_everyone()
         for loss_name, loss_value in zip(loss_fn.loss_params.keys(), losses, strict=False):
             batch_losses[loss_name].append(loss_value.detach().cpu().numpy())
 
-    # Start mini-batch optimization for all other optimizers doesn't require a closure
     else:
-        optimizer.zero_grad()  # Since PyTorch 2.0 the default behavior is set_to_none=True for performance https://github.com/pytorch/pytorch/issues/92656
+        optimizer.zero_grad(set_to_none=True)
 
         for batch_idx, batch in enumerate(batches):
             start_batch_t = time_sync()
 
-            # Compute forward pass and loss (wrapped in autocast if accelerate is enabled)
             loss_batch, losses = compute_loss(batch, model, model_instance, loss_fn, acc)
-
-            # Normalize the `loss_batch`` before populating the gradients
-            # We only want to scale the `loss_batch` so the grad/update is scaled accordingly
-            # while keeping `losses` to be batch-size-independent for logging purpose
             loss_batch = loss_batch / grad_accumulation
 
-            # Perform backward pass
             acc.backward(loss_batch) if acc is not None else loss_batch.backward()
 
-            # Perform the optimizer step when batch_idx + 1 is divisible by grad_accumulation or it's the last batch
             if (batch_idx + 1) % grad_accumulation == 0 or (batch_idx + 1) == len(batches):
                 if acc is not None:
                     acc.wait_for_everyone()
                 optimizer.step()
-                optimizer.zero_grad()
-            batch_t = time_sync() - start_batch_t
+                optimizer.zero_grad(set_to_none=True)
 
-            # Clear the model cache after the mini-batch
+            batch_t = time_sync() - start_batch_t
             model_instance.clear_cache()
 
-            # Append losses and log batch progress
             if acc is not None:
                 acc.wait_for_everyone()
             for loss_name, loss_value in zip(loss_fn.loss_params.keys(), losses, strict=False):
                 batch_losses[loss_name].append(loss_value.detach().cpu().numpy())
+
             if batch_idx in np.linspace(0, len(batches) - 1, num=6, dtype=int):
                 vprint(
                     f"Done batch {batch_idx + 1} with {len(batch)} indices ({batch[:5].tolist()}...) in {batch_t:.3f} sec",
@@ -1070,22 +1233,20 @@ def recon_step(
     model_instance.avg_tilt_iters.append(
         (niter, model_instance.opt_obj_tilts.detach().mean(0).cpu().numpy())
     )
+
     return batch_losses
 
 
 def toggle_grad_requires(model, niter, verbose=True):
-    """Toggle requires_grad based on start and end iteration for each optimizable tensor."""
-
-    vprint(" ", verbose=verbose)  # Empty line for the start of each iteration
+    vprint(" ", verbose=verbose)
 
     optimizable_tensors = model.optimizable_tensors
     for param_name in model.optimizable_tensors.keys():
         start_iter = model.start_iter.get(param_name)
         end_iter = model.end_iter.get(param_name)
 
-        # Determine if gradients should be enabled
         grad_started = start_iter is not None and niter >= start_iter
-        grad_ended = end_iter is not None and niter + 1 > end_iter  # end_iter is exclusive
+        grad_ended = end_iter is not None and niter + 1 > end_iter
         requires_grad = grad_started and not grad_ended
 
         optimizable_tensors[param_name].requires_grad = requires_grad
@@ -1093,7 +1254,6 @@ def toggle_grad_requires(model, niter, verbose=True):
 
 
 def compute_loss(batch, model, model_instance, loss_fn, acc=None):
-    """Compute the model output and loss, with optional support for accelerate's autocast."""
     if acc is not None:
         with acc.autocast():
             model_DP = model(batch)
@@ -1115,24 +1275,6 @@ def compute_loss(batch, model, model_instance, loss_fn, acc=None):
 
 @torch.compiler.disable
 def loss_logger(batch_losses, niter, iter_t, verbose=True):
-    """
-    Logs and summarizes the loss values for an iteration during the ptychographic reconstruction.
-
-    This function computes the average loss for each loss component across all batches in the
-    current iteration. It then logs the total loss, the individual loss components, and the
-    time taken for the iteration. The function also returns the total loss for the iteration.
-
-    Args:
-        batch_losses (dict): A dictionary where each key corresponds to a loss component name,
-            and the value is a list of loss values computed for each batch in the iteration.
-        niter (int): The current iteration number in the optimization loop.
-        iter_t (float): The total time taken to complete the iteration, in seconds.
-        verbose (bool, optional): If True, prints the loss summary to the console. Defaults to True.
-
-    Returns:
-        float: The total loss for the current iteration, computed as the sum of the average
-        loss values for each component.
-    """
     avg_losses = {name: np.mean(values) for name, values in batch_losses.items()}
     loss_str = ", ".join([f"{name}: {value:.4f}" for name, value in avg_losses.items()])
     vprint(
@@ -1143,32 +1285,17 @@ def loss_logger(batch_losses, niter, iter_t, verbose=True):
     return loss_iter
 
 
-###### Hypertune / Optuna related functions ######
-# These are called inside PtyRADSolver.hypertune
-
-
 def create_optuna_sampler(sampler_params, verbose=True):
-    # Note that this function supports all Optuna samplers except "PartialFixedSampler" because it requires a sequential sampler setup
-    # Different samplers have different available configurations so please refer to https://optuna.readthedocs.io/en/stable/reference/samplers/index.html for more details
-    # For example, GridSampler would need to pass in the 'search_space' so you need to explicitly specify every target variable range in 'sampler_params' : {'name': GridSampler, 'configs': {'search_space': {'optimizer': ['Adam', 'AdamW', 'RMSprop'], 'batch_size': [16,24,32,64,128,256,512], 'oalr': [1.0e-4, 1.0e-3, 1.0e-2], 'oplr': [1.0e-4, 1.0e-3, 1.0e-2]}}}
-    # Also the GridSampler would only use the defined search_space and will ignore the range/step setup in 'tune_params'.
-    # A handy usage of GridSampler is to exhaust some combination of reconstruction parameters
-    # The recommmendation setup for PtyRAD is `sampler_params = {'name': 'TPESampler', 'configs': {'multivariate':True, 'group':True, 'constant_liar':True}}`
-
     import optuna
 
-    # Extract the sampler name and configs
     sampler_name = sampler_params["name"]
-    sampler_configs = (
-        sampler_params.get("configs") or {}
-    )  # if "None" is provided or missing, it'll default an empty dict {}
+    sampler_configs = sampler_params.get("configs") or {}
 
     vprint(
         f"### Creating Optuna '{sampler_name}' sampler with configs = {sampler_configs} ###",
         verbose=verbose,
     )
 
-    # Get the optimizer class from optuna.samplers
     sampler_class = getattr(optuna.samplers, sampler_name, None)
 
     if sampler_class is None or sampler_name == "ParitalFixedSampler":
@@ -1181,34 +1308,19 @@ def create_optuna_sampler(sampler_params, verbose=True):
 
 
 def create_optuna_pruner(pruner_params, verbose=True):
-    # Note that this function supports all Optuna pruners except "WilcoxonPruner" because it requires a nested evaluation setup
-    # Different pruners have different available configurations so please refer to https://optuna.readthedocs.io/en/stable/reference/pruners.html for more details
-    # PatientPruner and PercentilePruner have required fields that need to be passed in with 'configs'
-    # For PatientPruner that wraps around a base pruner, you need to specify the base pruner name and configs in a nested way
-    # pruner_params = {'name': 'PatientPruner',
-    #              'configs': {'patience': 1,
-    #                          'wrapped_pruner_configs':{'name': 'MedianPruner',
-    #                                                    'configs': {}}}}
-    # If you're testing pruner with some other objective function, note that the objective function must contain iterative steps for you to prune (early termination)
-    # The recommendation setup for PtyRAD is `pruner_params = {'name': 'HyperbandPruner', 'configs': {'min_resource': 5, 'reduction_factor': 2}}`
-
     import optuna
 
     if pruner_params is None:
         return None
     else:
-        # Extract the pruner name and configs
         pruner_name = pruner_params["name"]
-        pruner_configs = (
-            pruner_params.get("configs") or {}
-        )  # if "None" is provided or missing, it'll default an empty dict {}
+        pruner_configs = pruner_params.get("configs") or {}
 
         vprint(
             f"### Creating Optuna '{pruner_name}' pruner with configs = {pruner_configs} ###",
             verbose=verbose,
         )
 
-        # Get the pruner class from optuna.pruners
         pruner_class = getattr(optuna.pruners, pruner_name, None)
 
         if pruner_class is None or pruner_name == "WilcoxonPruner":
@@ -1221,7 +1333,7 @@ def create_optuna_pruner(pruner_params, verbose=True):
             wrapped_pruner = create_optuna_pruner(
                 pruner_configs["wrapped_pruner_configs"], verbose=verbose
             )
-            pruner_configs.pop("wrapped_pruner_configs", None)  # Delete the wrapped_pruner_configs
+            pruner_configs.pop("wrapped_pruner_configs", None)
             pruner = pruner_class(wrapped_pruner, **pruner_configs)
         else:
             pruner = pruner_class(**pruner_configs)
@@ -1230,45 +1342,12 @@ def create_optuna_pruner(pruner_params, verbose=True):
         return pruner
 
 
-# Major Optuna routine
 def optuna_objective(trial, params, init, loss_fn, constraint_fn, device="cuda", verbose=False):
-    """
-    Objective function for Optuna hyperparameter tuning in ptychographic reconstruction.
-
-    This function is used by Optuna to optimize the hyperparameters of the ptychographic reconstruction
-    process. The function updates the reconstruction parameters based on the trial's suggestions and
-    runs the reconstruction loop to evaluate the performance. The function also implements Optuna's
-    pruning mechanism to stop unpromising trials early.
-
-    Args:
-        trial (optuna.trial.Trial): A trial object that suggests hyperparameter values and handles
-            pruning.
-        params (dict): A dictionary containing all the parameters for the reconstruction, including
-            experimental parameters, model parameters, and hyperparameter tuning configurations.
-        init (Initializer): An instance of the Initializer class that holds initialized variables
-            and methods for updating them based on the trial's suggestions.
-        loss_fn (CombinedLoss): The loss function object that calculates the reconstruction loss.
-        constraint_fn (CombinedConstraint): The constraint function object that applies constraints
-            during optimization.
-        device (str, optional): The device to run the reconstruction on, e.g., 'cuda'. Defaults to 'cuda'.
-        verbose (bool, optional): If True, enables verbose output. Defaults to False.
-
-    Returns:
-        float: The total loss for the final iteration of the reconstruction process, used by Optuna
-        to evaluate the trial's performance.
-
-    Raises:
-        optuna.exceptions.TrialPruned: Raised when the trial should be pruned based on the
-        intermediate results.
-    """
     import optuna
 
-    init.verbose = (
-        verbose  # This would affect the initialization printing for each hypertune trials
-    )
+    init.verbose = verbose
     params = deepcopy(params)
 
-    # Parse the recon_params
     recon_params = params.get("recon_params")
     NITER = recon_params["NITER"]
     SAVE_ITERS = recon_params["SAVE_ITERS"]
@@ -1277,7 +1356,6 @@ def optuna_objective(trial, params, init, loss_fn, constraint_fn, device="cuda",
     selected_figs = recon_params["selected_figs"]
     compiler_configs = parse_torch_compile_configs(recon_params["compiler_configs"])
 
-    # Parse the hypertune_params
     hypertune_params = params["hypertune_params"]
     collate_results = hypertune_params["collate_results"]
     append_params = hypertune_params["append_params"]
@@ -1286,12 +1364,6 @@ def optuna_objective(trial, params, init, loss_fn, constraint_fn, device="cuda",
     trial_id = "t" + str(trial.number).zfill(4)
     params["recon_params"]["prefix"] += trial_id
 
-    ## Currently only re-initialize the required parts for performance, but once there're too many correlated params need to be re-initialized,
-    ## we might put the entire initialization inside optuna_objective for readability, although init_measurements for every trial would be a large overhead.
-
-    ## TODO After the refactoring of `init_calibration` and better dx setting logic, it's possible to include more optimizable params without exploding the logic here
-
-    # Batch size
     if tune_params["batch_size"]["state"]:
         vname = "batch_size"
         vparams = tune_params[vname]
@@ -1299,7 +1371,6 @@ def optuna_objective(trial, params, init, loss_fn, constraint_fn, device="cuda",
             trial, vparams["suggest"], vname, vparams["kwargs"]
         )
 
-    # Optimizer
     if tune_params["optimizer"]["state"]:
         vname = "optimizer"
         vparams = tune_params[vname]
@@ -1307,11 +1378,8 @@ def optuna_objective(trial, params, init, loss_fn, constraint_fn, device="cuda",
         params["model_params"]["optimizer_params"]["name"] = optim_name
         params["model_params"]["optimizer_params"]["configs"] = vparams["kwargs"][
             "optim_configs"
-        ].get(
-            optim_name, {}
-        )  # Update optimizer_configs if the user has specified them for each optimizer
+        ].get(optim_name, {})
 
-    # learning rates
     lr_to_tensor = {
         "plr": "probe",
         "oalr": "obja",
@@ -1327,7 +1395,6 @@ def optuna_objective(trial, params, init, loss_fn, constraint_fn, device="cuda",
                 trial, vparams["suggest"], vname, vparams["kwargs"]
             )
 
-    # dx (calibration)
     if tune_params["dx"]["state"]:
         vname = "dx"
         vparams = tune_params[vname]
@@ -1342,7 +1409,6 @@ def optuna_objective(trial, params, init, loss_fn, constraint_fn, device="cuda",
         init.init_obj()
         init.init_H()
 
-    # probe_params (pmode_max, conv_angle, defocus, z_shift, c3, c5)
     remake_probe = False
     for vname in ["pmode_max", "conv_angle", "defocus", "z_shift", "c3", "c5"]:
         if tune_params[vname]["state"]:
@@ -1354,7 +1420,6 @@ def optuna_objective(trial, params, init, loss_fn, constraint_fn, device="cuda",
     if remake_probe:
         init.init_probe()
 
-    # Nlayer
     if tune_params["Nlayer"]["state"]:
         vname = "Nlayer"
         vparams = tune_params[vname]
@@ -1363,7 +1428,6 @@ def optuna_objective(trial, params, init, loss_fn, constraint_fn, device="cuda",
         )
         init.init_obj()
 
-    # slice_thickness
     if tune_params["dz"]["state"]:
         vname = "dz"
         vparams = tune_params[vname]
@@ -1371,10 +1435,9 @@ def optuna_objective(trial, params, init, loss_fn, constraint_fn, device="cuda",
             trial, vparams["suggest"], vname, vparams["kwargs"]
         )
         init.set_variables_dict()
-        init.init_obj()  # Currently the slice_thickness only modifies the printed obj_extent value, but eventually we'll add obj resampling so let's keep it for now
+        init.init_obj()
         init.init_H()
 
-    # scan_affine
     scan_affine = []
     scan_affine_init = params["init_params"]["pos_scan_affine"]
     if scan_affine_init is not None:
@@ -1397,9 +1460,8 @@ def optuna_objective(trial, params, init, loss_fn, constraint_fn, device="cuda",
     if scan_affine != [1, 0, 0, 0]:
         init.init_params["pos_scan_affine"] = scan_affine
         init.init_pos()
-        init.init_obj()  # Update obj initialization because the scan range has changed
+        init.init_obj()
 
-    # tilt (This will override the current tilts and force it to be a global tilt (2,1))
     obj_tilts = []
     for vname in ["tilt_y", "tilt_x"]:
         if tune_params[vname]["state"]:
@@ -1409,17 +1471,11 @@ def optuna_objective(trial, params, init, loss_fn, constraint_fn, device="cuda",
             )
         else:
             obj_tilts.append(0)
-    obj_tilts = [obj_tilts]  # Make it into [[tilt_y, tilt_x]]
+    obj_tilts = [obj_tilts]
     if obj_tilts != [[0, 0]]:
-        init.init_variables["obj_tilts"] = (
-            obj_tilts  # No need to update init_params['tilt_params'] because the pass-in value is only used when `tilt_params = 'custom'`
-        )
+        init.init_variables["obj_tilts"] = obj_tilts
 
-    # =========================================================
-    # DUAL-GPU PARALLEL FRC WORKFLOW
-    # =========================================================
     if error_metric == "frc":
-        # Extract split paths from hypertune_params config
         path_A = hypertune_params.get("split_A_path")
         path_B = hypertune_params.get("split_B_path")
 
@@ -1429,7 +1485,6 @@ def optuna_objective(trial, params, init, loss_fn, constraint_fn, device="cuda",
             )
 
         def run_split(split_path, target_device):
-            """Thread-safe worker to run a full reconstruction on a specific GPU."""
             from copy import deepcopy
 
             from ptyrad.constraints import CombinedConstraint
@@ -1446,7 +1501,6 @@ def optuna_objective(trial, params, init, loss_fn, constraint_fn, device="cuda",
             split_params["recon_params"]["compiler_configs"] = {"enable": False}
             split_params["recon_params"]["if_quiet"] = True
 
-            # Initialize and run init_all()
             split_init = Initializer(
                 split_params["init_params"],
                 seed=split_params["init_params"].get("random_seed"),
@@ -1471,7 +1525,6 @@ def optuna_objective(trial, params, init, loss_fn, constraint_fn, device="cuda",
             split_indices, split_batches, _ = prepare_recon(split_model, split_init, split_params)
             split_grad_acc = split_params["recon_params"]["BATCH_SIZE"].get("grad_accumulation", 1)
 
-            # Force eager mode for threading stability
             step_fn = recon_step
 
             last_losses = None
@@ -1481,7 +1534,6 @@ def optuna_objective(trial, params, init, loss_fn, constraint_fn, device="cuda",
                     set_random_seed(seed=split_model.random_seed + niter)
                 shuffle(split_batches)
 
-                # CHANGE: Capture the return value of the step function
                 last_losses = step_fn(
                     split_batches,
                     split_grad_acc,
@@ -1495,7 +1547,6 @@ def optuna_objective(trial, params, init, loss_fn, constraint_fn, device="cuda",
 
             return split_model, last_losses, split_indices
 
-        # Launch both reconstructions simultaneously on separate GPUs using threads
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
             future_A = executor.submit(run_split, path_A, "cuda:0")
             future_B = executor.submit(run_split, path_B, "cuda:1")
@@ -1503,7 +1554,6 @@ def optuna_objective(trial, params, init, loss_fn, constraint_fn, device="cuda",
             model_A, losses_A, indices_A = future_A.result()
             model_B, losses_B, indices_B = future_B.result()
 
-        # Evaluate FRC and Contrast
         frc_error = compute_optuna_error(
             model_A,
             indices=None,
@@ -1514,12 +1564,9 @@ def optuna_objective(trial, params, init, loss_fn, constraint_fn, device="cuda",
         )
         contrast_error = compute_optuna_error(model_A, indices_A, "contrast")
 
-        # --- THE COMBINED METRIC MATH ---
-        # Extract values and convert back to positive for the calculation
         frc_auc = max(0.001, -1.0 * frc_error)
         contrast_val = max(0.001, -1.0 * contrast_error)
 
-        # Apply the confidence weight
         optuna_error = -1.0 * (contrast_val * frc_auc)
 
         vprint(
@@ -1527,7 +1574,6 @@ def optuna_objective(trial, params, init, loss_fn, constraint_fn, device="cuda",
             verbose=verbose,
         )
 
-        # Save results with the new combined score in the filename
         if collate_results:
             params_str = parse_hypertune_params_to_str(trial.params) if append_params else ""
             collate_str = f"_SCORE_{optuna_error:.5f}_frc_{frc_auc:.2f}_con_{contrast_val:.2f}_{trial_id}{params_str}"
@@ -1557,11 +1603,7 @@ def optuna_objective(trial, params, init, loss_fn, constraint_fn, device="cuda",
 
         return optuna_error
 
-    # =========================================================
-    # STANDARD SINGLE-DATASET PIPELINE (Loss / Contrast)
-    # =========================================================
     elif error_metric in ["loss", "contrast"]:
-        # Create the model and optimizer, prepare indices, batches, and output_path
         model = PtychoAD(
             init.init_variables, params["model_params"], device=device, verbose=verbose
         )
@@ -1570,21 +1612,18 @@ def optuna_objective(trial, params, init, loss_fn, constraint_fn, device="cuda",
         )
         indices, batches, output_path = prepare_recon(model, init, params)
 
-        # Optimization loop
+        recon_step_compiled = recon_step
+
         for niter in range(1, NITER + 1):
-            # Toggle the grad calculation to enable or disable AD update on tensors at certain iterations
             toggle_grad_requires(model, niter, verbose)
 
-            # Apply torch.compile to `recon_step``
-            if niter in model.compilation_iters:  # compilation_iters always contain niter=1
+            if niter in model.compilation_iters:
                 vprint(f"Setting up PyTorch compiler with {compiler_configs}", verbose=verbose)
                 torch._dynamo.reset()
                 recon_step_compiled = torch.compile(recon_step, **compiler_configs)
 
             if model.random_seed is not None:
-                set_random_seed(
-                    seed=model.random_seed + niter
-                )  # This ensures the batches order are different for each iter in a reproducible way
+                set_random_seed(seed=model.random_seed + niter)
             shuffle(batches)
             batch_losses = recon_step_compiled(
                 batches,
@@ -1597,7 +1636,6 @@ def optuna_objective(trial, params, init, loss_fn, constraint_fn, device="cuda",
                 verbose=verbose,
             )
 
-            ## Saving intermediate results
             if SAVE_ITERS is not None and niter % SAVE_ITERS == 0:
                 save_results(
                     output_path,
@@ -1622,17 +1660,13 @@ def optuna_objective(trial, params, init, loss_fn, constraint_fn, device="cuda",
                     verbose=verbose,
                 )
 
-            ## Pruning logic for optuna
             if hypertune_params["pruner_params"] is not None:
-                # UPDATED CALL
                 optuna_error = compute_optuna_error(
                     model, indices, error_metric, output_dir=output_dir, trial_id=trial_id
                 )
                 trial.report(optuna_error, niter)
 
-                # Handle pruning based on the intermediate value.
                 if trial.should_prune():
-                    # Save the current results of the pruned trials
                     params_str = (
                         parse_hypertune_params_to_str(trial.params) if append_params else ""
                     )
@@ -1662,13 +1696,11 @@ def optuna_objective(trial, params, init, loss_fn, constraint_fn, device="cuda",
                         )
                     raise optuna.exceptions.TrialPruned()
 
-        ## Final optuna_error evaluation (only needed if pruner never ran)
         if hypertune_params["pruner_params"] is None:
             optuna_error = compute_optuna_error(
                 model, indices, error_metric, output_dir=output_dir, trial_id=trial_id
             )
 
-        ## Saving collate results and figs of the finished trials
         params_str = parse_hypertune_params_to_str(trial.params) if append_params else ""
         collate_str = f"_error_{optuna_error:.5f}_{trial_id}{params_str}"
         if collate_results:
@@ -1712,23 +1744,18 @@ def get_optuna_suggest(trial, suggest, name, kwargs):
     elif suggest == "float":
         return trial.suggest_float(name, **kwargs)
     else:
-        raise (f"Optuna trail.suggest method '{suggest}' is not supported.")
+        raise ValueError(f"Optuna trial.suggest method '{suggest}' is not supported.")
 
 
 def compute_optuna_error(model, indices, metric, model_B=None, output_dir=None, trial_id=""):
-    """
-    Helper function to compute the current error for Optuna.
-    Now supports passing directory and ID info for FRC summary plotting.
-    """
     if metric == "contrast":
-        return -1 * get_objp_contrast(model, indices)  # Negative for minimization
+        return -1 * get_objp_contrast(model, indices)
     elif metric == "loss":
         return model.loss_iters[-1][-1]
     elif metric == "frc":
         if model_B is None:
             raise ValueError("FRC metric requires a second model (model_B) to compute correlation.")
 
-        # We pass output_dir and trial_id here to trigger the compulsory plotting
         return get_objp_frc_auc(
             model, model_B, margin=200, apod_width=20, output_dir=output_dir, trial_id=trial_id
         )

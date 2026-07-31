@@ -1,6 +1,9 @@
 # Pytest configuration and fixtures
 """Configuration and fixtures for ptyrad tests."""
 
+import pytest
+import torch
+
 from test.utils import (
     create_minimal_init_variables_2d,
     create_minimal_init_variables_3d,
@@ -12,9 +15,6 @@ from test.utils import (
     generate_test_probe,
     set_random_seed,
 )
-
-import pytest
-import torch
 
 
 @pytest.fixture
