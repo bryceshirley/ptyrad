@@ -24,6 +24,12 @@ shape and time compilation, not the maths):
                         for a shared probe) + the O(batch) exit field —
                         the counterpart of ptypy's low-memory Born
                         (gradients == autograd, test_born_lowmem.py)
+  Born + line search    ONE FULL exact-line-search update (spec §3 steps
+                        1-7: forward + backward for both gradients, K
+                        preconditioner, per-slice direction response, both
+                        quartic solves, probe response) — the per-batch cost
+                        of a line-search update, vs. the others' single
+                        forward + adjoint.
 
 Adjoint = torch.autograd.grad of dp.sum() w.r.t. (object_patches, probe).
 
@@ -49,14 +55,15 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from torch.fft import fft2, fftshift, ifft2
 
+import ptyrad.linesearch as ls
 from ptyrad.forward_models import firstborn_forward
 from ptyrad.forward_models.born import firstborn_forward_lowmem
 
 DEMO = "/home/dnz75396/ptyrad/demo"
 CKPT = sorted(glob.glob(
     f"{DEMO}/output/test_100/tBL_WSe2_born/20260913_*random32*/model_iter0100.hdf5"))[-1]
-BATCHES = (1, 16, 32, 64)
-SLICES = (1, 2, 4, 8, 16, 32)
+BATCHES = (1, 16, 32, 64, 128)
+SLICES = (1, 2, 4, 8, 16, 32, 64)
 REPS = 10
 EPS = 1e-10
 
@@ -85,13 +92,9 @@ def born_lowmem(patches, probe, H3, occu):
     return firstborn_forward_lowmem(patches, probe, H3, occu, EPS, False)
 
 
-def time_one(fn, patches, probe, reps):
-    """Warm up once; time `reps` forward+adjoint calls; peak GB above the
+def time_one(call, reps):
+    """Warm up once; time `reps` self-contained calls; peak GB above the
     resting baseline (inputs/propagators already resident)."""
-    def call():
-        dp = fn()
-        torch.autograd.grad(dp.sum(), (patches, probe))
-
     call()  # warmup
     torch.cuda.synchronize()
     base = torch.cuda.memory_allocated()
@@ -103,6 +106,42 @@ def time_one(fn, patches, probe, reps):
     dt = (time.perf_counter() - t0) / reps
     mem = (torch.cuda.max_memory_allocated() - base) / 1e9
     return dt * 1e3, mem  # ms, GB
+
+
+def make_fwd_adj(fn, patches, probe):
+    def call():
+        dp = fn()
+        torch.autograd.grad(dp.sum(), (patches, probe))
+    return call
+
+
+def make_ls_update(O0, probe0, H3, I_dat, occu, Nz):
+    """One full exact-line-search batch update (§3 steps 1-7) at the tensor
+    level: same maths as linesearch_batch_update, benchmark-shaped (B-sized
+    patches, storage write-back excluded — it is O(canvas), not per-batch)."""
+    omega = 1.0 / (I_dat + 1.0)
+
+    def call():
+        O = O0.detach().requires_grad_(True)
+        P = probe0.detach().requires_grad_(True)
+        L, F, u = ls._fwd_loss(O, P, H3, I_dat, None, occu, "amplitude")
+        gO, gP = torch.autograd.grad(L, (O, P))
+        phi = ls.unscattered_illumination(probe0, H3)
+        dn = ls.object_denominator(phi)
+        d = (-gO) / dn
+        D = ls.direction_response(None, d, probe0, H3, per_slice=True).sum(dim=3)
+        F = F.detach()
+        u = u.detach()
+        v, w = ls.response_terms(F, D, occu)
+        a = ls.line_search(u - I_dat, v, w, omega, fallback=1.0 / Nz)
+        F2 = F + a * D
+        u2 = u + (2.0 * a) * v + (a * a) * w
+        dn_p = ls.probe_denominator(O.detach())
+        q = (-gP) / dn_p
+        D_P = ls._fields_from_complex(O.detach() + a * d, q, H3)
+        v2, w2 = ls.response_terms(F2, D_P, occu)
+        ls.line_search(u2 - I_dat, v2, w2, omega, fallback=1.0 / Nz)
+    return call
 
 
 def main():
@@ -143,13 +182,37 @@ def main():
             H3 = (H1 ** zj).contiguous()          # (1,1,1,Nz,Ny,Nx), Born
             H2 = H1.unsqueeze(0).contiguous()     # (1,Ny,Nx), multislice
 
-            for name, fn in (
-                ("multislice", lambda: plain_multislice(patches, probe, H2, occu)),
-                ("Born, parallel", lambda: born_parallel(patches, probe, H3, occu)),
-                ("Born, low memory", lambda: born_lowmem(patches, probe, H3, occu)),
-            ):
+            # line-search inputs: complex object, synthetic data with residual
+            with torch.no_grad():
+                O0 = torch.polar(patches[..., 0], patches[..., 1]).contiguous()
                 try:
-                    ms, gb = time_one(fn, patches, probe, REPS)
+                    I_dat = 1.02 * firstborn_forward(
+                        patches.detach(), probe_in, H3, occu)
+                except RuntimeError:
+                    I_dat = None
+                torch.cuda.empty_cache()
+
+            series = [
+                ("multislice",
+                 make_fwd_adj(lambda: plain_multislice(patches, probe, H2, occu),
+                              patches, probe)),
+                ("Born, parallel",
+                 make_fwd_adj(lambda: born_parallel(patches, probe, H3, occu),
+                              patches, probe)),
+                ("Born, low memory",
+                 make_fwd_adj(lambda: born_lowmem(patches, probe, H3, occu),
+                              patches, probe)),
+            ]
+            if I_dat is not None:
+                series.append(
+                    ("Born + line search",
+                     make_ls_update(O0, probe_in, H3, I_dat, occu, Nz)))
+            else:
+                rows.append(("Born + line search", B, Nz, float("nan"), float("nan")))
+
+            for name, call in series:
+                try:
+                    ms, gb = time_one(call, REPS)
                 except RuntimeError as e:  # OOM etc.
                     print(f"  B={B:3d} N={Nz:3d} {name}: skipped ({str(e)[:50]})")
                     ms, gb = float("nan"), float("nan")
@@ -157,7 +220,7 @@ def main():
                 rows.append((name, B, Nz, ms, gb))
                 if np.isfinite(ms):
                     print(f"  B={B:3d} N={Nz:3d} {name:26s} {ms:8.2f} ms  {gb:6.3f} GB")
-            del patches, probe, H3
+            del patches, probe, H3, O0, I_dat
             torch.cuda.empty_cache()
 
     with open(f"{DEMO}/cost_ptyrad.csv", "w", newline="") as f:
@@ -169,9 +232,9 @@ def main():
     # linear y (per panel): a log y-axis hides how much one model beats the
     # other; log x keeps the doubling grid of N readable.
     colors = {"multislice": "#2a78d6", "Born, parallel": "#eb6834",
-              "Born, low memory": "#1baf7a"}
+              "Born, low memory": "#1baf7a", "Born + line search": "#eda100"}
     markers = {"multislice": "o", "Born, parallel": "s",
-               "Born, low memory": "^"}
+               "Born, low memory": "^", "Born + line search": "D"}
     ink, muted = "#1a1a19", "#6b6a60"
     fig, axes = plt.subplots(2, len(BATCHES), figsize=(3.1 * len(BATCHES), 6.4),
                              dpi=160, sharex=True)
@@ -203,8 +266,11 @@ def main():
     axes[0, 0].legend(frameon=False, fontsize=8, loc="upper left", labelcolor=ink)
     fig.suptitle(
         "PtyRAD cost against depth, tBL-WSe$_2$ geometry (128$^2$ frames, 6 probe "
-        "modes, slices repeated to extend $N$; eager PyTorch, RTX A4000)",
-        fontsize=10, color=ink)
+        "modes, slices repeated to extend $N$; eager PyTorch, RTX A4000).\n"
+        "First three series: one forward + adjoint per batch. "
+        "Born + line search: one FULL exact-line-search update "
+        "(both gradients, direction + probe responses, two quartic solves).",
+        fontsize=9, color=ink)
     fig.tight_layout(rect=[0, 0, 1, 0.95])
     fig.savefig(f"{DEMO}/cost_ptyrad.png", facecolor="white")
     print(f"saved {DEMO}/cost_ptyrad.png and cost_ptyrad.csv")
