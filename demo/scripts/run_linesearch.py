@@ -33,10 +33,13 @@ from ptyrad.visualization import plot_summary
 #               probe step averaged over the batch. Use this for batch-parity
 #               comparisons against optimizer runs.
 params_paths = [
-    "/home/dnz75396/ptyrad/demo/params/PSO_reconstruct_born_paper.yml"
+    os.environ.get(
+        "PTYRAD_LS_PARAMS",
+        "/home/dnz75396/ptyrad/demo/params/PSO_reconstruct_born_paper.yml",
+    )
 ]
 
-run_name = ["linesearch_born_PSO"]  # Used to name the log file. Change to any string you like
+run_name = [os.environ.get("PTYRAD_LS_RUNNAME", "linesearch_born_PSO")]  # log-file name
 
 # None = honor the params file's BATCH_SIZE.
 FORCE_BATCH_SIZE = None
