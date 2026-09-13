@@ -24,7 +24,7 @@ ROWS = [
     ("first Born\n+ line search", f"{T100}/tBL_WSe2_born/20260913_*random32*/model_iter0010.hdf5"),
     ("multislice", f"{T100}/tBL_WSe2_multislice/20260731_*/model_iter0010.hdf5"),
 ]
-SLICES = (3, 11)
+SLICES = (0, 11)  # first and last slice; titles stay in Å (z = index * dz, dz = 1 Å)
 CROP = 176
 
 
