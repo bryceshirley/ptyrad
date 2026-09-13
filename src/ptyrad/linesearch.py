@@ -432,3 +432,89 @@ def linesearch_batch_update(
     diagnostics["probe_peak"] = float(pint.max())
     diagnostics["probe_mean"] = float(pint.mean())
     return probe, diagnostics
+
+
+# --------------------------------------------------------------------------- #
+# Model-layer wiring: one view update on a PtychoAD first-Born model           #
+# --------------------------------------------------------------------------- #
+
+
+def linesearch_model_update(model, index, config=None, state=None, update_probe=True):
+    """One line-search view update (B = 1, the §3 design point) on a PtychoAD
+    model with solver_type='born' and born_iterations=1.
+
+    Gathers the object window at scan position `index` (same crop grids as
+    model.get_obj_ROI), runs linesearch_batch_update on it, scatters the
+    stepped window back into the (omode, Nz, H, W) canvases, and adds the
+    probe increment b*q into opt_probe — unshifted first when per-view
+    sub-pixel probe shifts are active, so the shared probe is updated in its
+    own frame. Detector blur, when configured, is threaded through the linear
+    intensity_postmap so the quartic stays exact.
+
+    Constraints are the caller's responsibility and fire per iteration after
+    the view sweep (reconstruction.py convention, spec §4.4), so the in-batch
+    exact field update is never invalidated here.
+
+    Returns the diagnostics dict of linesearch_batch_update.
+    """
+    cfg = config or LineSearchConfig()
+    st = state if state is not None else LineSearchState()
+    if model.solver_type != "born" or model.born_iterations != 1:
+        raise ValueError(
+            "The exact line search requires solver_type='born' with born_iterations=1: "
+            "F is affine in the object only for single scattering (spec §1)."
+        )
+    if model.obj_preblur_std not in (None, 0):
+        raise NotImplementedError(
+            "obj_preblur changes the parameter-to-field map; thread it through the "
+            "direction response before enabling it with the line search."
+        )
+    if cfg.momentum > 0:
+        raise NotImplementedError(
+            "Heavy ball at the model layer needs a global displacement canvas "
+            "(per-view windows overlap); use momentum only with the tensor-level updater."
+        )
+
+    device = model.opt_obja.device
+    idx = torch.as_tensor([index], device=device)
+
+    # gather: window grids identical to get_obj_ROI, propagator stack H^j
+    gy = model.rpy_grid + model.crop_pos[index, 0]
+    gx = model.rpx_grid + model.crop_pos[index, 1]
+    obja_win = model.opt_obja.data[:, :, gy, gx]  # advanced indexing -> copy
+    objp_win = model.opt_objp.data[:, :, gy, gx]
+    H = model.get_propagators_3d(model.get_propagators(idx)).detach()
+    probe = model.get_probes(idx).detach()  # (1, pmode, Ny, Nx)
+    I_dat = model.get_measurements(idx).detach()
+
+    postmap = None
+    if model.detector_blur_std is not None and model.detector_blur_std != 0:
+        try:
+            from torchvision.transforms.functional import gaussian_blur
+        except ImportError:
+            from ptyrad.utils import gaussian_blur_2d as gaussian_blur
+        std = model.detector_blur_std
+
+        def postmap(x):
+            return gaussian_blur(x, kernel_size=5, sigma=std)
+
+    probe_new, diag = linesearch_batch_update(
+        obja_win, objp_win, probe, H, I_dat, None, model.omode_occu,
+        config=cfg, state=st, update_probe=update_probe, intensity_postmap=postmap,
+    )
+
+    with torch.no_grad():
+        model.opt_obja.data[:, :, gy, gx] = obja_win
+        model.opt_objp.data[:, :, gy, gx] = objp_win
+        if update_probe:
+            dP = (probe_new - probe)[0]  # (pmode, Ny, Nx)
+            if model.shift_probes:
+                from ptyrad.utils import imshift_batch
+
+                dP = imshift_batch(
+                    dP,
+                    shifts=-model.opt_probe_pos_shifts[idx].detach(),
+                    grid=model.shift_probes_grid,
+                )[0]
+            torch.view_as_complex(model.opt_probe.data).add_(dP)
+    return diag
