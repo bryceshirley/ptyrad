@@ -14,7 +14,7 @@ import torch
 import ptyrad.linesearch as ls
 from ptyrad.load import load_params
 from ptyrad.models import PtychoAD
-from ptyrad.reconstruction import PtyRADSolver, create_optimizer, prepare_recon
+from ptyrad.reconstruction import PtyRADSolver, create_optimizer, loss_logger, prepare_recon
 from ptyrad.save import save_results
 from ptyrad.utils import CustomLogger, print_system_info, set_gpu_device, time_sync, vprint
 from ptyrad.visualization import plot_summary
@@ -24,11 +24,19 @@ from ptyrad.visualization import plot_summary
 # gradient-descent optimizer. Requires a params file with solver_type: born and
 # born_iterations: 1 — the far field is affine in the object only for single
 # scattering, which is what makes the step exact.
+#
+# BATCH_SIZE (from the params file) selects the update mode:
+#   size = 1  : per-view updates, probe stepped every view (the spec §3 design
+#               point; converges fastest per iteration)
+#   size > 1  : ptypy-style joint batch update — object gradient
+#               scatter-accumulated on the canvas, ONE scalar step per batch,
+#               probe step averaged over the batch. Use this for batch-parity
+#               comparisons against optimizer runs.
 params_paths = [
-    "/home/dnz75396/ptyrad/demo/params/PSO_reconstruct_born_paper.yml"
+    "/home/dnz75396/ptyrad/demo/params/tBL_WSe2_reconstruct_minimal_born.yml"
 ]
 
-run_name = ["linesearch_born"]  # Used to name the log file. Change to any string you like
+run_name = ["linesearch_born_tBL_WSe2"]  # Used to name the log file. Change to any string you like
 
 # §8 knobs. ls_damp = 0.5 is load-bearing with the default amplitude direction
 # objective — it is not a stability fudge factor, do not "clean it up" to 1.0.
@@ -42,6 +50,8 @@ ls_config = ls.LineSearchConfig(
     direction_objective="amplitude",  # §5 option (a), parity with the ptypy engine
 )
 
+WATCHDOG_EVERY = 512  # views between in-sweep §6 watchdog lines
+
 for i, params_path in enumerate(params_paths):
     print(f"Running line-search reconstruction with params file: {params_path}")
     logger = CustomLogger(
@@ -54,13 +64,12 @@ for i, params_path in enumerate(params_paths):
 
     params = load_params(params_path, validate=True)
 
-    # Line-search design point (spec §3): batch size 1, probe updated every view.
-    # Larger batches average the probe update and stall in a spiky-probe minimum.
-    # Grouping is meaningless for single-view batches (and 'sparse' kmeans breaks
-    # at n_clusters == n_views), so use 'random' — order is reshuffled per iter.
-    params["recon_params"]["BATCH_SIZE"]["size"] = 1
+    batch_size = params["recon_params"]["BATCH_SIZE"]["size"]
     params["recon_params"]["BATCH_SIZE"]["grad_accumulation"] = 1
-    params["recon_params"]["GROUP_MODE"] = "random"
+    if batch_size == 1:
+        # grouping is meaningless for single-view batches (and 'sparse' kmeans
+        # breaks at n_clusters == n_views)
+        params["recon_params"]["GROUP_MODE"] = "random"
 
     device = set_gpu_device(gpuid=0)  # Pass gpuid=None to run on CPU (much slower)
 
@@ -92,41 +101,73 @@ for i, params_path in enumerate(params_paths):
     probe_on = model.lr_params.get("probe", 0) != 0
     probe_start = model.start_iter.get("probe") or 1
     rng = np.random.default_rng(model.random_seed)
+    loss_names = list(solver.loss_fn.loss_params.keys())
+    watchdog_batches = max(WATCHDOG_EVERY // batch_size, 1)
 
-    vprint("### Start the PtyRAD exact-line-search reconstruction ###")
+    vprint(
+        f"### Start the PtyRAD exact-line-search reconstruction "
+        f"(batch size {batch_size}, {'joint-batch' if batch_size > 1 else 'per-view'} mode) ###"
+    )
     for niter in range(1, NITER + 1):
         start_iter_t = time_sync()
         update_probe = probe_on and niter >= probe_start
-        view_losses = []
+        n_views = 0
+        view_losses = []  # E_dir per update, kept on-device until the iter ends
+        iter_losses = []  # standard PtyRAD losses per update, on-device
         n0 = len(ls_state.steps_o)
 
         order = rng.permutation(len(batches))
-        for nview, batch_i in enumerate(order, start=1):
-            for index in np.atleast_1d(np.asarray(batches[batch_i])):
+        t_block, v_block = time_sync(), 0
+        for nbatch, batch_i in enumerate(order, start=1):
+            batch = np.atleast_1d(np.asarray(batches[batch_i]))
+            # tilt/thickness are static within an iteration here, so the 3D
+            # propagator stack is hoisted out of the per-batch work
+            if nbatch == 1:
+                H_iter = model.get_propagators_3d(
+                    model.get_propagators(torch.as_tensor(batch, device=device))
+                ).detach()
+            if len(batch) == 1:
                 diag = ls.linesearch_model_update(
-                    model, int(index), config=ls_config, state=ls_state,
-                    update_probe=update_probe,
+                    model, int(batch[0]), config=ls_config, state=ls_state,
+                    update_probe=update_probe, loss_fn=solver.loss_fn, H=H_iter,
                 )
-                view_losses.append(diag["loss"])
+            else:
+                diag = ls.linesearch_model_update_batched(
+                    model, batch, config=ls_config, state=ls_state,
+                    update_probe=update_probe, loss_fn=solver.loss_fn, H=H_iter,
+                )
+            n_views += len(batch)
+            v_block += len(batch)
+            view_losses.append(diag["loss"])
+            iter_losses.append(torch.stack([lv.detach() for lv in diag["losses"]]))
+
             # §6 in-sweep watchdog: probe runaway must be visible before the
-            # per-iteration constraints (e.g. fix_probe_int) get to fire
-            if nview % 512 == 0:
+            # per-iteration constraints (e.g. fix_probe_int) get to fire.
+            # This is the only host sync inside the sweep.
+            if nbatch % watchdog_batches == 0:
+                t_now = time_sync()
+                e_dir = float(torch.stack(view_losses[-watchdog_batches:]).mean())
                 vprint(
-                    f"  iter {niter} view {nview}/{len(order)} | "
-                    f"E_dir {np.mean(view_losses[-512:]):.4e} | "
-                    f"probe peak/mean {diag['probe_peak']:.3e}/{diag['probe_mean']:.3e}"
+                    f"  iter {niter} view {n_views}/{len(indices)} | "
+                    f"E_dir {e_dir:.4e} | "
+                    f"probe peak/mean {diag['probe_peak'].item():.3e}"
+                    f"/{diag['probe_mean'].item():.3e} | "
+                    f"{(t_now - t_block) / v_block * 1e3:.2f} ms/view"
                 )
-                if not np.isfinite(diag["loss"]):
+                t_block, v_block = t_now, 0
+                if not np.isfinite(e_dir):
                     raise FloatingPointError(
-                        f"non-finite direction objective at iter {niter}, view {nview}"
+                        f"non-finite direction objective at iter {niter}, view {n_views}"
                     )
 
-        # Constraints fire once per iteration, after the view sweep — same call
+        # Constraints fire once per iteration, after the sweep — same call
         # site as recon_loop, so the in-batch exact field update stays valid.
         solver.constraint_fn(model, niter)
 
         iter_t = time_sync() - start_iter_t
-        err = float(np.mean(view_losses))
+        err = float(torch.stack(view_losses).mean())
+        losses_np = torch.stack(iter_losses).cpu().numpy()  # (n_updates, n_losses)
+        batch_losses = {name: list(losses_np[:, k]) for k, name in enumerate(loss_names)}
         a_iter = np.asarray(ls_state.steps_o[n0:])
         b_iter = np.asarray(ls_state.steps_p[n0:] if update_probe else [np.nan])
 
@@ -140,7 +181,7 @@ for i, params_path in enumerate(params_paths):
             f"..{np.percentile(a_iter, 75):.2e}, fallback frac {frac_fallback:.2f}) | "
             f"b med {np.median(b_iter):.3e} | "
             f"probe peak/mean {float(pint.max()):.3e}/{float(pint.mean()):.3e} | "
-            f"{iter_t:.2f} s"
+            f"{iter_t:.2f} s ({iter_t / max(n_views, 1) * 1e3:.2f} ms/view)"
         )
         if frac_fallback > 0.9:
             vprint(
@@ -148,9 +189,12 @@ for i, params_path in enumerate(params_paths):
                 "the cubic solve is degenerating (see spec §4.3). Check the "
                 "coefficient magnitudes before trusting this run."
             )
+        # standard PtyRAD loss line — identical format to the optimizer runs,
+        # so old and line-search logs can be compared directly
+        loss_iter = loss_logger(batch_losses, niter, iter_t, verbose=True)
 
         # bookkeeping mirrors recon_loop so save_results/plot_summary work unchanged
-        model.loss_iters.append((niter, err))
+        model.loss_iters.append((niter, loss_iter))
         model.iter_times.append(iter_t)
         model.dz_iters.append((niter, model.opt_slice_thickness.detach().cpu().numpy()))
         model.avg_tilt_iters.append(
@@ -159,7 +203,6 @@ for i, params_path in enumerate(params_paths):
 
         if SAVE_ITERS is not None and niter % SAVE_ITERS == 0:
             with torch.no_grad():
-                batch_losses = {"loss_e_dir": [np.float32(v) for v in view_losses]}
                 save_results(
                     output_path, model, params, optimizer, niter, indices, batch_losses
                 )

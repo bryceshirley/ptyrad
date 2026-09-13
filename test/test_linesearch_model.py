@@ -167,6 +167,49 @@ def test_object_only_leaves_probe_alone():
     assert torch.equal(torch.view_as_complex(model.opt_probe.data), probe_before)
 
 
+def test_batched_matches_per_view_at_B1():
+    """The joint-batch updater at B = 1 must reproduce the per-view updater:
+    same window, same K peak, same coefficients, same scalar step. _make_model
+    is fully seeded, so two instances start identical."""
+    m1, m2 = _make_model(), _make_model()
+    st1, st2 = ls.LineSearchState(), ls.LineSearchState()
+    d1 = ls.linesearch_model_update(m1, 0, state=st1)
+    d2 = ls.linesearch_model_update_batched(m2, [0], state=st2)
+    assert d1["a"] == pytest.approx(d2["a"], rel=1e-5)
+    assert d1["b"] == pytest.approx(d2["b"], rel=1e-4)
+    assert torch.allclose(m1.opt_obja.data, m2.opt_obja.data, atol=1e-6)
+    assert torch.allclose(m1.opt_objp.data, m2.opt_objp.data, atol=1e-6)
+    assert torch.allclose(m1.opt_probe.data, m2.opt_probe.data, atol=1e-6)
+
+
+def test_batched_joint_update_descends():
+    """Joint batch update over all four (overlapping) views: one scalar a per
+    batch, canvas pixels outside the window union untouched, objective
+    descends over repeated batches, probe written back."""
+    model = _make_model()
+    st = ls.LineSearchState()
+    before_amp = model.opt_obja.data[..., 48:, :].clone()
+    probe_before = torch.view_as_complex(model.opt_probe.data).clone()
+
+    losses = []
+    n_updates = 8
+    for _ in range(n_updates):
+        diag = ls.linesearch_model_update_batched(
+            model, list(range(len(CROP_POS))), config=ls.LineSearchConfig(), state=st
+        )
+        losses.append(float(diag["loss"]))
+    assert losses[-1] < 0.2 * losses[0], f"weak descent: {losses}"
+    assert len(st.steps_o) == n_updates  # ONE scalar step per batch, not per view
+    assert torch.equal(model.opt_obja.data[..., 48:, :], before_amp)
+    assert not torch.equal(torch.view_as_complex(model.opt_probe.data), probe_before)
+
+    # momentum is supported in the batched path (canvas displacement)
+    diag = ls.linesearch_model_update_batched(
+        model, [0, 1], config=ls.LineSearchConfig(momentum=0.5), state=st
+    )
+    assert np.isfinite(float(diag["loss"]))
+
+
 def test_guards():
     """Multislice models and unported features must be refused loudly rather
     than silently searching on the wrong problem."""
