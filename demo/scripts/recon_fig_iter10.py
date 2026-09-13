@@ -68,7 +68,8 @@ def main():
         axes[r, 0].text(-0.08, 0.5, rname, transform=axes[r, 0].transAxes,
                         rotation=90, va="center", ha="right", fontsize=11)
     scalebar(axes[-1, 0], dx, 10.0, *stacks[0][1][0].shape, "1 nm")
-    fig.tight_layout()
+    fig.suptitle("Reconstructed phase after 10 iterations", fontsize=12, y=0.995)
+    fig.tight_layout(rect=[0, 0, 1, 0.985])
     fig.savefig(OUT, dpi=220, bbox_inches="tight")
     plt.close(fig)
     print("saved", OUT, "| clim %.3f..%.3f rad" % (lo, hi))
