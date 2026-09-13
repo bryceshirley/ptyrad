@@ -17,9 +17,11 @@ from ptyrad.utils import CustomLogger, print_system_info, set_gpu_device
 # So if you change the working directory, or have moved params files around, you'll have to provide absolute path to the params file
 # "params/tBL_WSe2_reconstruct_minimal_born.yml", "params/tBL_WSe2_reconstruct_minimal_multislice.yml",
 params_paths = [
-    "params/tBL_WSe2_reconstruct_minimal_born.yml", "params/tBL_WSe2_reconstruct_minimal_multislice.yml","params/tBL_WSe2_reconstruct_minimal_stochastic.yml"]
-#"born", "multislice",
-run_name = [ "born", "multislice", "stochastic_born"]
+    "/home/dnz75396/ptyrad/demo/params/PSO_reconstruct_ms.yml"
+]
+
+
+run_name = [ "multislice_subslices7" ]  # This is used to name the log file and output folder. You can change it to any string you like
 
 for i, params_path in enumerate(params_paths):
     print(f"Running reconstruction with params file: {params_path}")

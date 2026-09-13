@@ -9,7 +9,10 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from torch.nn.functional import interpolate
-from torchvision.transforms.functional import gaussian_blur
+try:
+    from torchvision.transforms.functional import gaussian_blur
+except ImportError:  # torchvision unavailable: use the local separable blur
+    from ptyrad.utils import gaussian_blur_2d as gaussian_blur
 
 from ptyrad.utils import normalize_from_zero_to_one
 

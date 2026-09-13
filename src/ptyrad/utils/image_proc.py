@@ -499,6 +499,16 @@ def gaussian_blur_1d(tensor, kernel_size=5, sigma=0.5):
     return tensor_blur
 
 
+def gaussian_blur_2d(tensor, kernel_size=5, sigma=0.5):
+    # Separable 2D Gaussian blur over the last two axes. Drop-in stand-in for
+    # torchvision.transforms.functional.gaussian_blur as used in
+    # constraints.py (scalar kernel_size / sigma), so torchvision is not a
+    # hard dependency; uses the same replicate padding as gaussian_blur_1d.
+    blurred = gaussian_blur_1d(tensor, kernel_size, sigma)
+    blurred = gaussian_blur_1d(blurred.swapaxes(-1, -2), kernel_size, sigma)
+    return blurred.swapaxes(-1, -2)
+
+
 # These are used for meas_pad
 def create_one_hot_mask(image, percentile):
     threshold = np.percentile(image, percentile)

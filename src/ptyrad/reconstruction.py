@@ -662,32 +662,8 @@ def recon_loop(
     compiler_configs = parse_torch_compile_configs(recon_params["compiler_configs"])
     verbose = not recon_params["if_quiet"]
 
-    # Read block size configuration (default to 4 if unspecified)
-    block_size = recon_params.get("stochastic_block_size", 4)
-
     model_instance = model.module if hasattr(model, "module") else model
 
-    # =========================================================================
-    # OPTIMIZER ISOLATION SETUP
-    # Separate parameter groups for probe vs object updates
-    # =========================================================================
-    probe_params = [
-        p for name, p in model_instance.named_parameters() if "probe" in name and p.requires_grad
-    ]
-    object_params = [
-        p
-        for name, p in model_instance.named_parameters()
-        if "probe" not in name and p.requires_grad
-    ]
-
-    if hasattr(optimizer, "defaults"):
-        opt_class = optimizer.__class__
-        opt_kwargs = optimizer.defaults
-        probe_optimizer = opt_class(probe_params, **opt_kwargs) if probe_params else None
-        object_optimizer = opt_class(object_params, **opt_kwargs) if object_params else None
-    else:
-        probe_optimizer = optimizer
-        object_optimizer = optimizer
 
     vprint("### Start the PtyRAD iterative ptycho reconstruction ###", verbose=verbose)
 
@@ -704,19 +680,6 @@ def recon_loop(
             torch._dynamo.reset()
             recon_step_compiled = torch.compile(recon_step, **compiler_configs)
 
-        stochastic_slice_blocks = None
-        if model_instance.solver_type == "stochastic_born":
-            Nz = model_instance.opt_objp.shape[1]
-
-            # controlled seed randomization: dynamically seed generator per epoch
-            base_seed = model_instance.random_seed if model_instance.random_seed is not None else 42
-            epoch_rng = np.random.RandomState(base_seed + niter)
-
-            # Randomly shuffle full set of slice indices using isolated RNG state
-            shuffled_indices = epoch_rng.permutation(Nz).tolist()
-            stochastic_slice_blocks = [
-                shuffled_indices[i : i + block_size] for i in range(0, Nz, block_size)
-            ]
 
         batch_losses = recon_step_compiled(
             batches,
@@ -726,9 +689,6 @@ def recon_loop(
             loss_fn,
             constraint_fn,
             niter,
-            stochastic_slice_blocks=stochastic_slice_blocks,
-            probe_optimizer=probe_optimizer,
-            object_optimizer=object_optimizer,
             verbose=verbose,
             acc=acc,
         )
@@ -773,9 +733,6 @@ def recon_step(
     loss_fn,
     constraint_fn,
     niter,
-    stochastic_slice_blocks=None,
-    probe_optimizer=None,
-    object_optimizer=None,
     verbose=True,
     acc=None,
     **kwargs,
@@ -792,368 +749,7 @@ def recon_step(
             model_instance = model_instance._orig_mod
 
 
-    st_version = 2
-    if model_instance.solver_type == "stochastic_born" and st_version == 0:
-        for batch_idx, batch in enumerate(batches):
-            start_batch_t = time_sync()
-
-            # -----------------------------------------------------------------
-            # PHASE 1: Probe Update
-            # -----------------------------------------------------------------
-            probe_optimizer.zero_grad(set_to_none=True)
-
-            # Forward pass with object detached from autograd
-            model_DP = model_instance.forward_probe_update(batch)
-            measured_DP = model_instance.get_measurements(batch)
-            object_patches = model_instance._current_object_patches
-
-            loss_batch_probe, _ = loss_fn(
-                model_DP, measured_DP, object_patches, model_instance.omode_occu
-            )
-            loss_batch_probe = loss_batch_probe / grad_accumulation
-
-            if acc is not None:
-                acc.backward(loss_batch_probe)
-            else:
-                loss_batch_probe.backward()
-
-            probe_optimizer.step()
-
-            # -----------------------------------------------------------------
-            # PHASE 1.5: Refresh Cache with Newly Updated Probe
-            # -----------------------------------------------------------------
-            with torch.no_grad():
-                _, Psi_probe_k, Psi_state, u_stack = model_instance.get_born_components(batch)
-                total_u = u_stack.sum(dim=3)
-
-            # -----------------------------------------------------------------
-            # PHASE 2: Stochastic Object Block Updates
-            # -----------------------------------------------------------------
-            for block_indices in stochastic_slice_blocks:
-                opt = object_optimizer if object_optimizer is not None else optimizer
-                opt.zero_grad(set_to_none=True)
-
-                with torch.no_grad():
-                    active_u_block = u_stack[:, :, :, block_indices, :, :].sum(dim=3)
-                    scatter_background = total_u - active_u_block
-                    cache_k = Psi_probe_k + scatter_background
-
-                model_DP = model_instance.forward_stochastic_block(
-                    batch, block_indices, cache_k, Psi_state
-                )
-
-                measured_DP = model_instance.get_measurements(batch)
-                object_patches = model_instance._current_object_patches
-
-                loss_batch, losses = loss_fn(
-                    model_DP, measured_DP, object_patches, model_instance.omode_occu
-                )
-                loss_batch = loss_batch / grad_accumulation
-
-                if acc is not None:
-                    acc.backward(loss_batch)
-                else:
-                    loss_batch.backward()
-
-                opt.step()
-
-                # Refresh cache for updated block
-                with torch.no_grad():
-                    updated_u_block = model_instance.compute_block_u(
-                        batch, block_indices, Psi_state
-                    )
-                    u_stack[:, :, :, block_indices, :, :] = updated_u_block
-                    total_u = scatter_background + updated_u_block.sum(dim=3)
-
-            batch_t = time_sync() - start_batch_t
-            model_instance.clear_cache()
-
-            if acc is not None:
-                acc.wait_for_everyone()
-            for loss_name, loss_value in zip(loss_fn.loss_params.keys(), losses, strict=False):
-                batch_losses[loss_name].append(loss_value.detach().cpu().numpy())
-
-            if batch_idx in np.linspace(0, len(batches) - 1, num=6, dtype=int):
-                vprint(
-                    f"Done batch {batch_idx + 1} with {len(batch)} indices ({batch[:5].tolist()}...) in {batch_t:.3f} sec",
-                    verbose=verbose,
-                )
-    elif model_instance.solver_type == "stochastic_born" and st_version == 1:
-        from ptyrad.forward_models import detector
-        for batch_idx, batch in enumerate(batches):
-            start_batch_t = time_sync()
-
-            # -----------------------------------------------------------------
-            # PHASE 1: Probe Update
-            # -----------------------------------------------------------------
-            probe_optimizer.zero_grad(set_to_none=True)
-
-            # Forward pass with object detached from autograd
-            model_DP = model_instance.forward_probe_update(batch)
-            measured_DP = model_instance.get_measurements(batch)
-            object_patches = model_instance._current_object_patches
-
-            loss_batch_probe, _ = loss_fn(
-                model_DP, measured_DP, object_patches, model_instance.omode_occu
-            )
-            loss_batch_probe = loss_batch_probe / grad_accumulation
-
-            if acc is not None:
-                acc.backward(loss_batch_probe)
-            else:
-                loss_batch_probe.backward()
-
-            probe_optimizer.step()
-
-            # -----------------------------------------------------------------
-            # PHASE 1.5: Refresh Cache with Newly Updated Probe
-            # -----------------------------------------------------------------
-            with torch.no_grad():
-                dp_fwd, Psi_probe_k, Psi_state, u_stack = model_instance.get_born_components(batch)
-                total_u = u_stack.sum(dim=3)
-                
-            # -----------------------------------------------------------------
-            # PHASE 2: Zero-Recompute Analytical SBCD
-            # -----------------------------------------------------------------
-            for block_indices in stochastic_slice_blocks:
-                opt = object_optimizer if object_optimizer is not None else optimizer
-                # Zero out gradients for full object parameters
-                opt.zero_grad(set_to_none=True)
-
-                # --- LOCAL AUTOGRAD FOR REGULARIZATIONS ---
-                # We detach the block and let autograd handle ONLY the cheap regularizations
-                with torch.no_grad():
-                    object_patches = model_instance.get_obj_patches(batch)
-                    
-                object_block = object_patches[:, :, block_indices, :, :, :].detach().clone()
-                object_block.requires_grad_(True)
-                
-                reg_loss_sparse = loss_fn.get_loss_sparse(object_block[..., 1], model_instance.omode_occu)
-                reg_loss_simlar = loss_fn.get_loss_simlar(object_block, model_instance.omode_occu)
-                
-                grad_reg_a = torch.zeros_like(object_block[..., 0])
-                grad_reg_p = torch.zeros_like(object_block[..., 1])
-                
-                reg_loss_total = (reg_loss_sparse + reg_loss_simlar) / grad_accumulation
-                if reg_loss_total.item() != 0:
-                    reg_loss_total.backward()
-                    grad_reg_a = object_block.grad[..., 0]
-                    grad_reg_p = object_block.grad[..., 1]
-                # -------------------------------------------
-
-                with torch.no_grad():
-                    model_instance._current_object_patches = object_patches
-                    active_u_sum = u_stack[:, :, :, block_indices, :, :].sum(dim=3)
-                    
-                    loss_batch, losses = loss_fn(
-                        dp_fwd, measured_DP, object_patches, model_instance.omode_occu
-                    )
-                    
-                    residual = loss_fn.get_residual()
-                    if grad_accumulation > 1:
-                        residual = residual / grad_accumulation
-                        
-                    Psi_hat_k = Psi_probe_k + total_u
-
-                    # 1. Compute Analytical Data-Fidelity Gradients
-                    grad_obja, grad_objp = model_instance.stochastic_born_analytical_block_grad(
-                        indices=batch,
-                        residual=residual,
-                        Psi_hat_k=Psi_hat_k,
-                        Psi_state_active=Psi_state,
-                        slice_indices=block_indices,
-                    )
-                    
-                    # 2. Inject the Autograd Regularization Gradients
-                    grad_obja += grad_reg_a
-                    grad_objp += grad_reg_p
-
-                    # 3. Accumulate to global variables & Step
-                    model_instance.accumulate_block_gradients(
-                        batch, block_indices, grad_obja, grad_objp
-                    )
-                    opt.step()
-
-                    # 4. Refresh wavefield cache for the next block
-                    u_block_new = model_instance.compute_block_u(batch, block_indices, Psi_state) 
-                    u_stack[:, :, :, block_indices, :, :] = u_block_new
-                    total_u += u_block_new.sum(dim=3) - active_u_sum
-                    Psi_hat_k = Psi_probe_k + total_u
-                    
-                    Ny, Nx = Psi_hat_k.shape[-2], Psi_hat_k.shape[-1]
-                    norm_weight = (model_instance.omode_occu / (Nx * Ny)).view(1, 1, -1, 1, 1)
-                    dp_fwd = detector(Psi_hat_k, norm_weight)
-                    
-                    if getattr(model_instance, "detector_blur_std", None) is not None and model_instance.detector_blur_std != 0:
-                        from torchvision.transforms.functional import gaussian_blur
-                        dp_fwd = gaussian_blur(dp_fwd, kernel_size=5, sigma=model_instance.detector_blur_std)
-
-
-            batch_t = time_sync() - start_batch_t
-            model_instance.clear_cache()
-
-            if acc is not None:
-                acc.wait_for_everyone()
-            for loss_name, loss_value in zip(loss_fn.loss_params.keys(), losses, strict=False):
-                batch_losses[loss_name].append(loss_value.detach().cpu().numpy())
-
-            if batch_idx in np.linspace(0, len(batches) - 1, num=6, dtype=int):
-                vprint(
-                    f"Done batch {batch_idx + 1} with {len(batch)} indices ({batch[:5].tolist()}...) in {batch_t:.3f} sec",
-                    verbose=verbose,
-                )
-    elif model_instance.solver_type == "stochastic_born" and st_version == 2:
-        from ptyrad.forward_models import detector
-        for batch_idx, batch in enumerate(batches):
-            start_batch_t = time_sync()
-
-            # -----------------------------------------------------------------
-            # PHASE 1: The Forward Cache (One Pass Only)
-            # -----------------------------------------------------------------
-            with torch.no_grad():
-                measured_DP = model_instance.get_measurements(batch)
-                
-                # Fetch initial cache using P_old and O_old
-                dp_fwd, Psi_probe_k, Psi_state, u_stack = model_instance.get_born_components(batch)
-                total_u = u_stack.sum(dim=3)
-                
-                model_instance._current_object_patches = model_instance.get_obj_patches(batch)
-                
-            # -----------------------------------------------------------------
-            # PHASE 2: Object Step (SBCD)
-            # -----------------------------------------------------------------
-            for block_indices in stochastic_slice_blocks:
-                opt = object_optimizer if object_optimizer is not None else optimizer
-                opt.zero_grad(set_to_none=True)
-
-                # --- LOCAL AUTOGRAD FOR REGULARIZATIONS ---
-                with torch.no_grad():
-                    object_patches = model_instance.get_obj_patches(batch)
-                    
-                object_block = object_patches[:, :, block_indices, :, :, :].detach().clone()
-                object_block.requires_grad_(True)
-                
-                reg_loss_sparse = loss_fn.get_loss_sparse(object_block[..., 1], model_instance.omode_occu)
-                reg_loss_simlar = loss_fn.get_loss_simlar(object_block, model_instance.omode_occu)
-                
-                grad_reg_a = torch.zeros_like(object_block[..., 0])
-                grad_reg_p = torch.zeros_like(object_block[..., 1])
-                
-                reg_loss_total = (reg_loss_sparse + reg_loss_simlar) / grad_accumulation
-                if reg_loss_total.item() != 0:
-                    reg_loss_total.backward()
-                    grad_reg_a = object_block.grad[..., 0]
-                    grad_reg_p = object_block.grad[..., 1]
-                # -------------------------------------------
-
-                with torch.no_grad():
-                    model_instance._current_object_patches = object_patches
-                    active_u_sum = u_stack[:, :, :, block_indices, :, :].sum(dim=3)
-                    
-                    # 1. Update detector state using the newly modified object components
-                    Psi_hat_k = Psi_probe_k + total_u
-                    Ny, Nx = Psi_hat_k.shape[-2], Psi_hat_k.shape[-1]
-                    norm_weight = (model_instance.omode_occu / (Nx * Ny)).view(1, 1, -1, 1, 1)
-                    dp_fwd = detector(Psi_hat_k, norm_weight)
-                    
-                    if getattr(model_instance, "detector_blur_std", None) is not None and model_instance.detector_blur_std != 0:
-                        from torchvision.transforms.functional import gaussian_blur
-                        dp_fwd = gaussian_blur(dp_fwd, kernel_size=5, sigma=model_instance.detector_blur_std)
-                    
-                    loss_batch, losses = loss_fn(
-                        dp_fwd, measured_DP, object_patches, model_instance.omode_occu
-                    )
-                    
-                    residual = loss_fn.get_residual()
-                    if grad_accumulation > 1:
-                        residual = residual / grad_accumulation
-                        
-                    # 2. Compute Analytical Data-Fidelity Gradients
-                    grad_obja, grad_objp = model_instance.stochastic_born_analytical_block_grad(
-                        indices=batch,
-                        residual=residual,
-                        Psi_hat_k=Psi_hat_k,
-                        Psi_state_active=Psi_state,
-                        slice_indices=block_indices,
-                    )
-                    
-                    # 3. Inject the Autograd Regularization Gradients
-                    grad_obja += grad_reg_a
-                    grad_objp += grad_reg_p
-
-                    # 4. Accumulate to global variables & Step
-                    model_instance.accumulate_block_gradients(
-                        batch, block_indices, grad_obja, grad_objp
-                    )
-                    opt.step()
-
-                    # 5. Refresh wavefield cache (Swaps out old u_block for new u_block)
-                    u_block_new = model_instance.compute_block_u(batch, block_indices, Psi_state) 
-                    u_stack[:, :, :, block_indices, :, :] = u_block_new
-                    total_u += u_block_new.sum(dim=3) - active_u_sum
-
-            # -----------------------------------------------------------------
-            # PHASE 3: Analytical Probe Step
-            # -----------------------------------------------------------------
-            with torch.no_grad():
-                probe_optimizer.zero_grad(set_to_none=True)
-                
-                # The object loop finished, so total_u perfectly reflects O_new
-                Psi_hat_k = Psi_probe_k + total_u
-                Ny, Nx = Psi_hat_k.shape[-2], Psi_hat_k.shape[-1]
-                norm_weight = (model_instance.omode_occu / (Nx * Ny)).view(1, 1, -1, 1, 1)
-                
-                dp_fwd = detector(Psi_hat_k, norm_weight)
-                if getattr(model_instance, "detector_blur_std", None) is not None and model_instance.detector_blur_std != 0:
-                    from torchvision.transforms.functional import gaussian_blur
-                    dp_fwd = gaussian_blur(dp_fwd, kernel_size=5, sigma=model_instance.detector_blur_std)
-                
-                # Fetch fully updated O_new to pass to the loss and gradient function
-                object_patches = model_instance.get_obj_patches(batch)
-                model_instance._current_object_patches = object_patches
-                
-                loss_batch_probe, losses = loss_fn(
-                    dp_fwd, measured_DP, object_patches, model_instance.omode_occu
-                )
-                
-                residual = loss_fn.get_residual()
-                if grad_accumulation > 1:
-                    residual = residual / grad_accumulation
-                
-                # Compute analytical probe gradient
-                grad_probe_real = model_instance.stochastic_born_analytical_probe_grad(
-                    indices=batch,
-                    residual=residual,
-                    Psi_hat_k=Psi_hat_k,
-                    linearise_obj=True
-                )
-                
-                if model_instance.opt_probe.grad is None:
-                    model_instance.opt_probe.grad = torch.zeros_like(model_instance.opt_probe)
-                model_instance.opt_probe.grad += grad_probe_real
-                
-            probe_optimizer.step()
-
-            # -----------------------------------------------------------------
-            # Clean up and log
-            # -----------------------------------------------------------------
-            batch_t = time_sync() - start_batch_t
-            model_instance.clear_cache()
-
-            if acc is not None:
-                acc.wait_for_everyone()
-            
-            # The losses generated in Phase 3 are the definitive ones for this batch state
-            for loss_name, loss_value in zip(loss_fn.loss_params.keys(), losses, strict=False):
-                batch_losses[loss_name].append(loss_value.detach().cpu().numpy())
-
-            if batch_idx in np.linspace(0, len(batches) - 1, num=6, dtype=int):
-                vprint(
-                    f"Done batch {batch_idx + 1} with {len(batch)} indices ({batch[:5].tolist()}...) in {batch_t:.3f} sec",
-                    verbose=verbose,
-                )
-
-    elif isinstance(optimizer, torch.optim.LBFGS):
+    if isinstance(optimizer, torch.optim.LBFGS):
         num_batch = len(batches)
         batch_indices = np.arange(num_batch)
         if model.random_seed is not None:
@@ -1191,6 +787,12 @@ def recon_step(
 
     else:
         optimizer.zero_grad(set_to_none=True)
+        
+        # 🌟 INITIALIZE PRECONDITIONER CANVAS
+        precond_canvas = (
+            torch.zeros_like(model_instance.opt_obja) 
+            if model_instance.solver_type == "born" else None
+        )
 
         for batch_idx, batch in enumerate(batches):
             start_batch_t = time_sync()
@@ -1199,10 +801,32 @@ def recon_step(
             loss_batch = loss_batch / grad_accumulation
 
             acc.backward(loss_batch) if acc is not None else loss_batch.backward()
+            
+            # ACCUMULATE BATCH ILLUMINATION
+            if precond_canvas is not None:
+                model_instance.accumulate_firstborn_preconditioner(batch, precond_canvas)
 
             if (batch_idx + 1) % grad_accumulation == 0 or (batch_idx + 1) == len(batches):
                 if acc is not None:
                     acc.wait_for_everyone()
+                    
+                # APPLY PRECONDITIONER TO GRADIENTS BEFORE OPTIMIZER STEP
+                if precond_canvas is not None:
+                    with torch.no_grad():
+                        # Normalize to 1 so the learning rate defined in config remains valid
+                        max_val = precond_canvas.amax(dim=(-2, -1), keepdim=True)
+                        epsilon = 1e-4 * max_val.clamp(min=1e-8) # Tikhonov regularization
+                        
+                        precond = (precond_canvas + epsilon) / (max_val + epsilon)
+                        
+                        if model_instance.opt_obja.grad is not None:
+                            model_instance.opt_obja.grad /= precond
+                        if model_instance.opt_objp.grad is not None:
+                            model_instance.opt_objp.grad /= precond
+                        
+                        # Reset canvas for the next accumulation cycle
+                        precond_canvas.zero_()
+
                 optimizer.step()
                 optimizer.zero_grad(set_to_none=True)
 

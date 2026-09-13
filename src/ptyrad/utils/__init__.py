@@ -46,6 +46,7 @@ from .image_proc import (  # noqa: F401
     fit_background,
     fit_cbed_pattern,
     gaussian_blur_1d,
+    gaussian_blur_2d,
     get_blob_size,
     guess_radius_of_bright_field_disk,
     imshift_batch,

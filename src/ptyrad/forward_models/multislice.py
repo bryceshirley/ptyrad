@@ -18,85 +18,135 @@ from ptyrad.utils import fftshift2
 # So new tensor is being created and referenced to the old graph to keep the gradient flowing
 
 
-@torch.compile(mode="max-autotune")
-def multislice_forward(object_patches, probe, H, omode_occu=None, eps=1e-10):
+# @torch.compile(mode="max-autotune")
+# def multislice_forward(object_patches, probe, H, omode_occu=None, eps=1e-10):
+#     """
+#     Computes the multislice electron diffraction pattern with multiple incoherent probe
+#     and object modes using a vectorized forward model.
+
+#     Args:
+#         object_patches (torch.Tensor): Tensor of shape (N, omode, Nz, Ny, Nx, 2), representing
+#             pseudo-complex object patches with float32 amplitude and phase components.
+#             N is the number of samples in a batch, omode is the number of object modes,
+#             Nz, Ny, Nx are the dimensions of the object patches.
+#         omode_occu (torch.Tensor): Tensor of shape (omode,) with float32 values, representing
+#             the occupancy/expectation for each object mode. The sum of all elements should be 1.
+#         probe (torch.Tensor): Tensor of shape (N, pmode, Ny, Nx) with complex64 values,
+#             representing the probe(s). N is the number of samples in the batch, pmode is the
+#             number of probe modes. By default, N is 1, assuming the same probe for all samples.
+#         H (torch.Tensor): Tensor of shape (N, Ky, Kx) with complex64 values, representing the Fresnel
+#             propagator that propagates the wave by a slice thickness.
+#         eps (float, optional): A small value added for numerical stability. Defaults to 1e-10.
+
+#     Returns:
+#         torch.Tensor: Tensor of shape (N, Ky, Kx) with float32 positive values, representing the
+#         forward diffraction pattern for each sample in the batch.
+#     """
+
+#     # These .contiguous() are needed for torch.compile in Linux
+#     object_patches = object_patches.contiguous()
+#     probe = probe.contiguous()
+#     H = H.contiguous()
+
+#     # Initialize omode_occu if it's not specified
+#     if omode_occu is None:
+#         objp = object_patches[..., 1]
+#         device = objp.device
+#         dtype = objp.dtype
+#         omode = objp.size(1)
+#         omode_occu = torch.ones(omode, dtype=dtype, device=device) / omode
+
+#     # Cast the object back to actual complex tensor
+#     object_cplx = torch.polar(
+#         object_patches[..., 0], object_patches[..., 1]
+#     ).contiguous()  # (N, omode, Nz, Ny, Nx)
+#     n_slices = object_cplx.shape[2]
+
+#     # Expand psi to include omode dimension
+#     psi = probe[:, :, None, :, :].contiguous()  # (N, pmode, Ny, Nx) -> (N, pmode, omode, Ny, Nx)
+
+#     # Propagating each object layer using broadcasting
+#     for n in range(n_slices - 1):
+#         object_slice = object_cplx[:, :, n, :, :]  # object_slice -> (N, omode, Ny, Nx)
+#         psi = (
+#             psi * object_slice[:, None, :, :, :]
+#         )  # psi -> (N, pmode, omode, Ny, Nx). Note that psi is always centered in real space
+#         psi = ifft2(
+#             H[:, None, None] * fft2(psi)
+#         )  # Note that fft2 and ifft2 are applying to the last 2 axes. Although preshift psi before fft2 would seem more natural, it's nearly 50% slower to do it as fftshift2(ifft2(fft2(ifftshift2(psi))))
+
+#     # Interacting with the last layer, and no propagation is needed afterward
+#     object_slice = object_cplx[:, :, n_slices - 1, :, :]
+#     psi = psi * object_slice[:, None, :, :, :]
+
+#     # Propagate the object-modified exit wave psi(r) to detector plane into psi(k)
+#     # The contribution from probe / object modes are incoherently summed together
+
+#     # Breaking down the steps for clarity, while combine all of these for lower peak memory consumption
+#     # psi_k = fftshift(fft2(psi))
+#     # |psi_k|^2 = psi_k.abs().square()
+#     # weighted_psi_k = |psi_k|^2 * omode_occu
+#     # dp_fwd = sum(weighted_psi_k)
+#     # Note that norm = 'ortho' is needed to ensure that for each sample, sum(|psi|^2) and sum(dp) has the same scale (should be 1)
+
+#     dp_fwd = (
+#         torch.sum(
+#             (fftshift2(fft2(psi, norm="ortho"))).abs().square() * omode_occu[:, None, None],
+#             dim=(1, 2),
+#         )
+#         + eps
+#     )  # Add eps for numerical stability
+#     return dp_fwd
+
+
+# @torch.compile(mode="max-autotune")
+def multislice_forward(object_patches, probe, H_tuple, omode_occu=None, eps=1e-10,
+                       n_subslices=3):
+    """Multislice with optional sub-slicing and the Strang (midpoint) arrangement.
+
+    H_tuple = (H_sub, H_sub_half): propagators for dz/n_subslices and dz/(2*n_subslices),
+    both built ANALYTICALLY from Kz.  Do NOT build them as a root of H: H.angle() is
+    wrapped to (-pi, pi], and at 300 kV / dz=21 A that wrapping affects 83% of k-space.
+    Any root of the wrapped phase still satisfies H_sub**n == H, so the obvious check
+    passes, but the intermediate wavefields are wrong exactly at high angle.
     """
-    Computes the multislice electron diffraction pattern with multiple incoherent probe
-    and object modes using a vectorized forward model.
-
-    Args:
-        object_patches (torch.Tensor): Tensor of shape (N, omode, Nz, Ny, Nx, 2), representing
-            pseudo-complex object patches with float32 amplitude and phase components.
-            N is the number of samples in a batch, omode is the number of object modes,
-            Nz, Ny, Nx are the dimensions of the object patches.
-        omode_occu (torch.Tensor): Tensor of shape (omode,) with float32 values, representing
-            the occupancy/expectation for each object mode. The sum of all elements should be 1.
-        probe (torch.Tensor): Tensor of shape (N, pmode, Ny, Nx) with complex64 values,
-            representing the probe(s). N is the number of samples in the batch, pmode is the
-            number of probe modes. By default, N is 1, assuming the same probe for all samples.
-        H (torch.Tensor): Tensor of shape (N, Ky, Kx) with complex64 values, representing the Fresnel
-            propagator that propagates the wave by a slice thickness.
-        eps (float, optional): A small value added for numerical stability. Defaults to 1e-10.
-
-    Returns:
-        torch.Tensor: Tensor of shape (N, Ky, Kx) with float32 positive values, representing the
-        forward diffraction pattern for each sample in the batch.
-    """
-
-    # These .contiguous() are needed for torch.compile in Linux
     object_patches = object_patches.contiguous()
     probe = probe.contiguous()
-    H = H.contiguous()
+    H_sub, H_sub_half = H_tuple
 
-    # Initialize omode_occu if it's not specified
     if omode_occu is None:
         objp = object_patches[..., 1]
-        device = objp.device
-        dtype = objp.dtype
         omode = objp.size(1)
-        omode_occu = torch.ones(omode, dtype=dtype, device=device) / omode
+        omode_occu = torch.ones(omode, dtype=objp.dtype, device=objp.device) / omode
 
-    # Cast the object back to actual complex tensor
-    object_cplx = torch.polar(
-        object_patches[..., 0], object_patches[..., 1]
-    ).contiguous()  # (N, omode, Nz, Ny, Nx)
-    n_slices = object_cplx.shape[2]
+    # n-th root of the slice transmission; clamp keeps the gradient finite if the
+    # amplitude is driven to 0 by the optimiser
+    amp_sub = object_patches[..., 0].clamp_min(eps) ** (1.0 / n_subslices)
+    phase_sub = object_patches[..., 1] / n_subslices
+    object_cplx_sub = torch.polar(amp_sub, phase_sub).contiguous()
 
-    # Expand psi to include omode dimension
-    psi = probe[:, :, None, :, :].contiguous()  # (N, pmode, Ny, Nx) -> (N, pmode, omode, Ny, Nx)
+    n_slices = object_cplx_sub.shape[2]
+    total_steps = n_slices * n_subslices
 
-    # Propagating each object layer using broadcasting
-    for n in range(n_slices - 1):
-        object_slice = object_cplx[:, :, n, :, :]  # object_slice -> (N, omode, Ny, Nx)
-        psi = (
-            psi * object_slice[:, None, :, :, :]
-        )  # psi -> (N, pmode, omode, Ny, Nx). Note that psi is always centered in real space
-        psi = ifft2(
-            H[:, None, None] * fft2(psi)
-        )  # Note that fft2 and ifft2 are applying to the last 2 axes. Although preshift psi before fft2 would seem more natural, it's nearly 50% slower to do it as fftshift2(ifft2(fft2(ifftshift2(psi))))
+    psi = probe[:, :, None, :, :].contiguous()
 
-    # Interacting with the last layer, and no propagation is needed afterward
-    object_slice = object_cplx[:, :, n_slices - 1, :, :]
-    psi = psi * object_slice[:, None, :, :, :]
+    # leading half sub-step: puts each object sub-slice at the MIDPOINT of its
+    # propagation step, which is what makes the scheme 2nd order
+    psi = ifft2(H_sub_half[:, None, None] * fft2(psi))
 
-    # Propagate the object-modified exit wave psi(r) to detector plane into psi(k)
-    # The contribution from probe / object modes are incoherently summed together
+    for step in range(total_steps - 1):
+        n = step // n_subslices
+        psi = psi * object_cplx_sub[:, :, n, :, :][:, None, :, :, :]
+        psi = ifft2(H_sub[:, None, None] * fft2(psi))
 
-    # Breaking down the steps for clarity, while combine all of these for lower peak memory consumption
-    # psi_k = fftshift(fft2(psi))
-    # |psi_k|^2 = psi_k.abs().square()
-    # weighted_psi_k = |psi_k|^2 * omode_occu
-    # dp_fwd = sum(weighted_psi_k)
-    # Note that norm = 'ortho' is needed to ensure that for each sample, sum(|psi|^2) and sum(dp) has the same scale (should be 1)
+    # last sub-slice.  The trailing half-step is deliberately omitted: it is a pure
+    # phase in k-space, so it cannot change |FFT(psi)|^2 and would only cost an FFT.
+    psi = psi * object_cplx_sub[:, :, -1, :, :][:, None, :, :, :]
 
-    dp_fwd = (
-        torch.sum(
-            (fftshift2(fft2(psi, norm="ortho"))).abs().square() * omode_occu[:, None, None],
-            dim=(1, 2),
-        )
-        + eps
-    )  # Add eps for numerical stability
-    return dp_fwd
+    return torch.sum(
+        (fftshift2(fft2(psi, norm="ortho"))).abs().square() * omode_occu[:, None, None],
+        dim=(1, 2),
+    ) + eps
 
 
 @torch.compile(mode="max-autotune")
@@ -211,7 +261,22 @@ def strang_forward(object_patches, probe, H_tuple, omode_occu=None, eps=1e-10):
 
     psi = probe[:, :, None, :, :].contiguous()
 
-    # --- STRANG SPLITTING ---
+    # --- STRANG SPLITTING aka Conjugate Lie Trotter ---
+    # Lie trotter:
+    # psi = (e^A e^B)^N = e^A e^B ... e^A e^B P
+    # Strang:
+    # psi = (e^A/2 e^B e^A/2)^N P = e^A/2 e^B e^A ... e^B e^A/2 P = e^-A/2 (e^A e^B)^N e^A/2 P
+    # where P is the initial condition.
+    # e^A = Fresnel propagator, e^B = object transmission
+    # e^A = ifft2(H * fft2()), with |H| = 1
+    # |F[psi]|^2 = |F[e^-A/2 (e^A e^B)^N e^A/2 P]|^2 = |F[(e^A e^B)^N e^A/2 P]|^2
+    #            = |F[(e^A e^B)^N P']|^2
+    # where P' = e^A/2 P is the initial condition after a half-step Fresnel propagation.
+
+    # Is the detector wave error second order?  Yes, because the final half-step is a 
+    # pure phase in k-space, so it cannot change |FFT(psi)|^2 and would only cost an FFT.
+    
+    
     # Initial half-drift into the first slice
     psi = ifft2(H_half[:, None, None] * fft2(psi))
 
@@ -224,9 +289,7 @@ def strang_forward(object_patches, probe, H_tuple, omode_occu=None, eps=1e-10):
     object_slice = object_cplx[:, :, n_slices - 1, :, :]
     psi = psi * object_slice[:, None, :, :, :]
 
-    # Final half-drift to the exit surface
-    psi = ifft2(H_half[:, None, None] * fft2(psi))
-    # --- END SPLITTING ---
+    # Final conjugate half-drift out of the last slice is cancelled out by the final FFT and modulus.
 
     dp_fwd = (
         torch.sum(

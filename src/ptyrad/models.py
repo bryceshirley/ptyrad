@@ -10,7 +10,10 @@ from math import prod
 import torch
 import torch.nn as nn
 from torch.fft import fft2, ifft2
-from torchvision.transforms.functional import gaussian_blur
+try:
+    from torchvision.transforms.functional import gaussian_blur
+except ImportError:  # torchvision unavailable: use the local separable blur
+    from ptyrad.utils import gaussian_blur_2d as gaussian_blur
 
 from ptyrad.utils import imshift_batch, torch_phasor, vprint
 
@@ -327,14 +330,13 @@ class PtychoAD(torch.nn.Module):
         """Precomputes/calculates 3D propagation matrices for Born approximation."""
         if not torch.allclose(H_2d, self.H.unsqueeze(0)) or self.H_3d is None:
             z_idx = torch.arange(self.n_slice, device=H_2d.device).view(1, 1, 1, self.n_slice, 1, 1)
-            # H_view = H_2d.view(H_2d.shape[0], 1, 1, 1, self.Ny, self.Nx)
             self.H_3d = H_2d.pow(z_idx)
         return self.H_3d
 
     def get_forward_meas(self, object_patches, probes, propagators):
         """Dispatches forward model evaluation to specialized math engines."""
-        if self.solver_type in ["born", "stochastic_born"]:
-            if self.born_iterations == 1 or self.solver_type == "stochastic_born":
+        if self.solver_type == "born":
+            if self.born_iterations == 1:
                 from ptyrad.forward_models import firstborn_forward
 
                 dp_fwd = firstborn_forward(object_patches, probes, propagators, self.omode_occu)
@@ -448,213 +450,65 @@ class PtychoAD(torch.nn.Module):
             H_half_tensor = torch_phasor(dz_half * self.Kz)
             propagators = (propagators, H_half_tensor.unsqueeze(0))
 
+
+        elif self.solver_type == "multislice":
+            n_sub = getattr(self, "n_subslices", 3)
+            dz_sub = self.opt_slice_thickness / n_sub
+            propagators = (self.make_propagator(dz_sub, indices),
+                        self.make_propagator(dz_sub / 2, indices))
+
         dp_fwd = self.get_forward_meas(object_patches, probes, propagators)
 
         self._current_object_patches = object_patches
         return dp_fwd
 
-    # ==========================================================
-    # HIGH-SPEED STOCHASTIC BORN HELPER METHODS (SBCD Protocol)
-    # ==========================================================
-
-    def forward_probe_update(self, indices):
+    @torch.no_grad()
+    def accumulate_firstborn_preconditioner(self, batch_indices, precond_canvas):
         """
-        Phase 1: Collapsed 2D Probe Forward Pass.
+        Builds the global intensity map of the unscattered probe for preconditioning.
+        Projects the minibatch illumination onto a global canvas matching the object size.
         """
-        from ptyrad.forward_models import stochastic_born_probe_forward
-
-        object_patches = self.get_obj_patches(
-            indices
-        ).detach()  # Frozen object [B, omode, Nz, Ny, Nx, 2]
-        probes = self.get_probes(indices)  # Active probe autograd leaf [B, pmode, Ny, Nx]
-        H = self.get_propagators(indices)
+        # 1. Forward propagate vacuum probe independently of the object
+        probes = self.get_probes(batch_indices)
+        H = self.get_propagators(batch_indices)
         H_3d = self.get_propagators_3d(H)
-
-        dp_fwd = stochastic_born_probe_forward(
-            object_patches, probes, H_3d, omode_occu=self.omode_occu, eps=1e-10, linearise_obj=True
-        )
-
-        if self.detector_blur_std is not None and self.detector_blur_std != 0:
-            dp_fwd = gaussian_blur(dp_fwd, kernel_size=5, sigma=self.detector_blur_std)
-
-        return dp_fwd
-
-    def get_born_components(self, indices):
-        """
-        Phase 2: Calculates background wavefields for Stochastic Block Coordinate Descent (SBCD).
-
-        Evaluates Psi_state and the detached 3D wavefield cache (u_stack) using the current probe.
-        """
-        from ptyrad.forward_models import stochastic_born_components
-
-        object_patches = self.get_obj_patches(indices).detach()
-        probes = self.get_probes(indices)
-        H = self.get_propagators(indices)
-        H_3d = self.get_propagators_3d(H)
-
-        return stochastic_born_components(object_patches, probes, H_3d, linearise_obj=True)
+        Ny, Nx = probes.shape[-2], probes.shape[-1]
+        
+        probe_k = fft2(probes).view(-1, probes.shape[1], 1, 1, Ny, Nx)
+        Psi_state = ifft2(H_3d * probe_k) # [B, pmode, 1, Nz, Ny, Nx]
+        
+        # 2. Compute spatial intensity per slice
+        probe_intensity = Psi_state.abs().square().sum(dim=1).squeeze(1) # [B, Nz, Ny, Nx]
+        
+        # 3. Map minibatches to global canvas
+        B, Nz, _, _ = probe_intensity.shape
+        obj_ROI_grid_y = self.rpy_grid[None, :, :] + self.crop_pos[batch_indices, None, None, 0]
+        obj_ROI_grid_x = self.rpx_grid[None, :, :] + self.crop_pos[batch_indices, None, None, 1]
+        
+        flat_y = obj_ROI_grid_y.view(-1)
+        flat_x = obj_ROI_grid_x.view(-1)
+        NX_glob = self.opt_obja.shape[-1]
+        flat_linear_idx = flat_y * NX_glob + flat_x
+        
+        # Accumulate using atomic index_add_
+        for z in range(Nz):
+            p_int = probe_intensity[:, z, :, :].reshape(-1)
+            for m in range(self.opt_obja.shape[0]):
+                precond_canvas[m, z].view(-1).index_add_(0, flat_linear_idx, p_int)
+                
+        return precond_canvas
 
     # ==========================================================
-    # HIGH-SPEED STOCHASTIC BORN HELPER METHODS (Block SBCD)
+    # STOCHASTIC BORN HELPER METHODS (SBCD Protocol)
     # ==========================================================
 
-    def compute_block_u(self, frame_indices, slice_indices, Psi_state_active):
-        """
-        Evaluate scattered wavefields (u_block) for a block of slice indices.
-
-        Parameters:
-            frame_indices: Batch patch indices for the current ptychographic scan positions.
-            slice_indices: Indices of the Z-slices in the current active block (e.g. [2, 3] or range).
-            Psi_state_active: Full 3D pre-computed probe illumination stack [B, pmode, 1, Nz, Ny, Nx].
-        """
-        from ptyrad.forward_models import stochastic_born_single_block_u
-
-        object_patches = self.get_obj_patches(frame_indices)
-        H = self.get_propagators(frame_indices)
-        H_3d = self.get_propagators_3d(H)
-
-        obj_block = object_patches[:, :, slice_indices, :, :, :]
-        H_3d_block = H_3d[:, :, :, slice_indices, :, :]
-        Psi_block = Psi_state_active[:, :, :, slice_indices, :, :]
-        return stochastic_born_single_block_u(obj_block, Psi_block, H_3d_block, linearise_obj=True)
-
-    def forward_stochastic_block(
-        self,
-        indices: torch.Tensor,
-        slice_indices,
-        cache_k: torch.Tensor,
-        Psi_state_active: torch.Tensor,
-    ):
-        """
-        Joint mini-block forward pass evaluating cross-slice interaction within slice_indices.
-
-        Args:
-            indices: Batch patch indices for the current ptychographic scan positions.
-            slice_indices: Indices of the Z-slices in the current active block (e.g. [2, 3] or range).
-            cache_k: Pre-computed k-space background wavefield sum of all inactive slices + probe spectrum.
-            Psi_state_active: Full 3D pre-computed probe illumination stack [B, pmode, 1, Nz, Ny, Nx].
-        """
-        from ptyrad.forward_models import stochastic_born_forward_block
-
-        # 1. Fetch current object patches & propagators
-        object_patches = self.get_obj_patches(indices)
-
-        H = self.get_propagators(indices)
-
-        # 2. Extract active object block: [B, omode, N_block, Ny, Nx, 2]
-        obj_block = object_patches[:, :, slice_indices, :, :, :]
-
-        # 4. Slice pre-computed 3D illumination for active block slices: [B, pmode, 1, N_block, Ny, Nx]
-        Psi_state_block = Psi_state_active[:, :, :, slice_indices, :, :]
-        H_3d_block = self.get_propagators_3d(H)[:, :, :, slice_indices, :, :]
-
-        # 5. Execute stochastic block forward pass with exact physical depth propagation
-        dp_fwd = stochastic_born_forward_block(
-            obj_block,
-            Psi_state_block,
-            H_3d_block,
-            cache_k,
-            omode_occu=self.omode_occu,
-            eps=1e-10,
-            linearise_obj=True,
-        )
-
-        # 6. Optional detector blurring
-        if getattr(self, "detector_blur_std", None) is not None and self.detector_blur_std != 0:
-            dp_fwd = gaussian_blur(dp_fwd, kernel_size=5, sigma=self.detector_blur_std)
-
-        return dp_fwd
-
-    @torch.compiler.disable
-    def accumulate_block_gradients(self, batch_indices, slice_indices, grad_obja_block, grad_objp_block):
-        """
-        Scatter/accumulate local block patch gradients back onto full global object gradients.
-        """
-        # Ensure full gradient tensors exist
-        if self.opt_obja.grad is None:
-            self.opt_obja.grad = torch.zeros_like(self.opt_obja)
-            self.opt_objp.grad = torch.zeros_like(self.opt_objp)
-
-        # 1. Compute global 2D grid Y, X coordinates for the batch patches
-        obj_ROI_grid_y = self.rpy_grid[None, :, :] + self.crop_pos[batch_indices, None, None, 0] # [B, Y, X]
-        obj_ROI_grid_x = self.rpx_grid[None, :, :] + self.crop_pos[batch_indices, None, None, 1] # [B, Y, X]
-
-        # 2. Reshape coordinates and block gradients for scattering
-        # grad_obja_block shape: [B, omode, N_block, Y, X]
-        B, omode, N_block, Y, X = grad_obja_block.shape
-
-        # Flatten batch and ROI spatial dimensions
-        flat_y = obj_ROI_grid_y.view(-1)  # [B * Y * X]
-        flat_x = obj_ROI_grid_x.view(-1)  # [B * Y * X]
-
-        # Convert 2D spatial indices to 1D linear index for full object dimensions (NY, NX)
-        NY, NX = self.opt_obja.shape[-2], self.opt_obja.shape[-1]
-        flat_linear_idx = flat_y * NX + flat_x  # [B * Y * X]
-
-        # 3. Accumulate gradients across batch overlaps for active Z-slices
-        for s_idx_rel, s_idx_abs in enumerate(slice_indices):
-            for m in range(omode):
-                # Flatten patch gradient spatial dimensions
-                g_amp = grad_obja_block[:, m, s_idx_rel, :, :].reshape(-1) # [B * Y * X]
-                g_phs = grad_objp_block[:, m, s_idx_rel, :, :].reshape(-1) # [B * Y * X]
-
-                # Target 2D slice view flattened
-                target_a_slice = self.opt_obja.grad[m, s_idx_abs].view(-1)
-                target_p_slice = self.opt_objp.grad[m, s_idx_abs].view(-1)
-
-                # Atomic addition for overlapping scan positions
-                target_a_slice.index_add_(0, flat_linear_idx, g_amp)
-                target_p_slice.index_add_(0, flat_linear_idx, g_phs)
-
-    def stochastic_born_analytical_block_grad(self,
-                                        indices: torch.Tensor,
-                                        residual: torch.Tensor,
-                                        Psi_hat_k: torch.Tensor,
-                                        Psi_state_active: torch.Tensor,
-                                        slice_indices: torch.Tensor,
-                                        linearise_obj: bool = True,
-                                    ):
-        """
-        Phase 3: Computes analytical gradients for the current active block of slices.
-
-        Returns:
-            grad_obja_block: Gradient w.r.t object amplitude [B, omode, N_block, Y, X].
-            grad_objp_block: Gradient w.r.t object phase [B, omode, N_block, Y, X].
-        """
-        from ptyrad.forward_models import stochastic_born_analytical_block_grad
-
-        object_patches = self.get_obj_patches(indices)
-        object_block = object_patches[:, :, slice_indices, :, :, :]
-        H = self.get_propagators(indices)  # Ensure propagators are up-to-date for the current block
-        Psi_state_block = Psi_state_active[:, :, :, slice_indices, :, :]
-        return stochastic_born_analytical_block_grad(
-            residual = residual,
-            Psi_hat_k = Psi_hat_k,
-            Psi_block = Psi_state_block,
-            H_3d_block = self.get_propagators_3d(H)[:, :, :, slice_indices, :, :],
-            object_block = object_block,
-            omode_occu=self.omode_occu,
-            linearise_obj=linearise_obj,
-        )
-
-    def stochastic_born_analytical_probe_grad(
-        self,
-        indices: torch.Tensor,
-        residual: torch.Tensor,
-        Psi_hat_k: torch.Tensor,
-        linearise_obj: bool = True
-    ) -> torch.Tensor:
-        """
-        Computes analytical gradients for the probe across the full 3D stack.
-        """
-        from ptyrad.forward_models import stochastic_born_analytical_probe_grad
-        object_patches = self.get_obj_patches(indices)
-        H_3d = self.get_propagators_3d(self.get_propagators(indices))
-        return stochastic_born_analytical_probe_grad(
-            residual=residual,
-            Psi_hat_k=Psi_hat_k,
-            H_3d=H_3d,
-            object_patches=object_patches,
-            omode_occu=self.omode_occu,
-            linearise_obj=linearise_obj,
-        )
+    def make_propagator(self, dz, indices):
+        """Analytic propagator for an arbitrary thickness dz (tilt scaled with it)."""
+        Ky, Kx = self.propagator_grid
+        H = torch_phasor(dz * self.Kz)
+        if self.tilt_obj:
+            tilts = (self.opt_obj_tilts if self.opt_obj_tilts.shape[0] == 1
+                    else self.opt_obj_tilts[indices])
+            ty, tx = tilts[:, 0, None, None] / 1e3, tilts[:, 1, None, None] / 1e3
+            return H * torch_phasor(dz * (Ky * torch.tan(ty) + Kx * torch.tan(tx)))
+        return H.unsqueeze(0)
