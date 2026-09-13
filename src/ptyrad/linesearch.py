@@ -617,6 +617,20 @@ def linesearch_model_update(
     return diag
 
 
+def _shift_views(x, shifts, grid):
+    """Per-view sub-pixel Fourier shift: x (B|1, pmode, Ny, Nx) shifted by
+    shifts (B, 2) [y, x] px -> (B, pmode, Ny, Nx). Same phasor convention as
+    utils.imshift_batch (which broadcasts ONE image over the shifts and so
+    cannot shift B distinct images by B distinct shifts). Unitary; the
+    adjoint/inverse is the same call with -shifts."""
+    ky, kx = grid[0], grid[1]
+    phase = -2.0 * torch.pi * (
+        shifts[:, 1, None, None] * kx + shifts[:, 0, None, None] * ky
+    )
+    w = torch.polar(torch.ones_like(phase), phase).unsqueeze(1)  # (B, 1, Ny, Nx)
+    return ifft2(fft2(x) * w)
+
+
 def linesearch_model_update_batched(
     model, indices, config=None, state=None, update_probe=True, loss_fn=None, H=None
 ):
@@ -634,7 +648,11 @@ def linesearch_model_update_batched(
 
     Momentum is supported here (the displacement lives on the canvas, so
     overlapping windows compose correctly). Per-view sub-pixel probe shifts
-    are not: refuse rather than update a shifted probe inconsistently.
+    are supported exactly: shifts are unitary and every view's field is
+    linear in the SHARED probe, so the shared-frame gradient is the sum of
+    the per-view gradients unshifted by -s_b, and the response of a shared
+    direction q is one forward with shift_b(q) per view. The shift values
+    themselves stay frozen (position refinement is not part of the port).
     """
     cfg = config or LineSearchConfig()
     st = state if state is not None else LineSearchState()
@@ -648,12 +666,6 @@ def linesearch_model_update_batched(
             "obj_preblur changes the parameter-to-field map; thread it through the "
             "direction response before enabling it with the line search."
         )
-    if model.shift_probes:
-        raise NotImplementedError(
-            "Batched line search with per-view sub-pixel probe shifts is not wired: "
-            "the shared-probe increment would need per-view unshifting."
-        )
-
     device = model.opt_obja.device
     idx = torch.as_tensor(np.asarray(indices).reshape(-1), device=device)
     B = idx.numel()
@@ -661,7 +673,7 @@ def linesearch_model_update_batched(
 
     if H is None:
         H = model.get_propagators_3d(model.get_propagators(idx)).detach()
-    probe = model.get_probes(idx).detach()  # (1, pmode, Ny, Nx), shared
+    probe = model.get_probes(idx).detach()  # (1,pmode,Ny,Nx) shared, or (B,...) shifted
     I_dat = model.get_measurements(idx).detach()  # (B, Ny, Nx)
     gy = model.rpy_grid[None] + model.crop_pos[idx, 0, None, None]  # (B, Ny, Nx)
     gx = model.rpx_grid[None] + model.crop_pos[idx, 1, None, None]
@@ -713,15 +725,15 @@ def linesearch_model_update_batched(
 
     # ---- step 2: canvas preconditioner (scatter-accumulated over the batch) --
     with torch.no_grad():
-        phi = unscattered_illumination(P_leaf.detach(), H)  # (1, pmode, 1, Nz, Ny, Nx)
-        K_win = phi.abs().square().sum(dim=(0, 1)).squeeze(0)  # (Nz, Ny, Nx)
+        phi = unscattered_illumination(P_leaf.detach(), H)  # (B|1, pmode, 1, Nz, Ny, Nx)
+        K_win = phi.abs().square().sum(dim=1).squeeze(1)  # (B|1, Nz, Ny, Nx), per view
+        if K_win.shape[0] == 1:
+            K_win = K_win.expand(B, *K_win.shape[1:])
         Nz, Hc, Wc = model.opt_obja.shape[-3:]
         Ny, Nx = K_win.shape[-2:]
         K_canvas = torch.zeros(Nz, Hc * Wc, device=device, dtype=K_win.dtype)
         lin = (gy.long() * Wc + gx.long()).reshape(-1)  # (B*Ny*Nx,)
-        K_canvas.index_add_(
-            1, lin, K_win.view(Nz, 1, Ny * Nx).expand(Nz, B, Ny * Nx).reshape(Nz, -1)
-        )
+        K_canvas.index_add_(1, lin, K_win.permute(1, 0, 2, 3).reshape(Nz, -1))
         K_canvas = K_canvas.view(Nz, Hc, Wc)
         peak = K_canvas.amax(dim=(-2, -1), keepdim=True)
         if cfg.object_denom == "max":
@@ -762,9 +774,18 @@ def linesearch_model_update_batched(
             K_P = O_b.detach().abs().square().sum(dim=(0, 1, 2))  # pre-step, (Ny, Nx)
             peak_P = K_P.amax()
             dn_p = peak_P if cfg.probe_denom == "max" else K_P + peak_P * cfg.denom_reg
-            q = (-P_leaf.grad) / dn_p.clamp_min(DN_EPS)
+            # shared-frame probe gradient: per-view grads unshifted by -s_b and
+            # summed (shifts are unitary; F_b is linear in the shared probe)
+            grad_P = P_leaf.grad
+            if model.shift_probes:
+                shifts = model.opt_probe_pos_shifts[idx].detach()
+                grid = model.shift_probes_grid
+                grad_P = _shift_views(grad_P, -shifts, grid).sum(dim=0, keepdim=True)
+            q = (-grad_P) / dn_p.clamp_min(DN_EPS)  # (1, pmode, Ny, Nx), shared frame
             g2 = O_b.detach() + a * d_wins
-            D_P = _fields_from_complex(g2, q, H)
+            # response of the shared direction: view b sees shift_b(q) — exact
+            q_views = _shift_views(q, shifts, grid) if model.shift_probes else q
+            D_P = _fields_from_complex(g2, q_views, H)
             v_p, w_p = response_terms(F, D_P, model.omode_occu)
             if postmap is not None:
                 v_p, w_p = postmap(v_p), postmap(w_p)

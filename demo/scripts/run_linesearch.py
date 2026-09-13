@@ -33,10 +33,13 @@ from ptyrad.visualization import plot_summary
 #               probe step averaged over the batch. Use this for batch-parity
 #               comparisons against optimizer runs.
 params_paths = [
-    "/home/dnz75396/ptyrad/demo/params/tBL_WSe2_reconstruct_minimal_born.yml"
+    "/home/dnz75396/ptyrad/demo/params/PSO_reconstruct_born_paper.yml"
 ]
 
-run_name = ["linesearch_born_tBL_WSe2"]  # Used to name the log file. Change to any string you like
+run_name = ["linesearch_born_PSO"]  # Used to name the log file. Change to any string you like
+
+# None = honor the params file's BATCH_SIZE.
+FORCE_BATCH_SIZE = None
 
 # §8 knobs. ls_damp = 0.5 is load-bearing with the default amplitude direction
 # objective — it is not a stability fudge factor, do not "clean it up" to 1.0.
@@ -65,6 +68,9 @@ for i, params_path in enumerate(params_paths):
     params = load_params(params_path, validate=True)
 
     batch_size = params["recon_params"]["BATCH_SIZE"]["size"]
+    if FORCE_BATCH_SIZE is not None:
+        batch_size = FORCE_BATCH_SIZE
+        params["recon_params"]["BATCH_SIZE"]["size"] = batch_size
     params["recon_params"]["BATCH_SIZE"]["grad_accumulation"] = 1
     if batch_size == 1:
         # grouping is meaningless for single-view batches (and 'sparse' kmeans

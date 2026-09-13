@@ -210,6 +210,35 @@ def test_batched_joint_update_descends():
     assert np.isfinite(float(diag["loss"]))
 
 
+def test_batched_matches_per_view_with_probe_shifts():
+    """With per-view sub-pixel probe shifts active, the batched updater's
+    shared-frame probe handling (unshift-and-sum gradient, shift_b(q)
+    response) must reproduce the per-view updater, which handles shifts
+    exactly by construction."""
+    m1, m2 = _make_model(), _make_model()
+    for m in (m1, m2):
+        m.shift_probes = True
+        m.opt_probe_pos_shifts.data = torch.tensor(
+            [[0.3, -0.2], [-0.4, 0.1], [0.15, 0.35], [-0.25, -0.3]]
+        )
+    d1 = ls.linesearch_model_update(m1, 1, state=ls.LineSearchState())
+    d2 = ls.linesearch_model_update_batched(m2, [1], state=ls.LineSearchState())
+    assert d1["a"] == pytest.approx(d2["a"], rel=1e-5)
+    assert d1["b"] == pytest.approx(d2["b"], rel=1e-4)
+    assert torch.allclose(m1.opt_obja.data, m2.opt_obja.data, atol=1e-6)
+    assert torch.allclose(m1.opt_objp.data, m2.opt_objp.data, atol=1e-6)
+    p1 = torch.view_as_complex(m1.opt_probe.data)
+    p2 = torch.view_as_complex(m2.opt_probe.data)
+    assert torch.allclose(p1, p2, atol=1e-5 * p1.abs().max())
+
+    # and a multi-view shifted batch runs and descends
+    st = ls.LineSearchState()
+    l0 = ls.linesearch_model_update_batched(m2, [0, 1, 2, 3], state=st)["loss"]
+    for _ in range(4):
+        l1 = ls.linesearch_model_update_batched(m2, [0, 1, 2, 3], state=st)["loss"]
+    assert float(l1) < float(l0)
+
+
 def test_guards():
     """Multislice models and unported features must be refused loudly rather
     than silently searching on the wrong problem."""
