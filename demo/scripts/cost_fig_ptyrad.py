@@ -17,12 +17,13 @@ shape and time compilation, not the maths):
                         slice; local impl — the tree's multislice_forward is
                         Strang-subsliced and suzukitrotter is 4th order,
                         both do several propagations per slice)
-  Born, autograd        forward_models.born.firstborn_forward + autograd
-  Born, analytical adj  FirstBornForwardFunction (hand adjoint; PtyRAD's
-                        closest analogue of ptypy's low-memory Born — it
-                        saves phi and the exit field instead of the autograd
-                        tape, but still holds the O(N x batch) illumination,
-                        so don't expect ptypy's O(batch) flat memory curve)
+  Born, parallel        forward_models.born.firstborn_forward + autograd
+                        (materialises the O(batch x N) slice stacks)
+  Born, low memory      firstborn_forward_lowmem: slice-looped hand adjoint,
+                        stores ONE unscattered field per slice (batch-free
+                        for a shared probe) + the O(batch) exit field —
+                        the counterpart of ptypy's low-memory Born
+                        (gradients == autograd, test_born_lowmem.py)
 
 Adjoint = torch.autograd.grad of dp.sum() w.r.t. (object_patches, probe).
 
@@ -49,7 +50,7 @@ import matplotlib.pyplot as plt
 from torch.fft import fft2, fftshift, ifft2
 
 from ptyrad.forward_models import firstborn_forward
-from ptyrad.forward_models.born import FirstBornForwardFunction
+from ptyrad.forward_models.born import firstborn_forward_lowmem
 
 DEMO = "/home/dnz75396/ptyrad/demo"
 CKPT = sorted(glob.glob(
@@ -76,12 +77,12 @@ def plain_multislice(object_patches, probe, H, omode_occu, eps=EPS):
     return fftshift(dp, dim=(-2, -1))
 
 
-def born_autograd(patches, probe, H3, occu):
+def born_parallel(patches, probe, H3, occu):
     return firstborn_forward(patches, probe, H3, occu)
 
 
-def born_analytical(patches, probe, H3, occu):
-    return FirstBornForwardFunction.apply(patches, probe, H3, occu, EPS, False)
+def born_lowmem(patches, probe, H3, occu):
+    return firstborn_forward_lowmem(patches, probe, H3, occu, EPS, False)
 
 
 def time_one(fn, patches, probe, reps):
@@ -144,9 +145,8 @@ def main():
 
             for name, fn in (
                 ("multislice", lambda: plain_multislice(patches, probe, H2, occu)),
-                ("Born, autograd", lambda: born_autograd(patches, probe, H3, occu)),
-                ("Born, analytical adjoint",
-                 lambda: born_analytical(patches, probe, H3, occu)),
+                ("Born, parallel", lambda: born_parallel(patches, probe, H3, occu)),
+                ("Born, low memory", lambda: born_lowmem(patches, probe, H3, occu)),
             ):
                 try:
                     ms, gb = time_one(fn, patches, probe, REPS)
@@ -166,32 +166,37 @@ def main():
         wr.writerows(rows)
 
     # ---- figure: rows = (wall clock, peak memory), cols = batch sizes -----
-    colors = {"multislice": "#2a78d6", "Born, autograd": "#eb6834",
-              "Born, analytical adjoint": "#1baf7a"}
-    markers = {"multislice": "o", "Born, autograd": "s",
-               "Born, analytical adjoint": "^"}
+    # linear y (per panel): a log y-axis hides how much one model beats the
+    # other; log x keeps the doubling grid of N readable.
+    colors = {"multislice": "#2a78d6", "Born, parallel": "#eb6834",
+              "Born, low memory": "#1baf7a"}
+    markers = {"multislice": "o", "Born, parallel": "s",
+               "Born, low memory": "^"}
     ink, muted = "#1a1a19", "#6b6a60"
     fig, axes = plt.subplots(2, len(BATCHES), figsize=(3.1 * len(BATCHES), 6.4),
-                             dpi=160, sharex=True, sharey="row")
+                             dpi=160, sharex=True)
     for c, B in enumerate(BATCHES):
         for r, key, ylabel in ((0, 3, "forward + adjoint (ms per batch)"),
                                (1, 4, "peak allocation (GB)")):
             ax = axes[r, c]
             for name in colors:
-                pts = [(nz, row[key]) for row in rows
-                       for nz in [row[2]]
+                pts = [(row[2], row[key]) for row in rows
                        if row[0] == name and row[1] == B and np.isfinite(row[key])]
                 if pts:
                     xs, ys = zip(*pts, strict=True)
-                    ax.loglog(xs, ys, color=colors[name], marker=markers[name],
-                              ms=5, lw=1.8, label=name)
+                    ax.plot(xs, ys, color=colors[name], marker=markers[name],
+                            ms=5, lw=1.8, label=name)
+            ax.set_xscale("log", base=2)
+            ax.set_xticks(list(SLICES))
+            ax.set_xticklabels([str(s) for s in SLICES])
+            ax.set_ylim(bottom=0)
             if r == 0:
                 ax.set_title(f"batch {B}", fontsize=10, color=ink)
             if r == 1:
                 ax.set_xlabel("slices $N$", color=ink)
             if c == 0:
                 ax.set_ylabel(ylabel, color=ink)
-            ax.grid(True, which="both", color="#e8e7de", lw=0.5)
+            ax.grid(True, which="major", color="#e8e7de", lw=0.5)
             ax.tick_params(colors=muted, labelsize=8)
             for s in ("top", "right"):
                 ax.spines[s].set_visible(False)

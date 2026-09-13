@@ -24,7 +24,7 @@ def firstborn_forward(
     H: torch.Tensor,
     omode_occu: torch.Tensor = None,
     eps: float = 1e-10,
-    linearise_obj: bool = True,
+    linearise_obj: bool = False,
 ) -> torch.Tensor:
     """
     Fully Vectorized First-Born Forward Model.
@@ -207,6 +207,122 @@ class FirstBornForwardFunction(torch.autograd.Function):
         return grad_object_patches, grad_probe, None, None, None, None
 
 
+class FirstBornLowMemFunction(torch.autograd.Function):
+    """Slice-looped first Born with a low-memory hand adjoint.
+
+    The parallel formulation (firstborn_forward + autograd, or the
+    FirstBornForwardFunction above) materialises (B, pmode, omode, Nz, Ny, Nx)
+    intermediates in forward and backward, so peak memory grows as
+    O(batch x slices). Here both passes loop over slices: the only stored
+    per-slice quantity is the unscattered illumination phi_j = IFFT[H_j FFT P]
+    — ONE field per slice, batch-free when the probe is shared — plus the
+    O(batch) exit field. Peak workspace is O(batch) + O(slices), matching the
+    low-memory Born of the ptypy reference engine.
+
+    Gradients follow torch's convention (z.grad = 2 dL/dz*) and are validated
+    against autograd of firstborn_forward in test/test_born_lowmem.py.
+    (NOTE: FirstBornForwardFunction above does NOT pass that check — its
+    object gradient is exactly half and its probe gradient mishandles the
+    omode dimension; it is not used by the reconstruction path.)
+    """
+
+    @staticmethod
+    def forward(ctx, object_patches, probe, H, omode_occu=None, eps=1e-10,
+                linearise_obj=False):
+        object_patches = object_patches.contiguous()
+        probe = probe.contiguous()
+        B, omode, Nz, Ny, Nx, _ = object_patches.shape
+        pmode = probe.shape[1]
+
+        if omode_occu is None:
+            omode_occu = (
+                torch.ones(omode, dtype=object_patches.dtype,
+                           device=object_patches.device) / omode
+            )
+        omode_weight = omode_occu.view(1, 1, -1, 1, 1)
+
+        probe_k = fft2(probe)  # (Bp, pmode, Ny, Nx)
+        # phi: one unscattered field per slice, batch-free for a shared probe
+        Hz = H[:, 0, 0]  # (Bh, Nz, Ny, Nx)
+        phi = ifft2(Hz.unsqueeze(1) * probe_k.unsqueeze(2))  # (Bmax, pmode, Nz, Ny, Nx)
+
+        amplitude = object_patches[..., 0]
+        phase = object_patches[..., 1]
+        acc = None
+        for j in range(Nz):
+            if linearise_obj:
+                obj_j = torch.complex(amplitude[:, :, j] - 1.0, phase[:, :, j])
+            else:
+                obj_j = torch.polar(amplitude[:, :, j], phase[:, :, j]) - 1.0
+            # (B, 1, omode, Ny, Nx) * (Bp, pmode, 1, Ny, Nx)
+            term = fft2(obj_j.unsqueeze(1) * phi[:, :, None, j]) \
+                * Hz[:, None, None, j].conj()
+            acc = term if acc is None else acc + term
+
+        Psi_hat_k = probe_k.unsqueeze(2) + acc  # (B, pmode, omode, Ny, Nx)
+        norm_weight = omode_weight / (Nx * Ny)
+        dp_fwd = fftshift2(
+            torch.sum(Psi_hat_k.abs().square() * norm_weight, dim=(1, 2)) + eps
+        )
+
+        ctx.save_for_backward(object_patches, probe, H, omode_weight, Psi_hat_k, phi)
+        ctx.linearise_obj = linearise_obj
+        return dp_fwd
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        object_patches, probe, H, omode_weight, Psi_hat_k, phi = ctx.saved_tensors
+        linearise_obj = ctx.linearise_obj
+        B, omode, Nz, Ny, Nx, _ = object_patches.shape
+        Hz = H[:, 0, 0]  # (Bh, Nz, Ny, Nx)
+
+        amplitude = object_patches[..., 0]
+        phase = object_patches[..., 1]
+
+        # torch convention seed on the exit field: z.grad = 2 dL/dz*; the
+        # 1/(Nx*Ny) of the intensity normalisation cancels against the
+        # unnormalised-FFT adjoints below, so it is deliberately absent here.
+        Wn = 2.0 * ifftshift2(grad_output).unsqueeze(1).unsqueeze(2) \
+            * omode_weight * Psi_hat_k  # (B, pmode, omode, Ny, Nx)
+
+        pk_acc = Wn.sum(dim=2)  # direct probe path, summed over omode
+        grad_amp = torch.empty_like(amplitude)
+        grad_phs = torch.empty_like(phase)
+        for j in range(Nz):
+            T = ifft2(Hz[:, None, None, j] * Wn)  # (B, pmode, omode, Ny, Nx)
+            og = (phi[:, :, None, j].conj() * T).sum(dim=1)  # (B, omode, Ny, Nx)
+            if linearise_obj:
+                obj_j = torch.complex(amplitude[:, :, j] - 1.0, phase[:, :, j])
+                grad_amp[:, :, j] = og.real
+                grad_phs[:, :, j] = og.imag
+            else:
+                obj_j = torch.polar(amplitude[:, :, j], phase[:, :, j]) - 1.0
+                u, v = og.real, og.imag
+                cos_p = torch.cos(phase[:, :, j])
+                sin_p = torch.sin(phase[:, :, j])
+                grad_amp[:, :, j] = u * cos_p + v * sin_p
+                grad_phs[:, :, j] = amplitude[:, :, j] * (v * cos_p - u * sin_p)
+            # indirect probe path through phi_j (object broadcast over pmode,
+            # phi broadcast over omode -> sum omode)
+            phig = (obj_j.unsqueeze(1).conj() * T).sum(dim=2)  # (B, pmode, Ny, Nx)
+            pk_acc = pk_acc + Hz[:, None, j].conj() * fft2(phig)
+
+        grad_object_patches = torch.stack([grad_amp, grad_phs], dim=-1)
+        grad_probe = ifft2(pk_acc)  # (B, pmode, Ny, Nx)
+        if grad_probe.shape[0] != probe.shape[0]:
+            grad_probe = grad_probe.sum(dim=0, keepdim=True)
+        return grad_object_patches, grad_probe.reshape(probe.shape), None, None, None, None
+
+
+def firstborn_forward_lowmem(object_patches, probe, H, omode_occu=None,
+                             eps=1e-10, linearise_obj=False):
+    """Low-memory first Born: O(batch) + O(slices) peak workspace (see
+    FirstBornLowMemFunction). Same interface and output as firstborn_forward."""
+    return FirstBornLowMemFunction.apply(
+        object_patches, probe, H, omode_occu, eps, linearise_obj
+    )
+
+
 @torch.compile(mode="max-autotune")
 def firstborn_forward_analytical(
     object_patches: torch.Tensor,
@@ -214,7 +330,7 @@ def firstborn_forward_analytical(
     H: torch.Tensor,
     omode_occu: torch.Tensor = None,
     eps: float = 1e-10,
-    linearise_obj: bool = True,
+    linearise_obj: bool = False,
 ) -> torch.Tensor:
     """
     Fully Vectorized First-Born Forward Model with Optimized Analytical Custom Autograd.
