@@ -64,13 +64,12 @@ CKPT = sorted(glob.glob(
     f"{DEMO}/output/test_100/tBL_WSe2_born/20260913_*random32*/model_iter0100.hdf5"))[-1]
 BATCHES = (1, 16, 32, 64)
 SLICES = (1, 2, 4, 8, 16, 32, 64)
-SLICES_B1 = SLICES + (128,)  # single-view batches probe deeper stacks
 REPS = 10
 EPS = 1e-10
 
 
 def slices_for(B):
-    return SLICES_B1 if B == 1 else SLICES
+    return SLICES
 
 
 def plain_multislice(object_patches, probe, H, omode_occu, eps=EPS):
@@ -263,7 +262,8 @@ def plot_figs(rows):
             ax = axes[k // 2, k % 2]
             for name in colors:
                 pts = [(row[2], row[key]) for row in rows
-                       if row[0] == name and row[1] == B and np.isfinite(row[key])]
+                       if row[0] == name and row[1] == B
+                       and row[2] in slices_for(B) and np.isfinite(row[key])]
                 if pts:
                     xs, ys = zip(*pts, strict=True)
                     ax.plot(xs, ys, color=colors[name], marker=markers[name],
