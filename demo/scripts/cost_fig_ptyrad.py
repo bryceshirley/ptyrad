@@ -236,9 +236,15 @@ def main():
         wr.writerow(["series", "batch", "slices", "fwd_adj_ms", "peak_GB"])
         wr.writerows(rows)
 
-    # ---- figure: rows = (wall clock, peak memory), cols = batch sizes -----
-    # linear y (per panel): a log y-axis hides how much one model beats the
-    # other; log x keeps the doubling grid of N readable.
+    plot_figs(rows)
+
+
+def plot_figs(rows):
+    """Two paper-ready figures: wall clock and peak memory, each a 2x2 grid
+    of the four batch panels (larger panels than the combined 2x5 layout).
+    Linear y per panel — log y hides how much one model beats another; log x
+    keeps the doubling grid of N readable. No suptitle: the caption belongs
+    to the paper."""
     colors = {"multislice": "#2a78d6", "Born, parallel": "#eb6834",
               "Born, low memory (chunk 1)": "#1baf7a",
               "Born, low memory (chunk 4)": "#e87ba4",
@@ -248,46 +254,56 @@ def main():
                "Born, low memory (chunk 4)": "v",
                "Born + line search": "D"}
     ink, muted = "#1a1a19", "#6b6a60"
-    fig, axes = plt.subplots(2, len(BATCHES), figsize=(3.1 * len(BATCHES), 6.4),
-                             dpi=160, sharex=True)
-    for c, B in enumerate(BATCHES):
-        for r, key, ylabel in ((0, 3, "forward + adjoint (ms per batch)"),
-                               (1, 4, "peak allocation (GB)")):
-            ax = axes[r, c]
+    for key, ylabel, fname in (
+        (3, "forward + adjoint (ms per batch)", "cost_ptyrad_time.png"),
+        (4, "peak allocation (GB)", "cost_ptyrad_mem.png"),
+    ):
+        fig, axes = plt.subplots(2, 2, figsize=(8.6, 8.0), dpi=200)
+        for k, B in enumerate(BATCHES):
+            ax = axes[k // 2, k % 2]
             for name in colors:
                 pts = [(row[2], row[key]) for row in rows
                        if row[0] == name and row[1] == B and np.isfinite(row[key])]
                 if pts:
                     xs, ys = zip(*pts, strict=True)
                     ax.plot(xs, ys, color=colors[name], marker=markers[name],
-                            ms=5, lw=1.8, label=name)
+                            ms=6, lw=2.0, label=name)
             ax.set_xscale("log", base=2)
             ax.set_xticks(list(slices_for(B)))
             ax.set_xticklabels([str(s) for s in slices_for(B)])
             ax.set_xlim(0.8, max(slices_for(B)) * 1.35)
             ax.set_ylim(bottom=0)
-            if r == 0:
-                ax.set_title(f"batch {B}", fontsize=10, color=ink)
-            if r == 1:
-                ax.set_xlabel("slices $N$", color=ink)
-            if c == 0:
-                ax.set_ylabel(ylabel, color=ink)
+            ax.set_title(f"batch {B}", fontsize=11, color=ink)
+            if k // 2 == 1:
+                ax.set_xlabel("slices $N$", color=ink, fontsize=10)
+            if k % 2 == 0:
+                ax.set_ylabel(ylabel, color=ink, fontsize=10)
             ax.grid(True, which="major", color="#e8e7de", lw=0.5)
-            ax.tick_params(colors=muted, labelsize=8)
+            ax.tick_params(colors=muted, labelsize=9)
             for s in ("top", "right"):
                 ax.spines[s].set_visible(False)
-    axes[0, 0].legend(frameon=False, fontsize=8, loc="upper left", labelcolor=ink)
-    fig.suptitle(
-        "PtyRAD cost against depth, tBL-WSe$_2$ geometry (128$^2$ frames, 6 probe "
-        "modes, slices repeated to extend $N$; eager PyTorch, RTX A4000).\n"
-        "First four series: one forward + adjoint per batch. "
-        "Born + line search: one FULL exact-line-search update "
-        "(both gradients, direction + probe responses, two quartic solves).",
-        fontsize=9, color=ink)
-    fig.tight_layout(rect=[0, 0, 1, 0.95])
-    fig.savefig(f"{DEMO}/cost_ptyrad.png", facecolor="white")
-    print(f"saved {DEMO}/cost_ptyrad.png and cost_ptyrad.csv")
+        axes[0, 0].legend(frameon=False, fontsize=9, loc="upper left",
+                          labelcolor=ink)
+        fig.tight_layout()
+        fig.savefig(f"{DEMO}/{fname}", facecolor="white")
+        plt.close(fig)
+        print(f"saved {DEMO}/{fname}")
+
+
+def plot_from_csv():
+    rows = []
+    with open(f"{DEMO}/cost_ptyrad.csv") as f:
+        rd = csv.reader(f)
+        next(rd)
+        for name, B, Nz, ms, gb in rd:
+            rows.append((name, int(B), int(Nz), float(ms), float(gb)))
+    plot_figs(rows)
 
 
 if __name__ == "__main__":
-    main()
+    import sys
+
+    if "--plot-only" in sys.argv:
+        plot_from_csv()
+    else:
+        main()
