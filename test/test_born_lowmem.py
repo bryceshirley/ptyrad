@@ -40,7 +40,8 @@ def _setup(B, omode, Nz, Ny, Nx, pmode, Bp, seed=0):
 
 @pytest.mark.parametrize("linearise", [False, True])
 @pytest.mark.parametrize("Bp", [1, 3])
-def test_lowmem_matches_autograd(linearise, Bp):
+@pytest.mark.parametrize("chunk", [1, 3, 64])  # 3 is a non-divisor of Nz=4
+def test_lowmem_matches_autograd(linearise, Bp, chunk):
     patches, probe, H, occu, cot = _setup(3, 2, 4, 16, 16, 2, Bp)
 
     p1 = patches.clone().requires_grad_(True)
@@ -50,7 +51,7 @@ def test_lowmem_matches_autograd(linearise, Bp):
 
     p2 = patches.clone().requires_grad_(True)
     pr2 = probe.clone().requires_grad_(True)
-    dp2 = firstborn_forward_lowmem(p2, pr2, H, occu, 1e-10, linearise)
+    dp2 = firstborn_forward_lowmem(p2, pr2, H, occu, 1e-10, linearise, chunk)
     (dp2 * cot).sum().backward()
 
     assert torch.allclose(dp1, dp2, rtol=1e-12, atol=1e-14)

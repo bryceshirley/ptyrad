@@ -228,7 +228,7 @@ class FirstBornLowMemFunction(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, object_patches, probe, H, omode_occu=None, eps=1e-10,
-                linearise_obj=False):
+                linearise_obj=False, slice_chunk=4):
         object_patches = object_patches.contiguous()
         probe = probe.contiguous()
         B, omode, Nz, Ny, Nx, _ = object_patches.shape
@@ -240,6 +240,7 @@ class FirstBornLowMemFunction(torch.autograd.Function):
                            device=object_patches.device) / omode
             )
         omode_weight = omode_occu.view(1, 1, -1, 1, 1)
+        C = max(int(slice_chunk), 1)
 
         probe_k = fft2(probe)  # (Bp, pmode, Ny, Nx)
         # phi: one unscattered field per slice, batch-free for a shared probe
@@ -249,14 +250,18 @@ class FirstBornLowMemFunction(torch.autograd.Function):
         amplitude = object_patches[..., 0]
         phase = object_patches[..., 1]
         acc = None
-        for j in range(Nz):
+        # chunked slice loop: workspace O(batch x C); C trades the loop's
+        # launch/traffic overhead against memory (C = Nz ~ the parallel model)
+        for j0 in range(0, Nz, C):
+            sl = slice(j0, min(j0 + C, Nz))
             if linearise_obj:
-                obj_j = torch.complex(amplitude[:, :, j] - 1.0, phase[:, :, j])
+                obj_c = torch.complex(amplitude[:, :, sl] - 1.0, phase[:, :, sl])
             else:
-                obj_j = torch.polar(amplitude[:, :, j], phase[:, :, j]) - 1.0
-            # (B, 1, omode, Ny, Nx) * (Bp, pmode, 1, Ny, Nx)
-            term = fft2(obj_j.unsqueeze(1) * phi[:, :, None, j]) \
-                * Hz[:, None, None, j].conj()
+                obj_c = torch.polar(amplitude[:, :, sl], phase[:, :, sl]) - 1.0
+            # (B, 1, omode, C, Ny, Nx) * (Bp, pmode, 1, C, Ny, Nx)
+            term = fft2(obj_c.unsqueeze(1) * phi[:, :, None, sl]) \
+                * Hz[:, None, None, sl].conj()
+            term = term.sum(dim=3)  # (B, pmode, omode, Ny, Nx)
             acc = term if acc is None else acc + term
 
         Psi_hat_k = probe_k.unsqueeze(2) + acc  # (B, pmode, omode, Ny, Nx)
@@ -267,6 +272,7 @@ class FirstBornLowMemFunction(torch.autograd.Function):
 
         ctx.save_for_backward(object_patches, probe, H, omode_weight, Psi_hat_k, phi)
         ctx.linearise_obj = linearise_obj
+        ctx.slice_chunk = C
         return dp_fwd
 
     @staticmethod
@@ -284,42 +290,50 @@ class FirstBornLowMemFunction(torch.autograd.Function):
         # unnormalised-FFT adjoints below, so it is deliberately absent here.
         Wn = 2.0 * ifftshift2(grad_output).unsqueeze(1).unsqueeze(2) \
             * omode_weight * Psi_hat_k  # (B, pmode, omode, Ny, Nx)
+        C = ctx.slice_chunk
 
         pk_acc = Wn.sum(dim=2)  # direct probe path, summed over omode
         grad_amp = torch.empty_like(amplitude)
         grad_phs = torch.empty_like(phase)
-        for j in range(Nz):
-            T = ifft2(Hz[:, None, None, j] * Wn)  # (B, pmode, omode, Ny, Nx)
-            og = (phi[:, :, None, j].conj() * T).sum(dim=1)  # (B, omode, Ny, Nx)
+        Wn4 = Wn.unsqueeze(3)  # (B, pmode, omode, 1, Ny, Nx)
+        for j0 in range(0, Nz, C):
+            sl = slice(j0, min(j0 + C, Nz))
+            T = ifft2(Hz[:, None, None, sl] * Wn4)  # (B, pmode, omode, C, Ny, Nx)
+            og = (phi[:, :, None, sl].conj() * T).sum(dim=1)  # (B, omode, C, Ny, Nx)
             if linearise_obj:
-                obj_j = torch.complex(amplitude[:, :, j] - 1.0, phase[:, :, j])
-                grad_amp[:, :, j] = og.real
-                grad_phs[:, :, j] = og.imag
+                obj_c = torch.complex(amplitude[:, :, sl] - 1.0, phase[:, :, sl])
+                grad_amp[:, :, sl] = og.real
+                grad_phs[:, :, sl] = og.imag
             else:
-                obj_j = torch.polar(amplitude[:, :, j], phase[:, :, j]) - 1.0
+                obj_c = torch.polar(amplitude[:, :, sl], phase[:, :, sl]) - 1.0
                 u, v = og.real, og.imag
-                cos_p = torch.cos(phase[:, :, j])
-                sin_p = torch.sin(phase[:, :, j])
-                grad_amp[:, :, j] = u * cos_p + v * sin_p
-                grad_phs[:, :, j] = amplitude[:, :, j] * (v * cos_p - u * sin_p)
+                cos_p = torch.cos(phase[:, :, sl])
+                sin_p = torch.sin(phase[:, :, sl])
+                grad_amp[:, :, sl] = u * cos_p + v * sin_p
+                grad_phs[:, :, sl] = amplitude[:, :, sl] * (v * cos_p - u * sin_p)
             # indirect probe path through phi_j (object broadcast over pmode,
-            # phi broadcast over omode -> sum omode)
-            phig = (obj_j.unsqueeze(1).conj() * T).sum(dim=2)  # (B, pmode, Ny, Nx)
-            pk_acc = pk_acc + Hz[:, None, j].conj() * fft2(phig)
+            # phi broadcast over omode -> sum omode; then sum the chunk)
+            phig = (obj_c.unsqueeze(1).conj() * T).sum(dim=2)  # (B, pmode, C, Ny, Nx)
+            pk_acc = pk_acc + (Hz[:, None, sl].conj() * fft2(phig)).sum(dim=2)
 
         grad_object_patches = torch.stack([grad_amp, grad_phs], dim=-1)
         grad_probe = ifft2(pk_acc)  # (B, pmode, Ny, Nx)
         if grad_probe.shape[0] != probe.shape[0]:
             grad_probe = grad_probe.sum(dim=0, keepdim=True)
-        return grad_object_patches, grad_probe.reshape(probe.shape), None, None, None, None
+        return (grad_object_patches, grad_probe.reshape(probe.shape),
+                None, None, None, None, None)
 
 
 def firstborn_forward_lowmem(object_patches, probe, H, omode_occu=None,
-                             eps=1e-10, linearise_obj=False):
-    """Low-memory first Born: O(batch) + O(slices) peak workspace (see
-    FirstBornLowMemFunction). Same interface and output as firstborn_forward."""
+                             eps=1e-10, linearise_obj=False, slice_chunk=4):
+    """Low-memory first Born: O(batch x slice_chunk) + O(slices) peak
+    workspace (see FirstBornLowMemFunction). slice_chunk trades the slice
+    loop's launch/traffic overhead against memory: 1 = minimum memory,
+    larger chunks approach the parallel model's wall clock (at large batch
+    the per-chunk FFTs already saturate the GPU, so a modest chunk closes
+    most of the gap). Same interface and output as firstborn_forward."""
     return FirstBornLowMemFunction.apply(
-        object_patches, probe, H, omode_occu, eps, linearise_obj
+        object_patches, probe, H, omode_occu, eps, linearise_obj, slice_chunk
     )
 
 

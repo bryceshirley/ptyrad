@@ -62,10 +62,15 @@ from ptyrad.forward_models.born import firstborn_forward_lowmem
 DEMO = "/home/dnz75396/ptyrad/demo"
 CKPT = sorted(glob.glob(
     f"{DEMO}/output/test_100/tBL_WSe2_born/20260913_*random32*/model_iter0100.hdf5"))[-1]
-BATCHES = (1, 16, 32, 64, 128)
+BATCHES = (1, 16, 32, 64)
 SLICES = (1, 2, 4, 8, 16, 32, 64)
+SLICES_B1 = SLICES + (128,)  # single-view batches probe deeper stacks
 REPS = 10
 EPS = 1e-10
+
+
+def slices_for(B):
+    return SLICES_B1 if B == 1 else SLICES
 
 
 def plain_multislice(object_patches, probe, H, omode_occu, eps=EPS):
@@ -88,8 +93,8 @@ def born_parallel(patches, probe, H3, occu):
     return firstborn_forward(patches, probe, H3, occu)
 
 
-def born_lowmem(patches, probe, H3, occu):
-    return firstborn_forward_lowmem(patches, probe, H3, occu, EPS, False)
+def born_lowmem(patches, probe, H3, occu, chunk):
+    return firstborn_forward_lowmem(patches, probe, H3, occu, EPS, False, chunk)
 
 
 def time_one(call, reps):
@@ -171,7 +176,7 @@ def main():
         base_a = torch.stack(wins_a)  # (B, omode, N_true, Ny, Nx)
         base_p = torch.stack(wins_p)
 
-        for Nz in SLICES:
+        for Nz in slices_for(B):
             rep_ix = [j % N_true for j in range(Nz)]  # repeat slices to extend N
             patches = torch.stack(
                 [torch.stack([base_a[:, :, j], base_p[:, :, j]], dim=-1)
@@ -199,8 +204,11 @@ def main():
                 ("Born, parallel",
                  make_fwd_adj(lambda: born_parallel(patches, probe, H3, occu),
                               patches, probe)),
-                ("Born, low memory",
-                 make_fwd_adj(lambda: born_lowmem(patches, probe, H3, occu),
+                ("Born, low memory (chunk 1)",
+                 make_fwd_adj(lambda: born_lowmem(patches, probe, H3, occu, 1),
+                              patches, probe)),
+                ("Born, low memory (chunk 4)",
+                 make_fwd_adj(lambda: born_lowmem(patches, probe, H3, occu, 4),
                               patches, probe)),
             ]
             if I_dat is not None:
@@ -232,9 +240,13 @@ def main():
     # linear y (per panel): a log y-axis hides how much one model beats the
     # other; log x keeps the doubling grid of N readable.
     colors = {"multislice": "#2a78d6", "Born, parallel": "#eb6834",
-              "Born, low memory": "#1baf7a", "Born + line search": "#eda100"}
+              "Born, low memory (chunk 1)": "#1baf7a",
+              "Born, low memory (chunk 4)": "#e87ba4",
+              "Born + line search": "#eda100"}
     markers = {"multislice": "o", "Born, parallel": "s",
-               "Born, low memory": "^", "Born + line search": "D"}
+               "Born, low memory (chunk 1)": "^",
+               "Born, low memory (chunk 4)": "v",
+               "Born + line search": "D"}
     ink, muted = "#1a1a19", "#6b6a60"
     fig, axes = plt.subplots(2, len(BATCHES), figsize=(3.1 * len(BATCHES), 6.4),
                              dpi=160, sharex=True)
@@ -250,8 +262,9 @@ def main():
                     ax.plot(xs, ys, color=colors[name], marker=markers[name],
                             ms=5, lw=1.8, label=name)
             ax.set_xscale("log", base=2)
-            ax.set_xticks(list(SLICES))
-            ax.set_xticklabels([str(s) for s in SLICES])
+            ax.set_xticks(list(slices_for(B)))
+            ax.set_xticklabels([str(s) for s in slices_for(B)])
+            ax.set_xlim(0.8, max(slices_for(B)) * 1.35)
             ax.set_ylim(bottom=0)
             if r == 0:
                 ax.set_title(f"batch {B}", fontsize=10, color=ink)
@@ -267,7 +280,7 @@ def main():
     fig.suptitle(
         "PtyRAD cost against depth, tBL-WSe$_2$ geometry (128$^2$ frames, 6 probe "
         "modes, slices repeated to extend $N$; eager PyTorch, RTX A4000).\n"
-        "First three series: one forward + adjoint per batch. "
+        "First four series: one forward + adjoint per batch. "
         "Born + line search: one FULL exact-line-search update "
         "(both gradients, direction + probe responses, two quartic solves).",
         fontsize=9, color=ink)
