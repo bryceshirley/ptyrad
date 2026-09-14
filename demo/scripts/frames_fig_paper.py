@@ -24,7 +24,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
-OUT = "/home/dnz75396/ptypy/draft_paper/electron_frames.png"
+OUT = "/home/dnz75396/draft_paper/electron_frames.png"
 RAW = "/home/dnz75396/ptyrad/demo/data/tBL_WSe2/Panel_g-h_Themis/scan_x128_y128.raw"
 PICK = (8200,)                      # one representative frame for the paper
 
@@ -52,7 +52,7 @@ def main():
 
     fig, axes = plt.subplots(len(PICK), 3, figsize=(8.4, 2.7 * len(PICK)))
     axes = np.atleast_2d(axes)
-    titles = ("measured", "multislice", "first Born")
+    titles = ("measured", "multislice", "ISS")
     for r, idx in enumerate(PICK):
         p = pos[idx]
         rows = torch.as_tensor(p[0] + np.arange(ny), dtype=torch.long,

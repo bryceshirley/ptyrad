@@ -22,14 +22,14 @@ T100 = f"{DEMO}/output/test_100"
 RUNS = [
     # (label, palette slot color, log path)
     (
-        "First Born (Adam)",
+        "ISS (Adam)",
         "#2a78d6",
         f"{T100}/tBL_WSe2_born/20260731_full_N16384_dp128_flipT100_random32_p6_1obj_"
         "12slice_dz1_plr1e-4_oalr5e-4_oplr5e-4_orblur0.5_ozblur1.0_mamp0.03_4.0_"
         "oathr0.98_oposc_sng1.0_spr0.1/20260731_120522_ptyrad_log_born.txt",
     ),
     (
-        "First Born + line search",
+        "ISS + line search",
         "#eb6834",
         "LATEST_LINESEARCH",  # resolved below: newest linesearch log in the random32 folder
     ),

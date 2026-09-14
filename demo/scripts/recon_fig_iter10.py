@@ -20,8 +20,8 @@ T100 = "/home/dnz75396/ptyrad/demo/output/test_100"
 OUT = "/home/dnz75396/ptyrad/demo/recon_iter10_comparison.png"
 
 ROWS = [
-    ("first Born", f"{T100}/tBL_WSe2_born/20260731_*/model_iter0010.hdf5"),
-    ("first Born\n+ line search", f"{T100}/tBL_WSe2_born/20260913_*random32*/model_iter0010.hdf5"),
+    ("ISS", f"{T100}/tBL_WSe2_born/20260731_*/model_iter0010.hdf5"),
+    ("ISS\n+ line search", f"{T100}/tBL_WSe2_born/20260913_*random32*/model_iter0010.hdf5"),
     ("multislice", f"{T100}/tBL_WSe2_multislice/20260731_*/model_iter0010.hdf5"),
 ]
 SLICES = (0, 11)  # first and last slice; titles stay in Å (z = index * dz, dz = 1 Å)

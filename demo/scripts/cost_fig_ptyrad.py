@@ -267,7 +267,7 @@ def plot_figs(rows):
                 if pts:
                     xs, ys = zip(*pts, strict=True)
                     ax.plot(xs, ys, color=colors[name], marker=markers[name],
-                            ms=6, lw=2.0, label=name)
+                            ms=6, lw=2.0, label=LABEL_MAP.get(name, name))
             ax.set_xscale("log", base=2)
             ax.set_xticks(list(slices_for(B)))
             ax.set_xticklabels([str(s) for s in slices_for(B)])
@@ -288,6 +288,14 @@ def plot_figs(rows):
         fig.savefig(f"{DEMO}/{fname}", facecolor="white")
         plt.close(fig)
         print(f"saved {DEMO}/{fname}")
+
+
+LABEL_MAP = {
+    "Born, parallel": "ISS, parallel",
+    "Born, low memory (chunk 1)": "ISS, low memory (chunk 1)",
+    "Born, low memory (chunk 4)": "ISS, low memory (chunk 4)",
+    "Born + line search": "ISS + line search",
+}
 
 
 def plot_from_csv():
