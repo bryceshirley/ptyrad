@@ -273,9 +273,7 @@ def strang_forward(object_patches, probe, H_tuple, omode_occu=None, eps=1e-10):
     #            = |F[(e^A e^B)^N P']|^2
     # where P' = e^A/2 P is the initial condition after a half-step Fresnel propagation.
 
-    # Is the detector wave error second order?  Yes, because the final half-step is a 
-    # pure phase in k-space, so it cannot change |FFT(psi)|^2 and would only cost an FFT.
-    
+    # Is the detector wave error second order? 
     
     # Initial half-drift into the first slice
     psi = ifft2(H_half[:, None, None] * fft2(psi))
