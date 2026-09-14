@@ -1,6 +1,6 @@
 """N-sweep on tBL-WSe2: born vs multislice at fixed total thickness (12 A).
 
-Measures, by reconstruction, the paper's claim that the first-Born inter-slice
+Measures, by reconstruction, the paper's claim that the ISS inter-slice
 error GROWS with N (eps1 ~ (Phi^2/2)(1-1/N)) while the multislice operator only
 improves with finer slicing. N=1 is the anchor: the two models are identical
 there. 20 iterations each, all other hyperparameters exactly the paper runs'.

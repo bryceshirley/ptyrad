@@ -39,7 +39,7 @@ pb, pm = pb[c:-c, c:-c], pm[c:-c, c:-c]
 lo = min(np.percentile(pb,1), np.percentile(pm,1))
 hi = max(np.percentile(pb,99), np.percentile(pm,99))
 fig, ax = plt.subplots(1, 2, figsize=(9.2, 4.6))
-for a, im, t in ((ax[0], pb, "first Born"), (ax[1], pm, "multislice")):
+for a, im, t in ((ax[0], pb, "ISS"), (ax[1], pm, "multislice")):
     a.imshow(im, cmap="gray", vmin=lo, vmax=hi); a.set_axis_off()
     a.set_title(t, fontsize=11)
 px = 10.0/dx; ny, nx = pb.shape
@@ -52,7 +52,7 @@ itb, lb, tb = parse(LOGB, 80); itm, lm, tm = parse(LOGM, 80)
 print("iter80: born %.4f (%.1f s/it), ms %.4f (%.1f s/it)" % (lb[-1], tb[-1]/80, lm[-1], tm[-1]/80))
 fig, (a1, a2) = plt.subplots(1, 2, figsize=(11, 4))
 for a, xb, xm in ((a1, itb, itm), (a2, tb, tm)):
-    a.semilogy(xb, lb, color="tab:blue", lw=1.5, label="first Born")
+    a.semilogy(xb, lb, color="tab:blue", lw=1.5, label="ISS")
     a.semilogy(xm, lm, color="tab:green", lw=1.5, label="multislice")
     a.grid(True, which="both", ls=":", alpha=0.5); a.legend()
     a.set_ylabel("total loss")

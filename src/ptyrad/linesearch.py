@@ -1,5 +1,5 @@
 """
-Exact quartic line search for the first-Born (single-scattering) engine.
+Exact quartic line search for the ISS (inter-slice single-scattering) engine.
 
 Implements §3 of LINESEARCH_BORN_SPEC.md: preconditioned autograd direction,
 direction response from one extra forward evaluation (no hand-derived adjoint
@@ -9,7 +9,7 @@ against the exactly-updated field.
 
 The function contract here is pinned by test/test_linesearch_oracle.py; the
 docstring of that file is the authoritative API description. Shapes follow
-forward_models/born.py:
+forward_models/iss.py:
 
     object_patches : (B, omode, Nz, Ny, Nx, 2)  float, [..., 0]=amp, [..., 1]=phase
     probe          : (B|1, pmode, Ny, Nx)       complex
@@ -36,7 +36,7 @@ import torch
 from torch.fft import fft2, fftshift, ifft2
 
 # §6: floors. DN_EPS is float32 eps, used on the preconditioner denominators.
-DP_EPS = 1e-10  # matches forward_models/born.py intensity floor
+DP_EPS = 1e-10  # matches forward_models/iss.py intensity floor
 SQRT_FLOOR = 1e-12  # clamp inside any sqrt of a model intensity
 DN_EPS = float(torch.finfo(torch.float32).eps)  # ≈ 1.19e-7
 
@@ -67,7 +67,7 @@ def _compiled(fn):
 def _fields_from_complex(O, probe, H):
     """Detector-plane field from complex object O (B, omode, Nz, Ny, Nx).
 
-    Same maths as forward_models/born.py::firstborn_forward up to (and
+    Same maths as forward_models/iss.py::iss_forward up to (and
     excluding) the intensity reduction; F is exactly affine in (O - 1) and
     exactly linear in the probe — the two facts the line search rests on
     (spec §1)."""
@@ -79,7 +79,7 @@ def _fields_from_complex(O, probe, H):
     return probe_k.squeeze(3) + scattered  # (B, pmode, omode, Ny, Nx)
 
 
-def firstborn_fields(object_patches, probe, H):
+def iss_fields(object_patches, probe, H):
     """Detector field from PtyRAD (amp, phase) patches. Dtype-preserving."""
     O = torch.polar(object_patches[..., 0], object_patches[..., 1])
     return _fields_from_complex(O, probe, H)
@@ -89,7 +89,7 @@ def dp_from_fields(F, omode_occu, eps=DP_EPS):
     """§4.2 unit map: PtyRAD model DP from the per-mode detector field.
 
     dp = fftshift2( sum_{pmode,omode} |F|^2 * occu_o/(Nx*Ny) + eps ), matching
-    firstborn_forward exactly (pinned by oracle test 3b). Note the per-omode
+    iss_forward exactly (pinned by oracle test 3b). Note the per-omode
     occupancy sits INSIDE the mode sum — it is not a scalar when omode > 1."""
     Ny, Nx = F.shape[-2:]
     nw = (omode_occu / (Nx * Ny)).view(1, 1, -1, 1, 1)
@@ -492,7 +492,7 @@ def linesearch_batch_update(
         # D_P = F(q; g2): F is linear in P, so one ordinary forward with q in
         # place of P at the UPDATED object — phi is rebuilt from q inside.
         patches2 = torch.stack([obja, objp], dim=-1).unsqueeze(0)
-        D_P = firstborn_fields(patches2, q, H)
+        D_P = iss_fields(patches2, q, H)
         v_p, w_p = response_terms(F, D_P, omode_occu)
         if intensity_postmap is not None:
             v_p, w_p = intensity_postmap(v_p), intensity_postmap(w_p)
@@ -512,7 +512,7 @@ def linesearch_batch_update(
 
 
 # --------------------------------------------------------------------------- #
-# Model-layer wiring: one view update on a PtychoAD first-Born model           #
+# Model-layer wiring: one view update on a PtychoAD ISS model           #
 # --------------------------------------------------------------------------- #
 
 
@@ -634,7 +634,7 @@ def _shift_views(x, shifts, grid):
 def linesearch_model_update_batched(
     model, indices, config=None, state=None, update_probe=True, loss_fn=None, H=None
 ):
-    """Joint §3 update over a batch of B views on a PtychoAD first-Born model.
+    """Joint §3 update over a batch of B views on a PtychoAD ISS model.
 
     The ptypy-batched structure: the object gradient scatter-accumulates into
     the full canvas (autograd does this for free through a differentiable

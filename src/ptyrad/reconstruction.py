@@ -804,7 +804,7 @@ def recon_step(
             
             # ACCUMULATE BATCH ILLUMINATION
             if precond_canvas is not None:
-                model_instance.accumulate_firstborn_preconditioner(batch, precond_canvas)
+                model_instance.accumulate_iss_preconditioner(batch, precond_canvas)
 
             if (batch_idx + 1) % grad_accumulation == 0 or (batch_idx + 1) == len(batches):
                 if acc is not None:

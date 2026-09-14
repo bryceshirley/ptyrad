@@ -18,7 +18,7 @@ RUN = ("20260731_full_N16384_dp128_flipT100_random32_p6_1obj_12slice_dz1_"
        "plr1e-4_oalr5e-4_oplr5e-4_orblur0.5_ozblur1.0_mamp0.03_4.0_"
        "oathr0.98_oposc_sng1.0_spr0.1")
 FILE_PATHS = {
-    "first Born": os.path.join(BASE, "tBL_WSe2_born", RUN, "loss_results.txt"),
+    "ISS": os.path.join(BASE, "tBL_WSe2_born", RUN, "loss_results.txt"),
     "multislice": os.path.join(BASE, "tBL_WSe2_multislice", RUN, "loss_results.txt"),
 }
 OUT = "/home/dnz75396/ptypy/draft_paper/electron_loss_comparison.png"
@@ -47,7 +47,7 @@ def parse_log_file(filepath):
 
 def main():
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11, 4))
-    colors = {"first Born": "tab:blue", "multislice": "tab:green"}
+    colors = {"ISS": "tab:blue", "multislice": "tab:green"}
     for label, path in FILE_PATHS.items():
         it, loss, cum = parse_log_file(path)
         n = len(it)

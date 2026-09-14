@@ -3,7 +3,7 @@
 Same layout and conventions as recon_fig_paper.py's tbl_figure (the paper's
 electron_recon_tblwse2.png): per-slice phase at z = 3 and 11 Å, central crop
 c = 176, one common colour scale, 1 nm scale bar — but three rows (first
-Born, first Born + line search, multislice), each at its iter-0010
+Born, ISS + line search, multislice), each at its iter-0010
 checkpoint from the matched test_100 runs. No reconstruction is run.
 """
 

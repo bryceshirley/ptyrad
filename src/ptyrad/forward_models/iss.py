@@ -18,7 +18,7 @@ from ptyrad.utils import fftshift2, ifftshift2
 
 
 @torch.compile(mode="max-autotune")
-def firstborn_forward(
+def iss_forward(
     object_patches: torch.Tensor,
     probe: torch.Tensor,
     H: torch.Tensor,
@@ -27,7 +27,7 @@ def firstborn_forward(
     linearise_obj: bool = False,
 ) -> torch.Tensor:
     """
-    Fully Vectorized First-Born Forward Model.
+    Fully Vectorized ISS Forward Model.
     """
     object_patches = object_patches.contiguous()
     probe = probe.contiguous()
@@ -89,7 +89,7 @@ def ifftshift2(x: torch.Tensor) -> torch.Tensor:
     return ifftshift(x, dim=(-2, -1))
 
 
-class FirstBornForwardFunction(torch.autograd.Function):
+class ISSForwardFunction(torch.autograd.Function):
     @staticmethod
     def forward(ctx, object_patches, probe, H, omode_occu, eps, linearise_obj):
         object_patches = object_patches.contiguous()
@@ -160,7 +160,7 @@ class FirstBornForwardFunction(torch.autograd.Function):
         grad_Psi_hat = grad_I_k * Psi_hat_k
         grad_probe_k_dir = grad_Psi_hat.unsqueeze(3)
 
-        # 4. First-Born Scattering Sum Adjoint
+        # 4. ISS Scattering Sum Adjoint
         grad_scattered_unsqueezed = grad_Psi_hat.unsqueeze(3)
         grad_fft_obj_Psi = grad_scattered_unsqueezed * H
 
@@ -207,11 +207,11 @@ class FirstBornForwardFunction(torch.autograd.Function):
         return grad_object_patches, grad_probe, None, None, None, None
 
 
-class FirstBornLowMemFunction(torch.autograd.Function):
-    """Slice-looped first Born with a low-memory hand adjoint.
+class ISSLowMemFunction(torch.autograd.Function):
+    """Slice-looped ISS with a low-memory hand adjoint.
 
-    The parallel formulation (firstborn_forward + autograd, or the
-    FirstBornForwardFunction above) materialises (B, pmode, omode, Nz, Ny, Nx)
+    The parallel formulation (iss_forward + autograd, or the
+    ISSForwardFunction above) materialises (B, pmode, omode, Nz, Ny, Nx)
     intermediates in forward and backward, so peak memory grows as
     O(batch x slices). Here both passes loop over slices: the only stored
     per-slice quantity is the unscattered illumination phi_j = IFFT[H_j FFT P]
@@ -220,8 +220,8 @@ class FirstBornLowMemFunction(torch.autograd.Function):
     low-memory Born of the ptypy reference engine.
 
     Gradients follow torch's convention (z.grad = 2 dL/dz*) and are validated
-    against autograd of firstborn_forward in test/test_born_lowmem.py.
-    (NOTE: FirstBornForwardFunction above does NOT pass that check — its
+    against autograd of iss_forward in test/test_born_lowmem.py.
+    (NOTE: ISSForwardFunction above does NOT pass that check — its
     object gradient is exactly half and its probe gradient mishandles the
     omode dimension; it is not used by the reconstruction path.)
     """
@@ -324,21 +324,21 @@ class FirstBornLowMemFunction(torch.autograd.Function):
                 None, None, None, None, None)
 
 
-def firstborn_forward_lowmem(object_patches, probe, H, omode_occu=None,
+def iss_forward_lowmem(object_patches, probe, H, omode_occu=None,
                              eps=1e-10, linearise_obj=False, slice_chunk=4):
-    """Low-memory first Born: O(batch x slice_chunk) + O(slices) peak
-    workspace (see FirstBornLowMemFunction). slice_chunk trades the slice
+    """Low-memory ISS: O(batch x slice_chunk) + O(slices) peak
+    workspace (see ISSLowMemFunction). slice_chunk trades the slice
     loop's launch/traffic overhead against memory: 1 = minimum memory,
     larger chunks approach the parallel model's wall clock (at large batch
     the per-chunk FFTs already saturate the GPU, so a modest chunk closes
-    most of the gap). Same interface and output as firstborn_forward."""
-    return FirstBornLowMemFunction.apply(
+    most of the gap). Same interface and output as iss_forward."""
+    return ISSLowMemFunction.apply(
         object_patches, probe, H, omode_occu, eps, linearise_obj, slice_chunk
     )
 
 
 @torch.compile(mode="max-autotune")
-def firstborn_forward_analytical(
+def iss_forward_analytical(
     object_patches: torch.Tensor,
     probe: torch.Tensor,
     H: torch.Tensor,
@@ -347,9 +347,9 @@ def firstborn_forward_analytical(
     linearise_obj: bool = False,
 ) -> torch.Tensor:
     """
-    Fully Vectorized First-Born Forward Model with Optimized Analytical Custom Autograd.
+    Fully Vectorized ISS Forward Model with Optimized Analytical Custom Autograd.
     """
-    return FirstBornForwardFunction.apply(object_patches, probe, H, omode_occu, eps, linearise_obj)
+    return ISSForwardFunction.apply(object_patches, probe, H, omode_occu, eps, linearise_obj)
 
 
 @torch.compile(mode="max-autotune")

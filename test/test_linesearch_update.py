@@ -45,7 +45,7 @@ def _problem(seed_obj=42, seed_probe=41, phase_max=0.3):
 
 def _Q(obja, objp, probe, H, I_dat, omega, occu):
     patches = torch.stack([obja, objp], dim=-1).unsqueeze(0)
-    u = ls.dp_from_fields(ls.firstborn_fields(patches, probe, H), occu)
+    u = ls.dp_from_fields(ls.iss_fields(patches, probe, H), occu)
     return float((omega * (u - I_dat).square()).sum())
 
 
@@ -84,7 +84,7 @@ def test_update_object_only_and_probe_branch_exactness():
     st = ls.LineSearchState()
 
     patches0 = torch.stack([obja, objp], dim=-1).unsqueeze(0)
-    F0 = ls.firstborn_fields(patches0, probe, H)
+    F0 = ls.iss_fields(patches0, probe, H)
 
     probe_out, diag = ls.linesearch_batch_update(
         obja, objp, probe, H, I_dat, mask, occu, cfg, st, update_probe=False
@@ -99,7 +99,7 @@ def test_update_object_only_and_probe_branch_exactness():
     d = st.disp_prev / a
     D = ls.direction_response(patches0, d, probe, H)
     patches1 = torch.stack([obja, objp], dim=-1).unsqueeze(0)
-    F1 = ls.firstborn_fields(patches1, probe, H)
+    F1 = ls.iss_fields(patches1, probe, H)
     err = (F1 - (F0 + a * D)).abs().max() / F0.abs().max()
     assert err < 5e-6, f"updater leaked out of the affine parameterisation: {err:.2e}"
 

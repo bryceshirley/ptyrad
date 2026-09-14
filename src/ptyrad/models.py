@@ -337,9 +337,9 @@ class PtychoAD(torch.nn.Module):
         """Dispatches forward model evaluation to specialized math engines."""
         if self.solver_type == "born":
             if self.born_iterations == 1:
-                from ptyrad.forward_models import firstborn_forward
+                from ptyrad.forward_models import iss_forward
 
-                dp_fwd = firstborn_forward(object_patches, probes, propagators, self.omode_occu)
+                dp_fwd = iss_forward(object_patches, probes, propagators, self.omode_occu)
             else:
                 from ptyrad.forward_models import born_forward
 
@@ -463,7 +463,7 @@ class PtychoAD(torch.nn.Module):
         return dp_fwd
 
     @torch.no_grad()
-    def accumulate_firstborn_preconditioner(self, batch_indices, precond_canvas):
+    def accumulate_iss_preconditioner(self, batch_indices, precond_canvas):
         """
         Builds the global intensity map of the unscattered probe for preconditioning.
         Projects the minibatch illumination onto a global canvas matching the object size.
@@ -490,9 +490,15 @@ class PtychoAD(torch.nn.Module):
         NX_glob = self.opt_obja.shape[-1]
         flat_linear_idx = flat_y * NX_glob + flat_x
         
-        # Accumulate using atomic index_add_
+        # Accumulate using atomic index_add_. get_probes returns a single
+        # shared probe (B=1) when shift_probes is off, while the scatter
+        # indices span the whole minibatch -- expand so the sizes agree.
+        B_pos = obj_ROI_grid_y.shape[0]
         for z in range(Nz):
-            p_int = probe_intensity[:, z, :, :].reshape(-1)
+            p_z = probe_intensity[:, z, :, :]
+            if p_z.shape[0] != B_pos:
+                p_z = p_z.expand(B_pos, -1, -1)
+            p_int = p_z.reshape(-1)
             for m in range(self.opt_obja.shape[0]):
                 precond_canvas[m, z].view(-1).index_add_(0, flat_linear_idx, p_int)
                 

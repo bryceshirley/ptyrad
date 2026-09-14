@@ -51,7 +51,7 @@ def tbl_figure():
              np.percentile(pm[list(slices)], 99))
     ncol = len(slices)
     fig, axes = plt.subplots(2, ncol, figsize=(3.4 * ncol, 7.0))
-    for r, (stack, rname) in enumerate(((pb, "first Born"),
+    for r, (stack, rname) in enumerate(((pb, "ISS"),
                                         (pm, "multislice"))):
         for cix, j in enumerate(slices):
             ax = axes[r, cix]

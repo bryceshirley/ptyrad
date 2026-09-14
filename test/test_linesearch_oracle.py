@@ -10,15 +10,15 @@ silent at runtime — do not weaken their tolerances.
 Expected production API (module `ptyrad.linesearch`), the contract for the
 implementation session:
 
-    firstborn_fields(object_patches, probe, H) -> F
+    iss_fields(object_patches, probe, H) -> F
         Complex detector-plane field per mode, UNSHIFTED k-space, shape
         (B, pmode, omode, Ny, Nx). Same maths as
-        forward_models.born.firstborn_forward up to (and excluding) the
+        forward_models.iss.iss_forward up to (and excluding) the
         intensity reduction. Dtype-preserving: float64/complex128 inputs give
         complex128 fields.
 
     dp_from_fields(F, omode_occu, eps=1e-10) -> dp
-        The §4.2 unit map, matching firstborn_forward EXACTLY:
+        The §4.2 unit map, matching iss_forward EXACTLY:
         fftshift2( sum_{pmode,omode} |F|^2 * omode_occu/(Nx*Ny) + eps ),
         shape (B, Ny, Nx).
 
@@ -81,7 +81,7 @@ from torch.fft import fft2, fftshift, ifft2
 
 torch.manual_seed(0)
 
-EPS_DP = 1e-10  # eps added inside firstborn_forward's intensity reduction
+EPS_DP = 1e-10  # eps added inside iss_forward's intensity reduction
 
 
 def _ls():
@@ -103,7 +103,7 @@ def fftshift2(x):
 
 def ref_fields_from_complex(O, probe, H):
     """Detector-plane field from complex object O (B, omode, Nz, Ny, Nx).
-    Mirrors forward_models/born.py::firstborn_forward lines 44-77."""
+    Mirrors forward_models/iss.py::iss_forward lines 44-77."""
     Ny, Nx = O.shape[-2:]
     probe_k = fft2(probe).view(-1, probe.shape[1], 1, 1, Ny, Nx)
     psi = ifft2(H * probe_k)  # (B, pmode, 1|omode, Nz, Ny, Nx)
@@ -294,7 +294,7 @@ def test_3_quartic_parity_ptyrad_units():
     obj = make_object(B, omode, Nz, Ny, Nx, dtype=torch.float64, seed=14)
     I_dat, _, omega = make_data(15, B, omode, Nz, Ny, Nx, pmode, occu)
 
-    F = ls.firstborn_fields(obj, probe, H)
+    F = ls.iss_fields(obj, probe, H)
     assert F.shape == (B, pmode, omode, Ny, Nx)
     assert torch.allclose(F, ref_fields(obj, probe, H), rtol=1e-10, atol=1e-12)
 
@@ -321,11 +321,11 @@ def test_3_quartic_parity_ptyrad_units():
 
 def test_3b_unit_map_matches_production_forward():
     """§4.2 pin against the actual production forward: dp_from_fields applied
-    to firstborn_fields must reproduce forward_models.born.firstborn_forward
+    to iss_fields must reproduce forward_models.iss.iss_forward
     (float32, eager) to float32 precision, including the +eps floor and the
     omode occupancy weights."""
     ls = _ls()
-    from ptyrad.forward_models import firstborn_forward
+    from ptyrad.forward_models import iss_forward
 
     B, omode, Nz, Ny, Nx, pmode = 2, 2, 3, 32, 32, 2
     occu = torch.tensor([0.7, 0.3], dtype=torch.float32)
@@ -333,8 +333,8 @@ def test_3b_unit_map_matches_production_forward():
     H = make_H(Nz, Ny, Nx, dtype=torch.complex64)
     obj = make_object(B, omode, Nz, Ny, Nx, dtype=torch.float32, seed=18)
 
-    dp_prod = firstborn_forward(obj, probe, H, occu)
-    dp_ours = ls.dp_from_fields(ls.firstborn_fields(obj, probe, H), occu)
+    dp_prod = iss_forward(obj, probe, H, occu)
+    dp_ours = ls.dp_from_fields(ls.iss_fields(obj, probe, H), occu)
     assert dp_ours.shape == dp_prod.shape
     scale = dp_prod.abs().max()
     assert torch.allclose(dp_ours, dp_prod, rtol=1e-5, atol=1e-6 * scale)
@@ -366,7 +366,7 @@ def test_4_affine_exactness():
         objp = make_object(B, omode, Nz, Ny, Nx, dtype=torch.float32, seed=21)[0, ..., 1]
         patches = torch.stack([obja, objp], dim=-1).unsqueeze(0)
 
-        F = ls.firstborn_fields(patches, probe, H)
+        F = ls.iss_fields(patches, probe, H)
         u_p = ls.dp_from_fields(F, occu)
         d = make_direction(B, omode, Nz, Ny, Nx, dtype=torch.complex64, seed=22, scale=0.4)
         D = ls.direction_response(patches, d, probe, H)
@@ -380,7 +380,7 @@ def test_4_affine_exactness():
 
         ls.apply_object_step(obja, objp, float(a), d[0])
         patches2 = torch.stack([obja, objp], dim=-1).unsqueeze(0)
-        F2 = ls.firstborn_fields(patches2, probe, H)
+        F2 = ls.iss_fields(patches2, probe, H)
         u2 = ls.dp_from_fields(F2, occu)
 
         F_pred = F + a * D
@@ -395,7 +395,7 @@ def test_4_affine_exactness():
     obja = make_object(B, omode, Nz, Ny, Nx, dtype=torch.float32, seed=21)[0, ..., 0]
     objp = make_object(B, omode, Nz, Ny, Nx, dtype=torch.float32, seed=21)[0, ..., 1]
     patches = torch.stack([obja, objp], dim=-1).unsqueeze(0)
-    F = ls.firstborn_fields(patches, probe, H)
+    F = ls.iss_fields(patches, probe, H)
     d = make_direction(B, omode, Nz, Ny, Nx, dtype=torch.complex64, seed=22, scale=0.4)
     D = ls.direction_response(patches, d, probe, H)
     a = 0.5
@@ -403,7 +403,7 @@ def test_4_affine_exactness():
     delta = dO * torch.polar(torch.ones_like(objp), -objp)
     obja_w = obja + delta.real
     objp_w = objp + delta.imag / obja.clamp_min(1e-6)
-    F_wrong = ls.firstborn_fields(torch.stack([obja_w, objp_w], dim=-1).unsqueeze(0), probe, H)
+    F_wrong = ls.iss_fields(torch.stack([obja_w, objp_w], dim=-1).unsqueeze(0), probe, H)
     wrong_err = (F_wrong - (F + a * D)).abs().max() / F.abs().max()
     assert wrong_err > 100 * 5e-6, "tripwire has lost its teeth — enlarge a or d"
 
@@ -426,7 +426,7 @@ def test_5_probe_response():
     I_dat, _, omega = make_data(25, B, omode, Nz, Ny, Nx, pmode, occu)
 
     # object step (a, d) taken first — probe search runs against the updated field
-    F = ls.firstborn_fields(obj, probe, H)
+    F = ls.iss_fields(obj, probe, H)
     d = make_direction(B, omode, Nz, Ny, Nx, dtype=torch.complex128, seed=26, scale=0.03)
     D = ls.direction_response(obj, d, probe, H)
     u_p = ls.dp_from_fields(F, occu)
@@ -445,14 +445,14 @@ def test_5_probe_response():
 
     # probe direction and its response: one forward with q in place of P
     q = 0.05 * make_probe(B, pmode, Ny, Nx, dtype=torch.complex128, seed=27)
-    D_P = ls.firstborn_fields(obj2, q, H)
+    D_P = ls.iss_fields(obj2, q, H)
 
     # linearity in P: the forward difference is EXACT
-    diff = ls.firstborn_fields(obj2, probe + q, H) - ls.firstborn_fields(obj2, probe, H)
+    diff = ls.iss_fields(obj2, probe + q, H) - ls.iss_fields(obj2, probe, H)
     assert torch.allclose(D_P, diff, rtol=1e-9, atol=1e-11 * F.abs().max())
 
     # consistency of F_upd with a true re-forward at g2 (sanity, float64 tight)
-    assert torch.allclose(F_upd, ls.firstborn_fields(obj2, probe, H), rtol=1e-9,
+    assert torch.allclose(F_upd, ls.iss_fields(obj2, probe, H), rtol=1e-9,
                           atol=1e-10 * F.abs().max())
 
     v_q, w_q = ls.response_terms(F_upd, D_P, occu)
@@ -599,7 +599,7 @@ def test_8_joint_step_and_per_slice_seam():
     # difference form against the production forward
     O = torch.polar(obja, objp).unsqueeze(0)
     obj_stepped = torch.stack([(O + d).abs().squeeze(0), (O + d).angle().squeeze(0)], dim=-1)
-    D_diff = ls.firstborn_fields(obj_stepped.unsqueeze(0), probe, H) - ls.firstborn_fields(
+    D_diff = ls.iss_fields(obj_stepped.unsqueeze(0), probe, H) - ls.iss_fields(
         patches, probe, H
     )
     assert torch.allclose(D, D_diff, rtol=1e-4, atol=2e-5 * D.abs().max())

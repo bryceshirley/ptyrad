@@ -1,4 +1,4 @@
-"""PSO warm-start test: 3 iterations of line-search first Born as a
+"""PSO warm-start test: 3 iterations of line-search ISS as a
 preconditioner for the tuned multislice (Adam) reconstruction, vs the
 cold-start multislice reference. Honest accounting: the warm curve includes
 its 3 seed iterations on the pass axis and the seed's wall time on the time
@@ -65,7 +65,7 @@ def main():
         for n, ls_, t in zip(ci, cl, cold_t, strict=True):
             wr.writerow(["multislice cold", n, ls_, f"{t:.2f}"])
         for n, ls_, t in zip(si, sl, seed_tm, strict=True):
-            wr.writerow(["LS Born seed", n, ls_, f"{t:.2f}"])
+            wr.writerow(["LS ISS seed", n, ls_, f"{t:.2f}"])
         for n, ls_, t in zip(warm_pass, wl, warm_t, strict=True):
             wr.writerow(["multislice warm", n, ls_, f"{t:.2f}"])
 
@@ -79,7 +79,7 @@ def main():
         ax.plot(cx, cl, color=cold_c, lw=2, solid_capstyle="round",
                 label="Multislice, cold start")
         ax.plot(sx, sl, color=warm_c, lw=2, ls=(0, (3, 2)),
-                label="3-iter line-search Born seed")
+                label="3-iter line-search ISS seed")
         ax.plot(wx, wl, color=warm_c, lw=2, solid_capstyle="round",
                 label="Multislice, warm start")
         ax.annotate(f"{cl[-1]:.4f}", (cx[-1], cl[-1]), xytext=(5, 5),
@@ -98,7 +98,7 @@ def main():
     axes[0].set_ylabel("Total loss", color=ink)
     axes[0].legend(frameon=False, fontsize=9, loc="upper right", labelcolor=ink)
     fig.suptitle(
-        "PSO: 3 exact-line-search Born iterations as a multislice preconditioner "
+        "PSO: 3 exact-line-search ISS iterations as a multislice preconditioner "
         "(batch 32, identical Adam/constraints)",
         fontsize=10, color=ink,
     )

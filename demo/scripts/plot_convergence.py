@@ -1,6 +1,6 @@
 """
 Convergence comparison on tBL_WSe2 (16384 views, dp128, 12 slices, batch 32):
-standard first Born (Adam), exact-line-search first Born, multislice (Adam).
+standard ISS (Adam), exact-line-search ISS, multislice (Adam).
 Parses the per-iteration `Iter: N, Total Loss: X, ..., in T` lines that
 loss_logger writes, so all three series use the identical loss metric.
 

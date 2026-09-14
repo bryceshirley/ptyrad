@@ -17,9 +17,9 @@ shape and time compilation, not the maths):
                         slice; local impl — the tree's multislice_forward is
                         Strang-subsliced and suzukitrotter is 4th order,
                         both do several propagations per slice)
-  Born, parallel        forward_models.born.firstborn_forward + autograd
+  Born, parallel        forward_models.iss.iss_forward + autograd
                         (materialises the O(batch x N) slice stacks)
-  Born, low memory      firstborn_forward_lowmem: slice-looped hand adjoint,
+  Born, low memory      iss_forward_lowmem: slice-looped hand adjoint,
                         stores ONE unscattered field per slice (batch-free
                         for a shared probe) + the O(batch) exit field —
                         the counterpart of ptypy's low-memory Born
@@ -56,8 +56,8 @@ import matplotlib.pyplot as plt
 from torch.fft import fft2, fftshift, ifft2
 
 import ptyrad.linesearch as ls
-from ptyrad.forward_models import firstborn_forward
-from ptyrad.forward_models.born import firstborn_forward_lowmem
+from ptyrad.forward_models import iss_forward
+from ptyrad.forward_models.iss import iss_forward_lowmem
 
 DEMO = "/home/dnz75396/ptyrad/demo"
 CKPT = sorted(glob.glob(
@@ -89,11 +89,11 @@ def plain_multislice(object_patches, probe, H, omode_occu, eps=EPS):
 
 
 def born_parallel(patches, probe, H3, occu):
-    return firstborn_forward(patches, probe, H3, occu)
+    return iss_forward(patches, probe, H3, occu)
 
 
 def born_lowmem(patches, probe, H3, occu, chunk):
-    return firstborn_forward_lowmem(patches, probe, H3, occu, EPS, False, chunk)
+    return iss_forward_lowmem(patches, probe, H3, occu, EPS, False, chunk)
 
 
 def time_one(call, reps):
@@ -190,7 +190,7 @@ def main():
             with torch.no_grad():
                 O0 = torch.polar(patches[..., 0], patches[..., 1]).contiguous()
                 try:
-                    I_dat = 1.02 * firstborn_forward(
+                    I_dat = 1.02 * iss_forward(
                         patches.detach(), probe_in, H3, occu)
                 except RuntimeError:
                     I_dat = None
@@ -200,22 +200,22 @@ def main():
                 ("multislice",
                  make_fwd_adj(lambda: plain_multislice(patches, probe, H2, occu),
                               patches, probe)),
-                ("Born, parallel",
+                ("ISS, parallel",
                  make_fwd_adj(lambda: born_parallel(patches, probe, H3, occu),
                               patches, probe)),
-                ("Born, low memory (chunk 1)",
+                ("ISS, low memory (chunk 1)",
                  make_fwd_adj(lambda: born_lowmem(patches, probe, H3, occu, 1),
                               patches, probe)),
-                ("Born, low memory (chunk 4)",
+                ("ISS, low memory (chunk 4)",
                  make_fwd_adj(lambda: born_lowmem(patches, probe, H3, occu, 4),
                               patches, probe)),
             ]
             if I_dat is not None:
                 series.append(
-                    ("Born + line search",
+                    ("ISS + line search",
                      make_ls_update(O0, probe_in, H3, I_dat, occu, Nz)))
             else:
-                rows.append(("Born + line search", B, Nz, float("nan"), float("nan")))
+                rows.append(("ISS + line search", B, Nz, float("nan"), float("nan")))
 
             for name, call in series:
                 try:
@@ -244,14 +244,14 @@ def plot_figs(rows):
     Linear y per panel — log y hides how much one model beats another; log x
     keeps the doubling grid of N readable. No suptitle: the caption belongs
     to the paper."""
-    colors = {"multislice": "#2a78d6", "Born, parallel": "#eb6834",
-              "Born, low memory (chunk 1)": "#1baf7a",
-              "Born, low memory (chunk 4)": "#e87ba4",
-              "Born + line search": "#eda100"}
-    markers = {"multislice": "o", "Born, parallel": "s",
-               "Born, low memory (chunk 1)": "^",
-               "Born, low memory (chunk 4)": "v",
-               "Born + line search": "D"}
+    colors = {"multislice": "#2a78d6", "ISS, parallel": "#eb6834",
+              "ISS, low memory (chunk 1)": "#1baf7a",
+              "ISS, low memory (chunk 4)": "#e87ba4",
+              "ISS + line search": "#eda100"}
+    markers = {"multislice": "o", "ISS, parallel": "s",
+               "ISS, low memory (chunk 1)": "^",
+               "ISS, low memory (chunk 4)": "v",
+               "ISS + line search": "D"}
     ink, muted = "#1a1a19", "#6b6a60"
     for key, ylabel, fname in (
         (3, "forward + adjoint (ms per batch)", "cost_ptyrad_time.png"),
@@ -304,7 +304,8 @@ def plot_from_csv():
         rd = csv.reader(f)
         next(rd)
         for name, B, Nz, ms, gb in rd:
-            rows.append((name, int(B), int(Nz), float(ms), float(gb)))
+            rows.append((LABEL_MAP.get(name, name), int(B), int(Nz),
+                         float(ms), float(gb)))
     plot_figs(rows)
 
 

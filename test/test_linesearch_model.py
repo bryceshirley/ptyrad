@@ -50,7 +50,7 @@ def _make_model():
     for y0, x0 in CROP_POS:
         win = obj_true[:, :, y0 : y0 + NY, x0 : x0 + NX]
         patches = torch.stack([win.abs(), win.angle()], dim=-1).unsqueeze(0)
-        dp = ls.dp_from_fields(ls.firstborn_fields(patches, probe.unsqueeze(0), H3d), occu)
+        dp = ls.dp_from_fields(ls.iss_fields(patches, probe.unsqueeze(0), H3d), occu)
         measurements.append(dp[0])
     measurements = torch.stack(measurements).clamp_min(0.0)
 
@@ -93,7 +93,7 @@ def _make_model():
 
 
 def test_wiring_forward_consistency():
-    """The line search's own forward (gathered window -> firstborn_fields ->
+    """The line search's own forward (gathered window -> iss_fields ->
     dp_from_fields) must reproduce model.forward for the same view — any
     mismatch means the crop grids, propagator stack, or unit map are wired
     wrong and the search would descend on the wrong problem."""
@@ -109,7 +109,7 @@ def test_wiring_forward_consistency():
         patches = torch.stack([obja, objp], dim=-1).unsqueeze(0)
         H = model.get_propagators_3d(model.get_propagators(idx)).detach()
         probe = model.get_probes(idx).detach()
-        dp_ours = ls.dp_from_fields(ls.firstborn_fields(patches, probe, H), model.omode_occu)
+        dp_ours = ls.dp_from_fields(ls.iss_fields(patches, probe, H), model.omode_occu)
         scale = dp_model.abs().max()
         assert torch.allclose(dp_ours, dp_model, rtol=1e-5, atol=1e-6 * scale), (
             f"view {index}: line-search forward disagrees with model.forward"

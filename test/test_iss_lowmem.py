@@ -1,9 +1,9 @@
-"""Gradient parity of the low-memory first-Born adjoint against autograd.
+"""Gradient parity of the low-memory ISS adjoint against autograd.
 
-FirstBornLowMemFunction must reproduce autograd of firstborn_forward to
+ISSLowMemFunction must reproduce autograd of iss_forward to
 float64 precision — forward values, object gradients, and probe gradients —
 including omode > 1 with unequal occupancies (the case that exposes the
-omode-scrambling bug in the older FirstBornForwardFunction), shared and
+omode-scrambling bug in the older ISSForwardFunction), shared and
 per-view probes, and both object parameterisations.
 """
 
@@ -16,8 +16,8 @@ import torch
 
 torch._dynamo.config.disable = True
 
-from ptyrad.forward_models import firstborn_forward
-from ptyrad.forward_models.born import firstborn_forward_lowmem
+from ptyrad.forward_models import iss_forward
+from ptyrad.forward_models.iss import iss_forward_lowmem
 
 
 def _setup(B, omode, Nz, Ny, Nx, pmode, Bp, seed=0):
@@ -46,12 +46,12 @@ def test_lowmem_matches_autograd(linearise, Bp, chunk):
 
     p1 = patches.clone().requires_grad_(True)
     pr1 = probe.clone().requires_grad_(True)
-    dp1 = firstborn_forward(p1, pr1, H, occu, 1e-10, linearise)
+    dp1 = iss_forward(p1, pr1, H, occu, 1e-10, linearise)
     (dp1 * cot).sum().backward()
 
     p2 = patches.clone().requires_grad_(True)
     pr2 = probe.clone().requires_grad_(True)
-    dp2 = firstborn_forward_lowmem(p2, pr2, H, occu, 1e-10, linearise, chunk)
+    dp2 = iss_forward_lowmem(p2, pr2, H, occu, 1e-10, linearise, chunk)
     (dp2 * cot).sum().backward()
 
     assert torch.allclose(dp1, dp2, rtol=1e-12, atol=1e-14)
@@ -66,11 +66,11 @@ def test_lowmem_default_occupancy_and_float32():
                               H.to(torch.complex64), cot.float())
     p1 = patches.clone().requires_grad_(True)
     pr1 = probe.clone().requires_grad_(True)
-    dp1 = firstborn_forward(p1, pr1, H, None)
+    dp1 = iss_forward(p1, pr1, H, None)
     (dp1 * cot).sum().backward()
     p2 = patches.clone().requires_grad_(True)
     pr2 = probe.clone().requires_grad_(True)
-    dp2 = firstborn_forward_lowmem(p2, pr2, H, None)
+    dp2 = iss_forward_lowmem(p2, pr2, H, None)
     (dp2 * cot).sum().backward()
     assert torch.allclose(dp1, dp2, rtol=1e-5, atol=1e-8)
     assert torch.allclose(p1.grad, p2.grad, rtol=1e-4,
