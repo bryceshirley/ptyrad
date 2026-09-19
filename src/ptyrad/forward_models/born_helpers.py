@@ -46,6 +46,62 @@ def _born_advance(scat, H, n):
     return ifft2(cs[..., :-1, :, :] * H[..., n + 1 :, :, :]), cs[..., -1, :, :]
 
 
+def born_fields_from_complex(
+    O: torch.Tensor,
+    probe: torch.Tensor,
+    H: torch.Tensor,
+    n_max: int,
+    coeffs: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """Detector-plane FIELD of the coefficient Born model from a complex object.
+
+    Same recursion as born.born_forward, stopped before the |.|^2 intensity
+    reduction: returns Psi(c) = D0 + sum_n c_n D_n of shape
+    (B, pmode, omode, Ny, Nx), unshifted k-space — directly comparable to
+    linesearch.iss_fields (equal to it at n_max=1, coeffs=None). Eager,
+    dtype-preserving (complex128 in -> complex128 out), autograd-friendly:
+    the exact line search differentiates through it for the direction
+    gradient at order M > 1.
+
+    O      : (B, omode, Nz, Ny, Nx) complex
+    coeffs : optional (n, 2) pseudo-complex float or (n,) complex tensor,
+             per-order detector weights (orders beyond n keep weight 1 is NOT
+             assumed — n must cover n_max); None = plain series.
+    """
+    B, omode, Nz, Ny, Nx = O.shape
+    obj = (O - 1.0).unsqueeze(1)  # (B, 1, omode, Nz, Ny, Nx)
+    probe_k = fft2(probe).view(-1, probe.shape[1], 1, 1, Ny, Nx)
+    Psi_state = ifft2(H * probe_k)
+    F = probe_k.squeeze(3).expand(B, -1, omode, -1, -1)
+    c = None
+    if coeffs is not None:
+        c = coeffs if torch.is_complex(coeffs) else torch.complex(coeffs[..., 0], coeffs[..., 1])
+        c = c.to(F.dtype)
+    n_orders = min(n_max, Nz)  # nilpotent termination
+    for n in range(n_orders):
+        scat = _born_scatter(obj, Psi_state, H, n)
+        if n < n_orders - 1:
+            Psi_state, D_n = _born_advance(scat, H, n)
+        else:
+            D_n = torch.sum(scat, dim=3)  # final order: no next bounce
+        F = F + (D_n if c is None else c[n] * D_n)
+    return F
+
+
+def born_fields(
+    object_patches: torch.Tensor,
+    probe: torch.Tensor,
+    H: torch.Tensor,
+    n_max: int,
+    coeffs: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """born_fields_from_complex from PtyRAD (amp, phase) patches
+    (B, omode, Nz, Ny, Nx, 2). Consistent with born.born_forward:
+    fftshift2(sum_modes |born_fields|^2 * occu/(Ny*Nx)) + eps reproduces it."""
+    O = torch.polar(object_patches[..., 0], object_patches[..., 1])
+    return born_fields_from_complex(O, probe, H, n_max, coeffs)
+
+
 def born_krylov_gram(
     object_patches: torch.Tensor,
     probe: torch.Tensor,

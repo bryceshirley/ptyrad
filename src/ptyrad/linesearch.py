@@ -262,14 +262,17 @@ def quartic_coeffs(e, v, w, omega):
     return c0, c1, c2, c3
 
 
-def _real_cubic_roots(c0, c1, c2, c3):
-    """Host-side §3 step-5 guards + np.roots. Returns the real candidate
-    roots, or None when the cubic is degenerate (caller takes the fallback):
-    non-finite coefficient, fewer than 2 coefficients after stripping
-    |c| < 1e-300, or no root with |imag| <= 1e-8*(1+|real|)."""
-    if not np.all(np.isfinite([c0, c1, c2, c3])):
+def _real_roots_ascending(coeffs_ascending):
+    """Host-side §3 step-5 guards + np.roots for a polynomial given by its
+    ascending coefficients [c0, c1, ...]. Returns the real candidate roots,
+    or None when the polynomial is degenerate (caller takes the fallback):
+    non-finite coefficient, fewer than 2 coefficients after stripping leading
+    |c| < 1e-300, or no root with |imag| <= 1e-8*(1+|real|). Shared by the
+    cubic (M = 1) and the degree-(4M-1) polynomial solves — identical policy,
+    just higher degree."""
+    if not np.all(np.isfinite(coeffs_ascending)):
         return None
-    coeffs = [c3, c2, c1, c0]
+    coeffs = list(coeffs_ascending)[::-1]  # descending for np.roots
     while coeffs and abs(coeffs[0]) < 1e-300:
         coeffs = coeffs[1:]
     if len(coeffs) < 2:
@@ -277,6 +280,12 @@ def _real_cubic_roots(c0, c1, c2, c3):
     roots = np.roots(coeffs)
     cands = [float(r.real) for r in roots if abs(r.imag) <= 1e-8 * (1.0 + abs(r.real))]
     return cands or None
+
+
+def _real_cubic_roots(c0, c1, c2, c3):
+    """§3 step-5 guards + np.roots for the quartic's cubic dQ/da (see
+    _real_roots_ascending for the shared policy)."""
+    return _real_roots_ascending([c0, c1, c2, c3])
 
 
 def solve_step_cubic(c0, c1, c2, c3, Qfun, fallback):
@@ -329,6 +338,204 @@ def line_search(e, v, w, omega, fallback, ls_damp=0.5, max_step=0.0, step_log=No
     if step_log is not None:
         step_log.append(a)
     return a
+
+
+# --------------------------------------------------------------------------- #
+# Polynomial line search at Born order M > 1 (polyls_hybrid_order_plan.md §3)  #
+# --------------------------------------------------------------------------- #
+# At order M the detector field is a degree-M polynomial in g, so along a ray
+# g + a*d it is F(a) = sum_{k<=M} a^k F_k and the Gaussian intensity objective
+# is an exact degree-4M polynomial in the scalar step. Everything below is the
+# degree-4M generalization of the quartic machinery above, with IDENTICAL
+# root-acceptance, damping and logging policy; at M = 1 it reduces to it
+# exactly (poly_line_search delegates for bit-identity).
+
+
+def _ray_nodes(M):
+    """M+1 interpolation nodes for the ray polynomial: 0 (the base forward is
+    free) plus the Chebyshev-Lobatto points on (0, 2]. a_k = 1 - cos(k pi / M),
+    k = 0..M — a_0 = 0 exactly, and M = 1 gives {0, 2}.
+
+    The plan (§3) calls for Chebyshev nodes on [-2, 2]; the symmetric set
+    cannot contain a = 0 exactly for every parity of M (the base-forward-free
+    requirement), so the one-sided Lobatto set on [0, 2] is used instead —
+    flagged in the implementation report. Vandermonde conditioning grows like
+    ~2.4^M, i.e. ~4e4 at M = 12: harmless in the float64 solve (the ray
+    oracle test pins this)."""
+    return [1.0 - float(np.cos(k * np.pi / M)) for k in range(M + 1)]
+
+
+def born_ray_coeffs(object_patches, d, probe, H, coeffs=None, M=1, F0=None):
+    """Ray-polynomial field stack: F(g + a d) = sum_{k=0}^{M} a^k F_k, returned
+    as (M+1, B, pmode, omode, Ny, Nx) in the field dtype.
+
+    v1 (interpolation): the coeffs-aware order-M FIELD forward
+    (born_helpers.born_fields) is evaluated at the M+1 ray nodes of
+    _ray_nodes (a = 0 is the base forward — pass F0 to reuse it), and the
+    (M+1)x(M+1) Vandermonde system is solved in float64/complex128. Exact up
+    to rounding: the field IS a degree-M polynomial in a, so there is no
+    interpolation error, only the conditioned solve. At M = 1 this reduces to
+    direction_response: F_1 = (F(g + 2d) - F(g)) / 2, exact by affinity.
+
+    object_patches : (B, omode, Nz, Ny, Nx, 2) float (amp, phase), or the
+                     complex object (B, omode, Nz, Ny, Nx) directly
+    d              : (B, omode, Nz, Ny, Nx) complex ray direction
+    coeffs         : optional (n>=M, 2) pseudo-complex or (n>=M,) complex Born
+                     detector coefficients (constant along the ray — the refit
+                     fires after the view sweep, plan §3)
+    """
+    from ptyrad.forward_models.born_helpers import born_fields_from_complex
+
+    if object_patches.is_complex():
+        O = object_patches
+    else:
+        O = torch.polar(object_patches[..., 0], object_patches[..., 1])
+    nodes = _ray_nodes(M)
+    fields = [
+        F0 if F0 is not None else born_fields_from_complex(O, probe, H, M, coeffs)
+    ]
+    for a in nodes[1:]:
+        fields.append(born_fields_from_complex(O + a * d, probe, H, M, coeffs))
+    out_dtype = fields[0].dtype
+    stack = torch.stack([f.to(torch.complex128) for f in fields])  # (M+1, ...)
+    V = np.vander(np.asarray(nodes, dtype=np.float64), increasing=True)
+    Vinv = torch.tensor(np.linalg.inv(V), dtype=torch.complex128, device=stack.device)
+    F_k = torch.tensordot(Vinv, stack, dims=([1], [0]))
+
+    # Noise floor: unlike the exact-algebra M = 1 response (v = w = 0 exactly
+    # for d = 0), interpolation leaves rounding-level residue in the F_k, so a
+    # degenerate direction would produce noise coefficients instead of the
+    # fallback (the polynomial analog of the spec §4.3 silent failure, in the
+    # opposite direction: garbage roots get accepted). Zero any order whose
+    # magnitude is below the solve's rounding bound eps * sum_i |Vinv_ki| *
+    # ||F(a_i)||_inf (per-node relative rounding through the linear solve),
+    # with a safety factor. The base field's precision sets the floor.
+    eps = torch.finfo(fields[0].real.dtype).eps
+    node_scale = torch.stack([f.abs().max().double() for f in fields])  # (M+1,)
+    noise = 32.0 * eps * (Vinv.abs() @ node_scale.to(Vinv.real.dtype))  # (M+1,)
+    for k in range(1, M + 1):
+        if F_k[k].abs().max() <= noise[k]:
+            F_k[k] = 0.0
+    return F_k.to(out_dtype)
+
+
+def poly_response_terms(F_stack, omode_occu):
+    """Per-pixel intensity coefficients along the ray: u(a) = u(0) + sum_{s>=1}
+    a^s U_s with U_s = fftshift2( sum_modes occu/(Ny Nx) * sum_{j+k=s}
+    Re(conj(F_j) F_k) ) — the same §4.2 transformation as dp_from_fields,
+    WITHOUT the +eps floor (constant: it lives in u, hence in e = u - I_dat).
+    Returns [U_1, ..., U_{2M}], each (B, Ny, Nx). At M = 1: U_1 = 2v,
+    U_2 = w of response_terms."""
+    M = F_stack.shape[0] - 1
+    Ny, Nx = F_stack.shape[-2:]
+    nw = (omode_occu / (Nx * Ny)).view(1, 1, -1, 1, 1)
+    U = []
+    for s in range(1, 2 * M + 1):
+        acc = None
+        for j in range(max(0, s - M), s // 2 + 1):
+            k = s - j
+            if j == k:
+                t = F_stack[j].abs().square()
+            else:
+                t = 2.0 * (F_stack[j].conj() * F_stack[k]).real
+            acc = t if acc is None else acc + t
+        U.append(_fftshift2(torch.sum(acc * nw, dim=(1, 2))))
+    return U
+
+
+def _poly_dq_terms(e, U_list, omega):
+    """Ascending coefficients g_k of dQ/da for Q(a) = sum omega (e +
+    sum_{s>=1} a^s U_s)^2, as one (4M,) float64 tensor (single device-to-host
+    transfer at the call site). With U_0 := e,
+
+        g_k = (k+1) * sum_r omega * sum_{s+t=k+1} U_s U_t,  k = 0..4M-1.
+
+    All inputs are cast to float64 BEFORE the products (spec §4.3/§6 — the
+    float32 overflow of sum(omega w^2) at early-reconstruction magnitudes
+    silently pins the run to the fallback step; same hazard at every M)."""
+    om = omega.double()
+    Us = [e.double()] + [u.double() for u in U_list]
+    n = len(Us) - 1  # 2M
+    gk = []
+    for k in range(2 * n):
+        p = k + 1  # power s+t contributing to a^k in dQ/da
+        acc = None
+        for s in range(max(0, p - n), p // 2 + 1):
+            t = p - s
+            term = om * Us[s] * Us[t]
+            if s != t:
+                term = 2.0 * term
+            acc = term if acc is None else acc + term
+        gk.append(float(p) * acc.sum())
+    return torch.stack(gk)
+
+
+def _poly_q_at(e, U_list, omega, a_vec):
+    """Q(a) for a vector of candidate steps, float64, one kernel group:
+    r(a) = e + sum_s a^s U_s built by Horner, (K,) out."""
+    om = omega.double()
+    e64 = e.double()
+    a = a_vec.view(-1, *([1] * e.dim()))  # (K, 1, 1, 1)
+    r = U_list[-1].double().unsqueeze(0).expand(a.shape[0], *e.shape).clone()
+    for u in reversed(U_list[:-1]):
+        r = r * a + u.double()
+    r = r * a + e64
+    return (om * r * r).sum(dim=tuple(range(1, r.dim())))
+
+
+def poly_line_search(e, U_list, omega, fallback, ls_damp=0.5, max_step=0.0, step_log=None):
+    """Exact damped step at Born order M: minimise the degree-4M polynomial
+    Q(a) = sum omega (e + sum_s a^s U_s)^2 along the ray. Same policy as
+    line_search in every respect — float64 coefficient sums (cast before
+    products), host-side np.roots on dQ/da, candidate accepted only if
+    STRICTLY below Q(0) else fallback, a *= ls_damp (fallback damped too),
+    optional symmetric clip, every step logged.
+
+    At M = 1 (len(U_list) == 2) this DELEGATES to line_search with
+    v = U_1 / 2, w = U_2 — bit-identical steps by construction (the /2 is an
+    exact power-of-two scaling), pinned by the regression test."""
+    if len(U_list) == 2:  # M = 1: the quartic path IS this path
+        return line_search(
+            e, 0.5 * U_list[0], U_list[1], omega,
+            fallback=fallback, ls_damp=ls_damp, max_step=max_step, step_log=step_log,
+        )
+    gk = _poly_dq_terms(e, U_list, omega).cpu().tolist()
+    cands = _real_roots_ascending(gk)
+    if cands is None:
+        a = fallback
+    else:
+        a_vec = torch.tensor([0.0, *cands], dtype=torch.float64, device=e.device)
+        qs = _poly_q_at(e, U_list, omega, a_vec).cpu().tolist()
+        best, bestq = None, qs[0]  # root must be STRICTLY below Q(0)
+        for cand, qa in zip(cands, qs[1:], strict=True):
+            if qa < bestq:
+                best, bestq = cand, qa
+        a = fallback if best is None else best
+    a *= ls_damp
+    if max_step > 0:
+        a = float(np.clip(a, -max_step, max_step))
+    a = float(a)
+    if step_log is not None:
+        step_log.append(a)
+    return a
+
+
+def ray_field_at(F_stack, a):
+    """F(a) = sum_k a^k F_k by Horner — the no-re-forward exact field update
+    at the accepted step (generalizes F <- F + a*D; plan §3 'probe step')."""
+    F = F_stack[-1]
+    for k in range(F_stack.shape[0] - 2, -1, -1):
+        F = F * a + F_stack[k]
+    return F
+
+
+def ray_intensity_at(u0, U_list, a):
+    """u(a) = u(0) + sum_s a^s U_s by Horner (generalizes u + 2av + a^2 w).
+    U_list must carry any linear intensity postmap already applied."""
+    r = U_list[-1]
+    for u in reversed(U_list[:-1]):
+        r = r * a + u
+    return u0 + r * a
 
 
 # --------------------------------------------------------------------------- #
@@ -398,6 +605,8 @@ def linesearch_batch_update(
     state=None,
     update_probe=True,
     intensity_postmap=None,
+    M=1,
+    coeffs=None,
 ):
     """One §3 batch update on full-frame tensors. Steps the object storage
     (obja, objp) in place and returns (probe, diagnostics) — the probe is
@@ -413,6 +622,13 @@ def linesearch_batch_update(
         (e.g. the detector blur that get_forward_meas applies after the §4.2
         expression). Linearity keeps the quartic exact; anything nonlinear
         voids the search.
+    M, coeffs : Born order and optional complex (>= M,) detector coefficients.
+        M = 1 with coeffs None is the exact-affine fast path above; otherwise
+        the ray-polynomial path (degree-4M search, plan §3) is taken: the
+        direction gradient comes from the coeffs-aware order-M forward, the
+        object step from poly_line_search, and the probe step (quartic at
+        EVERY order — the field is linear in P) runs against the polynomial-
+        updated field with no re-forward.
 
     Model-layer integration (per-view crop windows, probe shifts, constraint
     call sites — constraints fire per iteration, after the batch loop, so
@@ -423,14 +639,23 @@ def linesearch_batch_update(
     if probe.shape[0] != 1:
         raise ValueError("linesearch_batch_update expects a shared probe (B = 1 design point)")
     N = obja.shape[-3]
+    poly = M > 1 or coeffs is not None
+    if poly:
+        from ptyrad.forward_models.born_helpers import born_fields_from_complex
 
     # ---- step 1: forward, with leaves for both gradients (one backward) ----
     O_leaf = torch.polar(obja, objp).unsqueeze(0).detach().requires_grad_(True)
     P_leaf = probe.detach().clone().requires_grad_(update_probe)
-    if intensity_postmap is None and isinstance(cfg.direction_objective, str):
+    if not poly and intensity_postmap is None and isinstance(cfg.direction_objective, str):
         L, F, u_p = _fwd_loss(O_leaf, P_leaf, H, I_dat, mask, omode_occu, cfg.direction_objective)
     else:
-        F = _fields_from_complex(O_leaf, P_leaf, H)
+        # the direction gradient must come through the order-M coeffs-aware
+        # forward, not the order-1 field (plan §4.4)
+        F = (
+            born_fields_from_complex(O_leaf, P_leaf, H, M, coeffs)
+            if poly
+            else _fields_from_complex(O_leaf, P_leaf, H)
+        )
         u_p = dp_from_fields(F, omode_occu)
         if intensity_postmap is not None:
             u_p = intensity_postmap(u_p)
@@ -450,25 +675,44 @@ def linesearch_batch_update(
     if cfg.momentum > 0 and st.disp_prev is not None:
         d = d + cfg.momentum * st.disp_prev
 
-    # ---- step 3: response, accumulated per slice (§9 seam) -----------------
-    patches = torch.stack([obja, objp], dim=-1).unsqueeze(0)
-    D_slices = direction_response(patches, d, P_leaf.detach(), H, per_slice=True)
-    D = D_slices.sum(dim=3)
+    # ---- step 3: response ---------------------------------------------------
+    # M = 1: per-slice container (§9 seam). M > 1 / coeffs: ray-polynomial
+    # field stack (no per-slice seam — the vector search is an M = 1 concept).
+    if poly:
+        F_stack = born_ray_coeffs(
+            O_leaf.detach(), d, P_leaf.detach(), H, coeffs=coeffs, M=M, F0=F
+        )
+        U_list = poly_response_terms(F_stack, omode_occu)
+        if intensity_postmap is not None:
+            U_list = [intensity_postmap(u) for u in U_list]
+        a = poly_line_search(
+            e,
+            U_list,
+            omega,
+            fallback=cfg.alpha / N,
+            ls_damp=cfg.ls_damp,
+            max_step=cfg.max_step,
+            step_log=st.steps_o,
+        )
+    else:
+        patches = torch.stack([obja, objp], dim=-1).unsqueeze(0)
+        D_slices = direction_response(patches, d, P_leaf.detach(), H, per_slice=True)
+        D = D_slices.sum(dim=3)
 
-    # ---- steps 4-5: coefficients and cubic solve ---------------------------
-    v, w = response_terms(F, D, omode_occu)
-    if intensity_postmap is not None:
-        v, w = intensity_postmap(v), intensity_postmap(w)
-    a = line_search(
-        e,
-        v,
-        w,
-        omega,
-        fallback=cfg.alpha / N,
-        ls_damp=cfg.ls_damp,
-        max_step=cfg.max_step,
-        step_log=st.steps_o,
-    )
+        # ---- steps 4-5: coefficients and cubic solve -----------------------
+        v, w = response_terms(F, D, omode_occu)
+        if intensity_postmap is not None:
+            v, w = intensity_postmap(v), intensity_postmap(w)
+        a = line_search(
+            e,
+            v,
+            w,
+            omega,
+            fallback=cfg.alpha / N,
+            ls_damp=cfg.ls_damp,
+            max_step=cfg.max_step,
+            step_log=st.steps_o,
+        )
 
     # ---- step 6: joint complex object step ---------------------------------
     apply_object_step(obja, objp, a, d[0])
@@ -483,18 +727,28 @@ def linesearch_batch_update(
 
     # ---- step 7: probe step against the exactly-updated field --------------
     if update_probe:
-        F = F + a * D  # exact — this handles the bilinear cross term
-        u_p = u_p + (2.0 * a) * v + (a * a) * w  # exact, no re-forward
+        if poly:
+            F = ray_field_at(F_stack, a)  # exact: F(a) = sum a^k F_k
+            u_p = ray_intensity_at(u_p, U_list, a)  # exact, no re-forward
+        else:
+            F = F + a * D  # exact — this handles the bilinear cross term
+            u_p = u_p + (2.0 * a) * v + (a * a) * w  # exact, no re-forward
         e = u_p - I_dat
 
         # q from the gradient at the PRE-step object, K_P from pre-step O
         dn_p = probe_denominator(O_leaf.detach(), mode=cfg.probe_denom, denom_reg=cfg.denom_reg)
         q = (-P_leaf.grad) / dn_p
 
-        # D_P = F(q; g2): F is linear in P, so one ordinary forward with q in
-        # place of P at the UPDATED object — phi is rebuilt from q inside.
+        # D_P = F(q; g2): F is linear in P at EVERY Born order (each term
+        # carries one probe factor), so one ordinary coeffs-aware forward with
+        # q in place of P at the UPDATED object — the probe step stays quartic.
         patches2 = torch.stack([obja, objp], dim=-1).unsqueeze(0)
-        D_P = iss_fields(patches2, q, H)
+        if poly:
+            D_P = born_fields_from_complex(
+                torch.polar(obja, objp).unsqueeze(0), q, H, M, coeffs
+            )
+        else:
+            D_P = iss_fields(patches2, q, H)
         v_p, w_p = response_terms(F, D_P, omode_occu)
         if intensity_postmap is not None:
             v_p, w_p = intensity_postmap(v_p), intensity_postmap(w_p)
@@ -523,11 +777,34 @@ def linesearch_batch_update(
 # --------------------------------------------------------------------------- #
 
 
+def _born_order_and_coeffs(model):
+    """Current Born order M and complex detector coefficients from the model.
+
+    Read FRESH on every call — the detector refit's grow_tol hook promotes
+    model.born_iterations (and resizes opt_born_coeffs) after the view sweep,
+    and the search must never cache M across iterations (plan §4.5). Returns
+    (M, coeffs) with coeffs None when the model runs the plain series."""
+    M = int(model.born_iterations)
+    coeffs = None
+    if getattr(model, "use_born_coeffs", False):
+        bc = model.opt_born_coeffs.detach()
+        if bc.shape[0] < M:
+            raise ValueError(
+                f"opt_born_coeffs has {bc.shape[0]} orders but born_iterations={M}"
+            )
+        coeffs = torch.complex(bc[:M, 0], bc[:M, 1])
+    return M, coeffs
+
+
 def linesearch_model_update(
     model, index, config=None, state=None, update_probe=True, loss_fn=None, H=None
 ):
     """One line-search view update (B = 1, the §3 design point) on a PtychoAD
-    model with solver_type='born' and born_iterations=1.
+    model with solver_type='born', at any Born order M = born_iterations.
+    M = 1 without coefficients takes the exact-affine quartic fast path;
+    otherwise the ray-polynomial search (degree 4M) is used, with the Born
+    coefficients read from the model (constant within a sweep — the detector
+    refit fires after the sweep, plan §3).
 
     Gathers the object window at scan position `index` (same crop grids as
     model.get_obj_ROI), runs linesearch_batch_update on it, scatters the
@@ -550,10 +827,11 @@ def linesearch_model_update(
     """
     cfg = config or LineSearchConfig()
     st = state if state is not None else LineSearchState()
-    if model.solver_type != "born" or model.born_iterations != 1:
+    if model.solver_type != "born":
         raise ValueError(
-            "The exact line search requires solver_type='born' with born_iterations=1: "
-            "F is affine in the object only for single scattering (spec §1)."
+            "The exact line search requires solver_type='born': the detector field "
+            "is polynomial in the object only for the Born models (single scattering "
+            "at M = 1, spec §1; ray polynomial at M > 1, plan §3)."
         )
     if model.obj_preblur_std not in (None, 0):
         raise NotImplementedError(
@@ -565,6 +843,7 @@ def linesearch_model_update(
             "Heavy ball at the model layer needs a global displacement canvas "
             "(per-view windows overlap); use momentum only with the tensor-level updater."
         )
+    M, coeffs = _born_order_and_coeffs(model)
 
     device = model.opt_obja.device
     idx = torch.as_tensor([index], device=device)
@@ -608,6 +887,8 @@ def linesearch_model_update(
         state=st,
         update_probe=update_probe,
         intensity_postmap=postmap,
+        M=M,
+        coeffs=coeffs,
     )
 
     if loss_fn is not None:
@@ -668,16 +949,21 @@ def linesearch_model_update_batched(
     """
     cfg = config or LineSearchConfig()
     st = state if state is not None else LineSearchState()
-    if model.solver_type != "born" or model.born_iterations != 1:
+    if model.solver_type != "born":
         raise ValueError(
-            "The exact line search requires solver_type='born' with born_iterations=1: "
-            "F is affine in the object only for single scattering (spec §1)."
+            "The exact line search requires solver_type='born': the detector field "
+            "is polynomial in the object only for the Born models (single scattering "
+            "at M = 1, spec §1; ray polynomial at M > 1, plan §3)."
         )
     if model.obj_preblur_std not in (None, 0):
         raise NotImplementedError(
             "obj_preblur changes the parameter-to-field map; thread it through the "
             "direction response before enabling it with the line search."
         )
+    M, coeffs = _born_order_and_coeffs(model)
+    poly = M > 1 or coeffs is not None
+    if poly:
+        from ptyrad.forward_models.born_helpers import born_fields_from_complex
     device = model.opt_obja.device
     idx = torch.as_tensor(np.asarray(indices).reshape(-1), device=device)
     B = idx.numel()
@@ -705,12 +991,17 @@ def linesearch_model_update_batched(
     O_canvas = torch.polar(model.opt_obja.data, model.opt_objp.data).requires_grad_(True)
     O_b = O_canvas[:, :, gy, gx].permute(2, 0, 1, 3, 4)  # (B, omode, Nz, Ny, Nx)
     P_leaf = probe.clone().requires_grad_(update_probe)
-    if postmap is None and isinstance(cfg.direction_objective, str):
+    if not poly and postmap is None and isinstance(cfg.direction_objective, str):
         L, F, u_p = _fwd_loss(
             O_b, P_leaf, H, I_dat, None, model.omode_occu, cfg.direction_objective
         )
     else:
-        F = _fields_from_complex(O_b, P_leaf, H)
+        # order-M coeffs-aware forward for the direction gradient (plan §4.4)
+        F = (
+            born_fields_from_complex(O_b, P_leaf, H, M, coeffs)
+            if poly
+            else _fields_from_complex(O_b, P_leaf, H)
+        )
         u_p = dp_from_fields(F, model.omode_occu)
         if postmap is not None:
             u_p = postmap(u_p)
@@ -757,23 +1048,40 @@ def linesearch_model_update_batched(
         if cfg.momentum > 0 and st.disp_prev is not None and st.disp_prev.shape == d_canvas.shape:
             d_canvas = d_canvas + cfg.momentum * st.disp_prev
 
-        # ---- step 3-5: response (per-slice container, §9), quartic, solve ----
+        # ---- step 3-5: response (per-slice container, §9), search, solve ----
         d_wins = d_canvas[:, :, gy, gx].permute(2, 0, 1, 3, 4)
-        D_slices = direction_response(None, d_wins, probe, H, per_slice=True)
-        D = D_slices.sum(dim=3)
-        v, w = response_terms(F, D, model.omode_occu)
-        if postmap is not None:
-            v, w = postmap(v), postmap(w)
-        a = line_search(
-            e,
-            v,
-            w,
-            omega,
-            fallback=cfg.alpha / N,
-            ls_damp=cfg.ls_damp,
-            max_step=cfg.max_step,
-            step_log=st.steps_o,
-        )
+        if poly:
+            F_stack = born_ray_coeffs(
+                O_b.detach(), d_wins, probe, H, coeffs=coeffs, M=M, F0=F
+            )
+            U_list = poly_response_terms(F_stack, model.omode_occu)
+            if postmap is not None:
+                U_list = [postmap(u) for u in U_list]
+            a = poly_line_search(
+                e,
+                U_list,
+                omega,
+                fallback=cfg.alpha / N,
+                ls_damp=cfg.ls_damp,
+                max_step=cfg.max_step,
+                step_log=st.steps_o,
+            )
+        else:
+            D_slices = direction_response(None, d_wins, probe, H, per_slice=True)
+            D = D_slices.sum(dim=3)
+            v, w = response_terms(F, D, model.omode_occu)
+            if postmap is not None:
+                v, w = postmap(v), postmap(w)
+            a = line_search(
+                e,
+                v,
+                w,
+                omega,
+                fallback=cfg.alpha / N,
+                ls_damp=cfg.ls_damp,
+                max_step=cfg.max_step,
+                step_log=st.steps_o,
+            )
 
         # ---- step 6: one joint complex step on the canvas -------------------
         O_new = O_canvas.detach() + a * d_canvas
@@ -786,8 +1094,12 @@ def linesearch_model_update_batched(
 
         # ---- step 7: probe step against the exactly-updated field -----------
         if update_probe:
-            F = F + a * D
-            u2 = u_p + (2.0 * a) * v + (a * a) * w
+            if poly:
+                F = ray_field_at(F_stack, a)
+                u2 = ray_intensity_at(u_p, U_list, a)
+            else:
+                F = F + a * D
+                u2 = u_p + (2.0 * a) * v + (a * a) * w
             e2 = u2 - I_dat
             K_P = O_b.detach().abs().square().sum(dim=(0, 1, 2))  # pre-step, (Ny, Nx)
             peak_P = K_P.amax()
@@ -802,8 +1114,13 @@ def linesearch_model_update_batched(
             q = (-grad_P) / dn_p.clamp_min(DN_EPS)  # (1, pmode, Ny, Nx), shared frame
             g2 = O_b.detach() + a * d_wins
             # response of the shared direction: view b sees shift_b(q) — exact
+            # (linear in P at every Born order, so the step stays quartic)
             q_views = _shift_views(q, shifts, grid) if model.shift_probes else q
-            D_P = _fields_from_complex(g2, q_views, H)
+            D_P = (
+                born_fields_from_complex(g2, q_views, H, M, coeffs)
+                if poly
+                else _fields_from_complex(g2, q_views, H)
+            )
             v_p, w_p = response_terms(F, D_P, model.omode_occu)
             if postmap is not None:
                 v_p, w_p = postmap(v_p), postmap(w_p)
