@@ -53,9 +53,22 @@ class UpdateParams(BaseModel):
         default={"start_iter": 1, "lr": 5.0e-4},
         description="Sub-pixel probe position shifts update params",
     )
+    born_coeffs: dict[str, int | float | None] = Field(
+        default={"start_iter": None, "lr": 0.0},
+        description="Born-series scattering-order coefficients update params (solver_type='born'). "
+        "One pseudo-complex coefficient per order, initialized to 1; tuning them lets the "
+        "truncated series absorb the multiple-scattering tail instead of biasing the object.",
+    )
 
     @field_validator(
-        "obja", "objp", "obj_tilts", "slice_thickness", "probe", "probe_pos_shifts", mode="after"
+        "obja",
+        "objp",
+        "obj_tilts",
+        "slice_thickness",
+        "probe",
+        "probe_pos_shifts",
+        "born_coeffs",
+        mode="after",
     )
     @classmethod
     def validate_update_params(cls, v: dict[str, Any], field) -> dict[str, Any]:
@@ -80,7 +93,15 @@ class UpdateParams(BaseModel):
     @model_validator(mode="after")
     def validate_all_start_iter(self):
         """Ensure not all start_iter are None or all > 1."""
-        fields = ["obja", "objp", "obj_tilts", "slice_thickness", "probe", "probe_pos_shifts"]
+        fields = [
+            "obja",
+            "objp",
+            "obj_tilts",
+            "slice_thickness",
+            "probe",
+            "probe_pos_shifts",
+            "born_coeffs",
+        ]
         start_iters = [self.__dict__[field].get("start_iter") for field in fields]
 
         # start_iter can not be all None or all > 1
@@ -144,6 +165,109 @@ class ModelParams(BaseModel):
     """
     When using the Linduda approximation solver, this controls the order of the approximation.
     """
+
+    born_coeffs_refit: dict[str, int | float | bool | str | None] | None = Field(
+        default=None,
+        description="In-reconstruction refit of the Born coefficients on a fixed "
+        "calibration view set (solver_type='born'). Dict with 'start_iter' (null "
+        "disables), 'step', 'end_iter', 'n_views', 'pin_first', 'ridge', 'method'. "
+        "method='detector' (recommended): closed-form least-squares fit of the "
+        "detector field against the exact detector field of the current object "
+        "— direct minimization of the detector error, still data-free (no "
+        "measured intensities, no reconstruction oracle). 'target' picks how "
+        "that exact field is built on the calibration views: 'born' (default) "
+        "runs the Born recursion to its nilpotent cutoff (~Nz^2 slice-FFTs per "
+        "view; one Gram prices every order up to Nz), 'multislice' runs one "
+        "sequential sweep (~2*n*(Nz-n/2)+2*Nz slice-FFTs, linear in depth, O(1) "
+        "transient frames — the option for deep stacks; identical objective and "
+        "coefficients). "
+        "method='gmres': closed-form residual-minimizing fit over the Krylov "
+        "Gram matrix (equation residual in the 3D volume norm); cheaper recursion "
+        "(stops at n+1 orders vs full depth), the option for deep stacks Nz >> n. "
+        "Either way the measured data never enters, so the coefficients track "
+        "truncation error only and cannot absorb object error. "
+        "'grow_tol' > 0 enables adaptive order growth: each "
+        "refit promotes born_iterations by 1 (up to 'n_limit', capped at Nz) "
+        "whenever the fit residual at the current order exceeds grow_tol — start "
+        "small (e.g. n=3) and let the solver track the object's scattering "
+        "strength. Keep update_params['born_coeffs'] lr at 0 when this is enabled "
+        "— the refit replaces gradient updates.",
+    )
+    """
+    Defaults when enabled: {'start_iter': 1, 'step': 1, 'end_iter': null,
+    'n_views': 64, 'pin_first': true, 'ridge': 1e-3, 'method': 'gmres',
+    'target': 'born'}.
+    'pin_first' fixes c1 = 1 — optional with GMRES (the data-driven gauge leak
+    is closed by construction) and ignored by method='detector' (no pin needed;
+    c0 = 1 is implicit); 'ridge' is the Tikhonov pull toward the plain series
+    inside the convex solve (scaled by ||psi_0||^2 for gmres, ||D_0||^2 for
+    detector). The former method='data' (multi-start L-BFGS against measured
+    intensities) was removed: data-fitted coefficients absorb object error and
+    degrade the reconstruction.
+    """
+
+    born_coeffs_init: list[list[float]] | str | None = Field(
+        default=None,
+        description="Warm start for the Born-series coefficients (solver_type='born'): "
+        "an (n, 2) nested list of (real, imag) pairs per scattering order, or a path to "
+        "a PtyRAD model .hdf5 whose 'optimizable_tensors/born_coeffs' is loaded. Orders "
+        "beyond the provided values start at (1, 0). Default null starts all at (1, 0).",
+    )
+    """
+    Use this to continue a previous run's coefficients (pass the model_iterXXXX.hdf5 path)
+    or to seed with externally fitted values (e.g. an oracle fit or the Shanks estimate).
+    Warm starting matters most when the coefficients are far from 1 (strong scattering):
+    it spares the early iterations where jointly cold-started coefficients drift.
+    """
+
+    @field_validator("born_coeffs_refit", mode="after")
+    @classmethod
+    def validate_born_coeffs_refit(cls, v):
+        """Fill refit defaults and sanity-check the gating fields."""
+        if v is None:
+            return v
+        merged = {
+            "start_iter": 1,
+            "step": 1,
+            "end_iter": None,
+            "n_views": 64,
+            "pin_first": True,
+            "ridge": 1e-3,
+            "method": "gmres",
+            "target": "born",
+            "grow_tol": None,
+            "n_limit": None,
+        }
+        unknown = set(v) - set(merged)
+        if unknown:
+            raise ValueError(f"born_coeffs_refit has unknown keys: {sorted(unknown)}")
+        merged.update(v)
+        if merged["start_iter"] is not None and merged["start_iter"] < 1:
+            raise ValueError("born_coeffs_refit.start_iter must be None or >= 1")
+        if not isinstance(merged["step"], int) or merged["step"] < 1:
+            raise ValueError("born_coeffs_refit.step must be an integer >= 1")
+        if not isinstance(merged["n_views"], int) or merged["n_views"] < 1:
+            raise ValueError("born_coeffs_refit.n_views must be an integer >= 1")
+        if merged["method"] not in ("gmres", "detector"):
+            raise ValueError(
+                "born_coeffs_refit.method must be 'gmres' or 'detector' — the "
+                "former method='data' (L-BFGS fit against measured intensities) "
+                "was removed: data-fitted coefficients absorb object error"
+            )
+        if merged["target"] not in ("born", "multislice"):
+            raise ValueError(
+                "born_coeffs_refit.target must be 'born' (full-depth Born "
+                "recursion) or 'multislice' (sequential sweep); only used by "
+                "method='detector'"
+            )
+        if merged["grow_tol"] is not None:
+            if not (isinstance(merged["grow_tol"], (int, float)) and merged["grow_tol"] > 0):
+                raise ValueError("born_coeffs_refit.grow_tol must be a positive number")
+        if merged["n_limit"] is not None and (
+            not isinstance(merged["n_limit"], int) or merged["n_limit"] < 1
+        ):
+            raise ValueError("born_coeffs_refit.n_limit must be None or an integer >= 1")
+        return merged
 
     obj_preblur_std: float | None = Field(
         default=None,

@@ -176,6 +176,12 @@ class TuneParams(BaseModel):
         ),
         description="Slice thickness learning rate",
     )
+    bclr: TuneParam = Field(
+        default_factory=lambda: TuneParam(
+            state=False, suggest="float", kwargs={"low": 1.0e-4, "high": 1.0e-1, "log": True}
+        ),
+        description="Born-series coefficients learning rate",
+    )
     # Real space calibration
     dx: TuneParam = Field(
         default_factory=lambda: TuneParam(

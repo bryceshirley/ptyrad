@@ -274,12 +274,10 @@ def two_image_frc(
     image1 = remove_margins(image1, margin=margin)
     image2 = remove_margins(image2, margin=margin)
 
-    FRC_curve, T, fn = fourierringcorrelation(
-        image1, image2, apod_width=apod_width, plot_images=plot_images
-    )
+    FRC_curve, T, fn = fourierringcorrelation(image1, image2, apod_width=apod_width)
 
     # Calculate the error metric
-    auc = -np.trapz(FRC_curve, fn)
+    auc = -np.trapezoid(FRC_curve, fn)
 
     if auc is None or np.isnan(auc):
         auc = 0.0

@@ -285,7 +285,7 @@ def get_local_obj_tilts(pos, objp, dx, slice_thickness, slice_indices, blob_para
     from scipy.interpolate import griddata
     from scipy.ndimage import center_of_mass
     from scipy.optimize import curve_fit
-    from skimage.feature import blob_log
+    from skimage.feature import blob_log  # ty: ignore[unresolved-import]  # optional dependency
 
     # Choose the 2 slices from objp and detect blobs from the top slice
     slice_t, slice_b = slice_indices
@@ -482,7 +482,7 @@ def get_gaussian1d(size, std, norm=False):
     return k
 
 
-def gaussian_blur_1d(tensor, kernel_size=5, sigma=0.5):
+def gaussian_blur_1d(tensor, kernel_size=[5, 5], sigma=0.5):
     # Note that the F.con1d does not have `padding_mode`, so it's default to be 0 padding, which is not ideal for obja
     # tensor_blur = F.conv1d(input=tensor.reshape(-1, 1, tensor.size(-1)), weight=k1d, padding='same').view(*tensor.shape)
 
@@ -499,7 +499,7 @@ def gaussian_blur_1d(tensor, kernel_size=5, sigma=0.5):
     return tensor_blur
 
 
-def gaussian_blur_2d(tensor, kernel_size=5, sigma=0.5):
+def gaussian_blur_2d(tensor, kernel_size=[5, 5], sigma=0.5):
     # Separable 2D Gaussian blur over the last two axes. Drop-in stand-in for
     # torchvision.transforms.functional.gaussian_blur as used in
     # constraints.py (scalar kernel_size / sigma), so torchvision is not a

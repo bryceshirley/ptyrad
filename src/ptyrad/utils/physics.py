@@ -73,12 +73,12 @@ def infer_dx_from_params(
         kMax = angleMax / wavelength / 1e3  # mrad to rad
         return 1 / (2 * kMax)
 
-    if all(v is not None for v in (RBF, conv_angle, wavelength, Npix)):
+    if RBF is not None and conv_angle is not None and wavelength is not None and Npix is not None:
         da = conv_angle / RBF / 1e3  # radians
         dk = da / wavelength
         return 1 / (Npix * dk)
 
-    if n_alpha is not None and wavelength is not None:
+    if n_alpha is not None and conv_angle is not None and wavelength is not None:
         angleMax = n_alpha * conv_angle
         kMax = angleMax / wavelength / 1e3  # mrad to rad
         return 1 / (2 * kMax)

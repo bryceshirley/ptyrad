@@ -199,7 +199,9 @@ def load_ND_with_key(
     if key in (None, ""):
         datasets_dict = load_func(file_path)  # None key would return a dict of the file
         valid_datasets = collect_ND_datasets(
-            datasets_dict, ndims=ndims, verbose=verbose
+            datasets_dict,  # ty: ignore[invalid-argument-type]  # None key -> loader returns a dict
+            ndims=ndims,
+            verbose=verbose,
         )  # This will search recursively and return all valid ND datasets
         if len(valid_datasets) == 1:
             return next(iter(valid_datasets.values()))
@@ -229,7 +231,7 @@ def load_ND_with_key(
 
 def collect_ND_datasets(
     data_dict: dict[str, Any],
-    ndims: list[int] = None,
+    ndims: list[int] | None = None,
     delimiter: str = ".",
     verbose: bool = True,
     _parent_key: str | None = None,
@@ -552,7 +554,7 @@ def load_ptyrad(file_path: str) -> dict[str, Any]:
     ext = ext.lower()
 
     if ext in [".h5", ".hdf5"]:
-        return load_hdf5(file_path)
+        return load_hdf5(file_path)  # ty: ignore[invalid-return-type]  # no key -> returns a dict
 
     elif ext == ".pt":
         vprint(
@@ -652,7 +654,7 @@ def load_toml_params(file_path):
 
         try:
             # For Python 3.11+
-            import tomllib
+            import tomllib  # ty: ignore[unresolved-import]  # stdlib on 3.11+; tomli fallback below
 
             params_dict = tomllib.loads(content)
         except ImportError:

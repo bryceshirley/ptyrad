@@ -6,6 +6,7 @@ Physical constraints that directly modify optimizable tensors with specified int
 import torch
 from torch.fft import fft2, fftfreq, fftn, ifft2, ifftn
 from torch.nn.functional import interpolate
+
 try:
     from torchvision.transforms.functional import gaussian_blur
 except ImportError:  # torchvision unavailable: use the local separable blur
@@ -412,7 +413,7 @@ class CombinedConstraint(torch.nn.Module):
                 return
             obj_tilts = (model.opt_obj_tilts.reshape(N_scan_slow, N_scan_fast, 2)).permute(2, 0, 1)
             model.opt_obj_tilts.data = (
-                gaussian_blur(obj_tilts, kernel_size=5, sigma=tilt_smooth_std)
+                gaussian_blur(obj_tilts, kernel_size=[5, 5], sigma=tilt_smooth_std)
                 .permute(1, 2, 0)
                 .reshape(-1, 2)
                 .contiguous()

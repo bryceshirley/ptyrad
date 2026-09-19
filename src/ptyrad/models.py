@@ -10,6 +10,7 @@ from math import prod
 import torch
 import torch.nn as nn
 from torch.fft import fft2, ifft2
+
 try:
     from torchvision.transforms.functional import gaussian_blur
 except ImportError:  # torchvision unavailable: use the local separable blur
@@ -85,6 +86,34 @@ class PtychoAD(torch.nn.Module):
                 torch.tensor(init_variables["probe_pos_shifts"], dtype=torch.float32, device=device)
             )
 
+            # Born-series coefficients, pseudo-complex (real, imag) per scattering
+            # order, used by solver_type 'born'. Initialized to (1, 0) so the plain
+            # series is reproduced exactly until the optimizer moves them, or warm
+            # started from model_params['born_coeffs_init'] (an (n, 2) list of
+            # (real, imag) pairs, or a path to a PtyRAD model .hdf5 holding
+            # 'optimizable_tensors/born_coeffs'). Created inactive;
+            # create_optimizable_params_dict activates them from update_params.
+            born_coeffs_init = torch.zeros(
+                self.born_iterations, 2, dtype=torch.float32, device=device
+            )
+            born_coeffs_init[:, 0] = 1.0
+            warm = model_params.get("born_coeffs_init")
+            if warm is not None:
+                if isinstance(warm, str):
+                    import h5py
+
+                    with h5py.File(warm, "r") as f:
+                        warm = f["optimizable_tensors/born_coeffs"][...]
+                warm = torch.as_tensor(warm, dtype=torch.float32, device=device).reshape(-1, 2)
+                k = min(warm.shape[0], self.born_iterations)
+                born_coeffs_init[:k] = warm[:k]  # missing top orders stay at (1, 0)
+                vprint(
+                    f"Warm starting born_coeffs with {k} of {self.born_iterations} "
+                    f"orders: {[f'{a:+.3f}{b:+.3f}j' for a, b in born_coeffs_init.tolist()]}",
+                    verbose=verbose,
+                )
+            self.opt_born_coeffs = nn.Parameter(born_coeffs_init, requires_grad=False)
+
             # Buffers used during forward pass
             self.register_buffer(
                 "omode_occu",
@@ -137,6 +166,39 @@ class PtychoAD(torch.nn.Module):
             )
             self.shift_probes = bool(self.lr_params.get("probe_pos_shifts", 0) != 0)
             self.change_thickness = bool(self.lr_params.get("slice_thickness", 0) != 0)
+            self.tune_born_coeffs = bool(
+                self.lr_params.get("born_coeffs", 0) != 0
+                and self.start_iter.get("born_coeffs") is not None
+            )
+            # In-reconstruction GMRES refit of the coefficients from the Krylov
+            # Gram (see reconstruction.refit_born_coeffs); replaces AD updates.
+            self.born_refit = model_params.get("born_coeffs_refit")
+            refit_on = bool(self.born_refit and self.born_refit.get("start_iter"))
+            if refit_on:
+                if self.tune_born_coeffs:
+                    vprint(
+                        "WARNING: born_coeffs_refit is enabled together with a nonzero "
+                        "born_coeffs lr — the refit overwrites the AD updates each "
+                        "refit iteration; set update_params['born_coeffs'] lr to 0.",
+                        verbose=verbose,
+                    )
+                n_views = min(
+                    int(self.born_refit.get("n_views", 64)), init_variables["crop_pos"].shape[0]
+                )
+                self.register_buffer(
+                    "born_refit_views",
+                    torch.linspace(0, init_variables["crop_pos"].shape[0] - 1, n_views)
+                    .long()
+                    .to(device),
+                    persistent=False,
+                )
+            # Coefficients must reach the forward model whenever they can differ
+            # from 1: AD-tuned, warm-started (even frozen), or refit-managed.
+            self.use_born_coeffs = bool(
+                self.tune_born_coeffs
+                or model_params.get("born_coeffs_init") is not None
+                or refit_on
+            )
             self.probe_int_sum = self.get_complex_probe_view().abs().pow(2).sum()
 
             self.loss_iters = []
@@ -155,6 +217,7 @@ class PtychoAD(torch.nn.Module):
                 "slice_thickness": self.opt_slice_thickness,
                 "probe": self.opt_probe,
                 "probe_pos_shifts": self.opt_probe_pos_shifts,
+                "born_coeffs": self.opt_born_coeffs,
             }
 
             self.create_optimizable_params_dict(self.lr_params, self.verbose)
@@ -213,10 +276,15 @@ class PtychoAD(torch.nn.Module):
                 raise ValueError(f"Invalid parameter name: '{param_name}'")
 
             tensor = self.optimizable_tensors[param_name]
-            is_active = (lr != 0) and (self.start_iter.get(param_name, 1) == 1)
-            tensor.requires_grad = is_active
+            start = self.start_iter.get(param_name, 1)
+            # Any tensor that will ever update must be in the optimizer from the
+            # start (param groups are fixed once create_optimizer runs); its grad
+            # stays None until toggle_grad_requires activates it at start_iter,
+            # and optimizers skip None-grad params.
+            in_optimizer = (lr != 0) and (start is not None)
+            tensor.requires_grad = in_optimizer and start == 1
 
-            if is_active:
+            if in_optimizer:
                 self.optimizable_params.append({"params": [tensor], "lr": lr})
 
         if verbose:
@@ -253,7 +321,7 @@ class PtychoAD(torch.nn.Module):
         vprint("### PtychoAD optimizable variables ###")
         for name, tensor in self.optimizable_tensors.items():
             vprint(
-                f"{name.ljust(16)}: {str(tensor.shape).ljust(32)}, {str(tensor.dtype).ljust(16)}, device:{tensor.device}, grad:{str(tensor.requires_grad).ljust(5)}, lr:{self.lr_params[name]:.0e}"
+                f"{name.ljust(16)}: {str(tensor.shape).ljust(32)}, {str(tensor.dtype).ljust(16)}, device:{tensor.device}, grad:{str(tensor.requires_grad).ljust(5)}, lr:{self.lr_params.get(name, 0.0):.0e}"
             )
         total_var = sum(
             tensor.numel() for tensor in self.optimizable_tensors.values() if tensor.requires_grad
@@ -282,7 +350,7 @@ class PtychoAD(torch.nn.Module):
         obj_shape = obj.shape
         obj = obj.reshape(-1, obj_shape[-2], obj_shape[-1])
         return (
-            gaussian_blur(obj, kernel_size=5, sigma=self.obj_preblur_std)
+            gaussian_blur(obj, kernel_size=[5, 5], sigma=self.obj_preblur_std)
             .reshape(obj_shape)
             .permute(1, 2, 3, 4, 5, 0)
         )
@@ -336,7 +404,8 @@ class PtychoAD(torch.nn.Module):
     def get_forward_meas(self, object_patches, probes, propagators):
         """Dispatches forward model evaluation to specialized math engines."""
         if self.solver_type == "born":
-            if self.born_iterations == 1:
+            coeffs = self.opt_born_coeffs if self.use_born_coeffs else None
+            if self.born_iterations == 1 and coeffs is None:
                 from ptyrad.forward_models import iss_forward
 
                 dp_fwd = iss_forward(object_patches, probes, propagators, self.omode_occu)
@@ -349,6 +418,7 @@ class PtychoAD(torch.nn.Module):
                     propagators,
                     omode_occu=self.omode_occu,
                     n_max=self.born_iterations,
+                    coeffs=coeffs,
                 )
         elif self.solver_type == "suzuki_trotter":
             from ptyrad.forward_models import suzukitrotter_forward
@@ -381,7 +451,7 @@ class PtychoAD(torch.nn.Module):
             raise ValueError(f"Invalid solver_type: {self.solver_type}")
 
         if self.detector_blur_std is not None and self.detector_blur_std != 0:
-            dp_fwd = gaussian_blur(dp_fwd, kernel_size=5, sigma=self.detector_blur_std)
+            dp_fwd = gaussian_blur(dp_fwd, kernel_size=[5, 5], sigma=self.detector_blur_std)
 
         return dp_fwd
 
@@ -450,13 +520,6 @@ class PtychoAD(torch.nn.Module):
             H_half_tensor = torch_phasor(dz_half * self.Kz)
             propagators = (propagators, H_half_tensor.unsqueeze(0))
 
-
-        elif self.solver_type == "multislice":
-            n_sub = getattr(self, "n_subslices", 3)
-            dz_sub = self.opt_slice_thickness / n_sub
-            propagators = (self.make_propagator(dz_sub, indices),
-                        self.make_propagator(dz_sub / 2, indices))
-
         dp_fwd = self.get_forward_meas(object_patches, probes, propagators)
 
         self._current_object_patches = object_patches
@@ -473,23 +536,23 @@ class PtychoAD(torch.nn.Module):
         H = self.get_propagators(batch_indices)
         H_3d = self.get_propagators_3d(H)
         Ny, Nx = probes.shape[-2], probes.shape[-1]
-        
+
         probe_k = fft2(probes).view(-1, probes.shape[1], 1, 1, Ny, Nx)
-        Psi_state = ifft2(H_3d * probe_k) # [B, pmode, 1, Nz, Ny, Nx]
-        
+        Psi_state = ifft2(H_3d * probe_k)  # [B, pmode, 1, Nz, Ny, Nx]
+
         # 2. Compute spatial intensity per slice
-        probe_intensity = Psi_state.abs().square().sum(dim=1).squeeze(1) # [B, Nz, Ny, Nx]
-        
+        probe_intensity = Psi_state.abs().square().sum(dim=1).squeeze(1)  # [B, Nz, Ny, Nx]
+
         # 3. Map minibatches to global canvas
         B, Nz, _, _ = probe_intensity.shape
         obj_ROI_grid_y = self.rpy_grid[None, :, :] + self.crop_pos[batch_indices, None, None, 0]
         obj_ROI_grid_x = self.rpx_grid[None, :, :] + self.crop_pos[batch_indices, None, None, 1]
-        
+
         flat_y = obj_ROI_grid_y.view(-1)
         flat_x = obj_ROI_grid_x.view(-1)
         NX_glob = self.opt_obja.shape[-1]
         flat_linear_idx = flat_y * NX_glob + flat_x
-        
+
         # Accumulate using atomic index_add_. get_probes returns a single
         # shared probe (B=1) when shift_probes is off, while the scatter
         # indices span the whole minibatch -- expand so the sizes agree.
@@ -501,7 +564,7 @@ class PtychoAD(torch.nn.Module):
             p_int = p_z.reshape(-1)
             for m in range(self.opt_obja.shape[0]):
                 precond_canvas[m, z].view(-1).index_add_(0, flat_linear_idx, p_int)
-                
+
         return precond_canvas
 
     # ==========================================================
@@ -513,8 +576,11 @@ class PtychoAD(torch.nn.Module):
         Ky, Kx = self.propagator_grid
         H = torch_phasor(dz * self.Kz)
         if self.tilt_obj:
-            tilts = (self.opt_obj_tilts if self.opt_obj_tilts.shape[0] == 1
-                    else self.opt_obj_tilts[indices])
+            tilts = (
+                self.opt_obj_tilts
+                if self.opt_obj_tilts.shape[0] == 1
+                else self.opt_obj_tilts[indices]
+            )
             ty, tx = tilts[:, 0, None, None] / 1e3, tilts[:, 1, None, None] / 1e3
             return H * torch_phasor(dz * (Ky * torch.tan(ty) + Kx * torch.tan(tx)))
         return H.unsqueeze(0)

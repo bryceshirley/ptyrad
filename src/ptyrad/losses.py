@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from torch.nn.functional import interpolate
+
 try:
     from torchvision.transforms.functional import gaussian_blur
 except ImportError:  # torchvision unavailable: use the local separable blur
@@ -69,7 +70,12 @@ class CombinedLoss(torch.nn.Module):
             norm = (diff.pow(2).mean() ** 0.5) + 1e-12
 
             # Derivative d/dI [ ||I_pred^p - I_meas^p||_2 / data_mean ]
-            d_single = (weight / (data_mean * norm * model_DP.numel())) * diff * dp_pow * model_DP.pow(dp_pow - 1.0)
+            d_single = (
+                (weight / (data_mean * norm * model_DP.numel()))
+                * diff
+                * dp_pow
+                * model_DP.pow(dp_pow - 1.0)
+            )
             residual = residual + d_single
 
         # 2. Residual for loss_poissn (Poisson NLL)
@@ -81,9 +87,12 @@ class CombinedLoss(torch.nn.Module):
             data_mean = measured_DP.pow(dp_pow).mean()
 
             # Derivative d/dI [ - (I_meas^p * log(I_pred^p + eps) - I_pred^p) / data_mean ]
-            d_poissn = (weight / (data_mean * model_DP.numel())) * (
-                1.0 - measured_DP.pow(dp_pow) / (model_DP.pow(dp_pow) + eps)
-            ) * dp_pow * model_DP.pow(dp_pow - 1.0)
+            d_poissn = (
+                (weight / (data_mean * model_DP.numel()))
+                * (1.0 - measured_DP.pow(dp_pow) / (model_DP.pow(dp_pow) + eps))
+                * dp_pow
+                * model_DP.pow(dp_pow - 1.0)
+            )
             residual = residual + d_poissn
 
         return residual
@@ -198,9 +207,9 @@ class CombinedLoss(torch.nn.Module):
                 if obj_blur_std is not None and obj_blur_std != 0:
                     obja_shape = obja_patches.shape
                     obja = obja_patches.reshape(-1, obja_shape[-2], obja_shape[-1])
-                    obja_patches = gaussian_blur(obja, kernel_size=5, sigma=obj_blur_std).reshape(
-                        obja_shape
-                    )
+                    obja_patches = gaussian_blur(
+                        obja, kernel_size=[5, 5], sigma=obj_blur_std
+                    ).reshape(obja_shape)
                 if scale_factor is not None and any(scale != 1 for scale in scale_factor):
                     obja_patches = interpolate(obja_patches, scale_factor=scale_factor, mode="area")
                 temp_loss += (obja_patches * omode_occu[:, None, None, None]).std(1).mean()
@@ -209,9 +218,9 @@ class CombinedLoss(torch.nn.Module):
                 if obj_blur_std is not None and obj_blur_std != 0:
                     objp_shape = objp_patches.shape
                     objp = objp_patches.reshape(-1, objp_shape[-2], objp_shape[-1])
-                    objp_patches = gaussian_blur(objp, kernel_size=5, sigma=obj_blur_std).reshape(
-                        objp_shape
-                    )
+                    objp_patches = gaussian_blur(
+                        objp, kernel_size=[5, 5], sigma=obj_blur_std
+                    ).reshape(objp_shape)
                 if scale_factor is not None and any(scale != 1 for scale in scale_factor):
                     objp_patches = interpolate(objp_patches, scale_factor=scale_factor, mode="area")
                 temp_loss += (objp_patches * omode_occu[:, None, None, None]).std(1).mean()
@@ -225,9 +234,9 @@ class CombinedLoss(torch.nn.Module):
         Combines all the loss components and returns the total loss and individual losses.
 
         """
-        self.last_model_DP = model_DP.detach() 
+        self.last_model_DP = model_DP.detach()
         self.last_measured_DP = measured_DP.detach()
-        
+
         losses = []
         losses.append(self.get_loss_single(model_DP, measured_DP))
         losses.append(self.get_loss_poissn(model_DP, measured_DP))

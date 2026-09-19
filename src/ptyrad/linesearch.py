@@ -428,9 +428,7 @@ def linesearch_batch_update(
     O_leaf = torch.polar(obja, objp).unsqueeze(0).detach().requires_grad_(True)
     P_leaf = probe.detach().clone().requires_grad_(update_probe)
     if intensity_postmap is None and isinstance(cfg.direction_objective, str):
-        L, F, u_p = _fwd_loss(
-            O_leaf, P_leaf, H, I_dat, mask, omode_occu, cfg.direction_objective
-        )
+        L, F, u_p = _fwd_loss(O_leaf, P_leaf, H, I_dat, mask, omode_occu, cfg.direction_objective)
     else:
         F = _fields_from_complex(O_leaf, P_leaf, H)
         u_p = dp_from_fields(F, omode_occu)
@@ -447,6 +445,7 @@ def linesearch_batch_update(
     # ---- step 2: preconditioned descent direction (+ heavy ball) -----------
     phi = unscattered_illumination(P_leaf.detach(), H)
     dn_o = object_denominator(phi, mode=cfg.object_denom, denom_reg=cfg.denom_reg)
+    assert O_leaf.grad is not None  # populated by the backward pass above
     d = (-O_leaf.grad) / dn_o  # descent = -O.grad (torch Wirtinger convention)
     if cfg.momentum > 0 and st.disp_prev is not None:
         d = d + cfg.momentum * st.disp_prev
@@ -461,8 +460,13 @@ def linesearch_batch_update(
     if intensity_postmap is not None:
         v, w = intensity_postmap(v), intensity_postmap(w)
     a = line_search(
-        e, v, w, omega,
-        fallback=cfg.alpha / N, ls_damp=cfg.ls_damp, max_step=cfg.max_step,
+        e,
+        v,
+        w,
+        omega,
+        fallback=cfg.alpha / N,
+        ls_damp=cfg.ls_damp,
+        max_step=cfg.max_step,
         step_log=st.steps_o,
     )
 
@@ -484,9 +488,7 @@ def linesearch_batch_update(
         e = u_p - I_dat
 
         # q from the gradient at the PRE-step object, K_P from pre-step O
-        dn_p = probe_denominator(
-            O_leaf.detach(), mode=cfg.probe_denom, denom_reg=cfg.denom_reg
-        )
+        dn_p = probe_denominator(O_leaf.detach(), mode=cfg.probe_denom, denom_reg=cfg.denom_reg)
         q = (-P_leaf.grad) / dn_p
 
         # D_P = F(q; g2): F is linear in P, so one ordinary forward with q in
@@ -497,8 +499,13 @@ def linesearch_batch_update(
         if intensity_postmap is not None:
             v_p, w_p = intensity_postmap(v_p), intensity_postmap(w_p)
         b = line_search(
-            e, v_p, w_p, omega,
-            fallback=cfg.beta / N, ls_damp=cfg.ls_damp, max_step=cfg.max_step,
+            e,
+            v_p,
+            w_p,
+            omega,
+            fallback=cfg.beta / N,
+            ls_damp=cfg.ls_damp,
+            max_step=cfg.max_step,
             step_log=st.steps_p,
         )
         probe = probe + b * q
@@ -581,7 +588,7 @@ def linesearch_model_update(
         std = model.detector_blur_std
 
         def postmap(x):
-            return gaussian_blur(x, kernel_size=5, sigma=std)
+            return gaussian_blur(x, kernel_size=[5, 5], sigma=std)
 
     # snapshot pre-step patches for loss evaluation (stack copies the data,
     # so the in-place window step below cannot alias it)
@@ -590,15 +597,22 @@ def linesearch_model_update(
         patches0 = torch.stack([obja_win, objp_win], dim=-1).unsqueeze(0)
 
     probe_new, diag = linesearch_batch_update(
-        obja_win, objp_win, probe, H, I_dat, None, model.omode_occu,
-        config=cfg, state=st, update_probe=update_probe, intensity_postmap=postmap,
+        obja_win,
+        objp_win,
+        probe,
+        H,
+        I_dat,
+        None,
+        model.omode_occu,
+        config=cfg,
+        state=st,
+        update_probe=update_probe,
+        intensity_postmap=postmap,
     )
 
     if loss_fn is not None:
         with torch.no_grad():
-            _, diag["losses"] = loss_fn(
-                diag["model_dp"], I_dat, patches0, model.omode_occu
-            )
+            _, diag["losses"] = loss_fn(diag["model_dp"], I_dat, patches0, model.omode_occu)
 
     with torch.no_grad():
         model.opt_obja.data[:, :, gy, gx] = obja_win
@@ -624,9 +638,7 @@ def _shift_views(x, shifts, grid):
     cannot shift B distinct images by B distinct shifts). Unitary; the
     adjoint/inverse is the same call with -shifts."""
     ky, kx = grid[0], grid[1]
-    phase = -2.0 * torch.pi * (
-        shifts[:, 1, None, None] * kx + shifts[:, 0, None, None] * ky
-    )
+    phase = -2.0 * torch.pi * (shifts[:, 1, None, None] * kx + shifts[:, 0, None, None] * ky)
     w = torch.polar(torch.ones_like(phase), phase).unsqueeze(1)  # (B, 1, Ny, Nx)
     return ifft2(fft2(x) * w)
 
@@ -687,7 +699,7 @@ def linesearch_model_update_batched(
         std = model.detector_blur_std
 
         def postmap(x):
-            return gaussian_blur(x, kernel_size=5, sigma=std)
+            return gaussian_blur(x, kernel_size=[5, 5], sigma=std)
 
     # ---- step 1: forward through a differentiable canvas gather ------------
     O_canvas = torch.polar(model.opt_obja.data, model.opt_objp.data).requires_grad_(True)
@@ -740,6 +752,7 @@ def linesearch_model_update_batched(
             dn = peak
         else:
             dn = K_canvas + peak * cfg.denom_reg
+        assert O_canvas.grad is not None  # populated by the backward pass above
         d_canvas = (-O_canvas.grad) / dn.clamp_min(DN_EPS)
         if cfg.momentum > 0 and st.disp_prev is not None and st.disp_prev.shape == d_canvas.shape:
             d_canvas = d_canvas + cfg.momentum * st.disp_prev
@@ -752,8 +765,13 @@ def linesearch_model_update_batched(
         if postmap is not None:
             v, w = postmap(v), postmap(w)
         a = line_search(
-            e, v, w, omega,
-            fallback=cfg.alpha / N, ls_damp=cfg.ls_damp, max_step=cfg.max_step,
+            e,
+            v,
+            w,
+            omega,
+            fallback=cfg.alpha / N,
+            ls_damp=cfg.ls_damp,
+            max_step=cfg.max_step,
             step_log=st.steps_o,
         )
 
@@ -790,8 +808,13 @@ def linesearch_model_update_batched(
             if postmap is not None:
                 v_p, w_p = postmap(v_p), postmap(w_p)
             b = line_search(
-                e2, v_p, w_p, omega,
-                fallback=cfg.beta / N, ls_damp=cfg.ls_damp, max_step=cfg.max_step,
+                e2,
+                v_p,
+                w_p,
+                omega,
+                fallback=cfg.beta / N,
+                ls_damp=cfg.ls_damp,
+                max_step=cfg.max_step,
                 step_log=st.steps_p,
             )
             torch.view_as_complex(model.opt_probe.data).add_(b * q[0])

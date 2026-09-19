@@ -713,7 +713,6 @@ def plot_summary(
             )
 
     # Scan positions and tilts
-    init_pos = init_variables["crop_pos"] + init_variables["probe_pos_shifts"]
     pos = (model.crop_pos + model.opt_probe_pos_shifts).detach().cpu().numpy()
     tilts = model.opt_obj_tilts.detach().cpu().numpy()
     tilts = np.broadcast_to(tilts, (len(pos), 2))  # tilts has to be (N_scan, 2)

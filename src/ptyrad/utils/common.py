@@ -68,7 +68,8 @@ def set_accelerator():
             DistributedDataParallelKwargs(find_unused_parameters=True)
         ]  # This avoids the error `RuntimeError: Expected to have finished reduction in the prior iteration before starting a new one. This error indicates that your module has parameters that were not used in producing loss.` Previously we don't necessarily need this if we carefully register parameters (used in forward) and buffer in the `model`. This is now needed if we want to toggle the grad for optimizable tensors dynamically between iterations.
         accelerator = Accelerator(
-            dataloader_config=dataloader_config, kwargs_handlers=kwargs_handlers
+            dataloader_config=dataloader_config,
+            kwargs_handlers=kwargs_handlers,  # ty: ignore[invalid-argument-type]  # list invariance
         )
         vprint("### Initializing HuggingFace accelerator ###")
         vprint(f"Accelerator.distributed_type = {accelerator.distributed_type}")
@@ -284,7 +285,7 @@ def print_system_info():
         cpus = int(os.environ["SLURM_JOB_CPUS_PER_NODE"])
     else:
         # Fallback to the total number of CPU cores on the node
-        cpus = os.cpu_count()
+        cpus = os.cpu_count() or 1
     vprint(f"Available CPU cores: {cpus}")
 
     # Memory information

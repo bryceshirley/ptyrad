@@ -218,7 +218,7 @@ def save_dict_to_hdf5(
                         subgroup = h5group.create_group(key)
                         for idx, item in enumerate(value):
                             item_group = subgroup.create_group(str(idx))
-                            _recursively_save_dict_to_hdf5(item, item_group)
+                            _recursively_save_dict_to_hdf5(item, item_group)  # ty: ignore[invalid-argument-type]
 
                     elif all(isinstance(i, (np.ndarray, torch.Tensor)) for i in value):
                         try:

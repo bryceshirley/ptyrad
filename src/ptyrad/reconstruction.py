@@ -4,6 +4,7 @@ Reconstruction and hypertune workflows for ptychographic reconstructions
 
 import concurrent.futures
 import logging
+import os
 import warnings
 from copy import deepcopy
 from random import shuffle
@@ -12,8 +13,12 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.distributed as dist
-from torch.fft import fft2, fftshift, ifft2, ifftshift
 from torch.utils.data import Dataset
+
+try:
+    from torchvision.transforms.functional import gaussian_blur
+except ImportError:  # torchvision unavailable: use the local separable blur
+    from ptyrad.utils import gaussian_blur_2d as gaussian_blur
 
 from ptyrad.constraints import CombinedConstraint
 from ptyrad.initialization import Initializer
@@ -21,10 +26,8 @@ from ptyrad.losses import CombinedLoss, get_objp_contrast, get_objp_frc_auc
 from ptyrad.models import PtychoAD
 from ptyrad.save import copy_params_to_dir, make_output_folder, save_results
 from ptyrad.utils import (
-    fftshift2,
     get_blob_size,
     get_time,
-    ifftshift2,
     ndarrays_to_tensors,
     parse_hypertune_params_to_str,
     parse_sec_to_time_str,
@@ -664,7 +667,6 @@ def recon_loop(
 
     model_instance = model.module if hasattr(model, "module") else model
 
-
     vprint("### Start the PtyRAD iterative ptycho reconstruction ###", verbose=verbose)
 
     recon_step_compiled = recon_step
@@ -679,7 +681,6 @@ def recon_loop(
             )
             torch._dynamo.reset()
             recon_step_compiled = torch.compile(recon_step, **compiler_configs)
-
 
         batch_losses = recon_step_compiled(
             batches,
@@ -748,7 +749,6 @@ def recon_step(
         if hasattr(model_instance, "_orig_mod"):
             model_instance = model_instance._orig_mod
 
-
     if isinstance(optimizer, torch.optim.LBFGS):
         num_batch = len(batches)
         batch_indices = np.arange(num_batch)
@@ -787,11 +787,18 @@ def recon_step(
 
     else:
         optimizer.zero_grad(set_to_none=True)
-        
+
         # 🌟 INITIALIZE PRECONDITIONER CANVAS
+        # PTYRAD_DISABLE_ISS_PRECOND=1 skips the illumination preconditioner:
+        # at batch 1 the canvas holds a single position, so the focused
+        # entrance slice divides its patch-periphery gradients by ~1e-4
+        # (measured to destroy the entrance slice of a 2-slab test), and the
+        # canvas costs one sequential vacuum multislice pass per position.
         precond_canvas = (
-            torch.zeros_like(model_instance.opt_obja) 
-            if model_instance.solver_type == "born" else None
+            torch.zeros_like(model_instance.opt_obja)
+            if model_instance.solver_type == "born"
+            and not os.environ.get("PTYRAD_DISABLE_ISS_PRECOND")
+            else None
         )
 
         for batch_idx, batch in enumerate(batches):
@@ -801,7 +808,7 @@ def recon_step(
             loss_batch = loss_batch / grad_accumulation
 
             acc.backward(loss_batch) if acc is not None else loss_batch.backward()
-            
+
             # ACCUMULATE BATCH ILLUMINATION
             if precond_canvas is not None:
                 model_instance.accumulate_iss_preconditioner(batch, precond_canvas)
@@ -809,21 +816,21 @@ def recon_step(
             if (batch_idx + 1) % grad_accumulation == 0 or (batch_idx + 1) == len(batches):
                 if acc is not None:
                     acc.wait_for_everyone()
-                    
+
                 # APPLY PRECONDITIONER TO GRADIENTS BEFORE OPTIMIZER STEP
                 if precond_canvas is not None:
                     with torch.no_grad():
                         # Normalize to 1 so the learning rate defined in config remains valid
                         max_val = precond_canvas.amax(dim=(-2, -1), keepdim=True)
-                        epsilon = 1e-4 * max_val.clamp(min=1e-8) # Tikhonov regularization
-                        
+                        epsilon = 1e-4 * max_val.clamp(min=1e-8)  # Tikhonov regularization
+
                         precond = (precond_canvas + epsilon) / (max_val + epsilon)
-                        
+
                         if model_instance.opt_obja.grad is not None:
                             model_instance.opt_obja.grad /= precond
                         if model_instance.opt_objp.grad is not None:
                             model_instance.opt_objp.grad /= precond
-                        
+
                         # Reset canvas for the next accumulation cycle
                         precond_canvas.zero_()
 
@@ -845,6 +852,7 @@ def recon_step(
                 )
 
     constraint_fn(model_instance, niter)
+    refit_born_coeffs(model_instance, niter, verbose=verbose)
 
     iter_t = time_sync() - start_iter_t
     model_instance.loss_iters.append(
@@ -859,6 +867,240 @@ def recon_step(
     )
 
     return batch_losses
+
+
+@torch._dynamo.disable
+def refit_born_coeffs(model, niter, verbose=True):
+    """Schedule gate for the Born-coefficient refit
+    (model_params['born_coeffs_refit']); dispatches on cfg['method'] to
+    _refit_born_coeffs_detector (detector-space least squares against the
+    exact full-depth target) or _refit_born_coeffs_gmres (equation-residual
+    fit on the Krylov Gram).
+
+    The former method='data' multi-start L-BFGS fit against measured
+    intensities was removed: data-fitted coefficients absorb object error
+    (the gauge leak — reconstruction quality collapses even with bounded,
+    smooth coefficients), which both operator-level fits close by
+    construction. Runs after the constraints each iteration and writes
+    opt_born_coeffs.data directly — no autograd involved.
+    """
+    cfg = getattr(model, "born_refit", None)
+    if not cfg or cfg.get("start_iter") is None or model.solver_type != "born":
+        return
+    start, step, end = cfg["start_iter"], cfg["step"], cfg.get("end_iter")
+    if niter < start or (end is not None and niter >= end) or (niter - start) % step != 0:
+        return
+    if cfg.get("method") == "detector":
+        _refit_born_coeffs_detector(model, niter, cfg, verbose=verbose)
+    else:
+        _refit_born_coeffs_gmres(model, niter, cfg, verbose=verbose)
+
+
+@torch._dynamo.disable
+def _refit_born_coeffs_detector(model, niter, cfg, verbose=True):
+    """Detector-space Born-coefficient update on the calibration views.
+
+    Least-squares fit of the truncated detector field against the exact
+    nilpotent-terminated (full-depth) Born pass of the current object
+    (born_helpers.born_detector_coeffs) — the orthogonal projection of the
+    model's own exact detector wave onto the order-n detector subspace,
+    convex and closed-form. The target is the current operator's exact
+    limit, computed by the same parallel recursion: no sequential multislice
+    code, no reconstruction oracle, and the measured data never enters, so
+    the coefficients track truncation error only and cannot absorb object
+    error (no gauge leak); the logged rel data residual is diagnostic.
+    The detector Gram is additive over views, so accumulation is chunked;
+    only Nz detector frames per view are held (no internal state volumes).
+    With cfg['grow_tol'] set, born_iterations grows by 1 (up to n_limit,
+    capped at Nz) whenever the detector-fit residual at the current order
+    exceeds the tolerance — with target='born' the full-depth Gram prices
+    every order (no lookahead pass); with target='multislice' one extra
+    basis order is carried as lookahead, like the GMRES fit.
+    cfg['pin_first'] is ignored: c0 = 1 is implicit (D0 enters at unit
+    weight) and no gauge pin is required. cfg['target'] picks how the exact
+    target is built: 'born' (full-depth recursion, ~Nz^2 slice-FFTs/view) or
+    'multislice' (one sequential sweep, linear in depth) — identical
+    objective and coefficients, different cost scaling.
+    """
+    from ptyrad.forward_models.born_helpers import (
+        born_detector_coeffs,
+        born_detector_gram,
+        born_multislice_target,
+        born_seq_detector_coeffs,
+        born_seq_detector_stats,
+    )
+
+    n = model.born_iterations
+    idx = model.born_refit_views
+    ridge = float(cfg.get("ridge", 1e-3))
+    grow_tol = cfg.get("grow_tol")
+    seq = cfg.get("target") == "multislice"
+    n_limit = min(int(cfg.get("n_limit") or model.n_slice), model.n_slice)
+    # retain one extra order of detector fields when growth is possible so
+    # neither the growth probe nor the data-residual diagnostic needs a
+    # second pass
+    n_keep = min(n + 1, n_limit) if grow_tol is not None else n
+    grew = False
+    with torch.no_grad():
+        Dg, A, rhs, t, d0n2 = None, None, None, 0.0, 0.0
+        D0_parts, D_parts, T_parts = [], [], []
+        for sl in idx.split(8):
+            patches = model.get_obj_patches(sl)
+            probes = model.get_probes(sl)
+            H3 = model.get_propagators_3d(model.get_propagators(sl))
+            if seq:
+                D0c, Dc, Ac, rc, tc, d0c = born_seq_detector_stats(
+                    patches, probes, H3, n_keep, model.omode_occu
+                )
+                A = Ac if A is None else A + Ac
+                rhs = rc if rhs is None else rhs + rc
+                t += tc
+                D_parts.append(Dc)
+                # exact target field for the eps_int diagnostic: one extra
+                # sequential sweep (~2 Nz slice-FFTs per view, logging only)
+                T_parts.append(born_multislice_target(patches, probes, H3) - D0c)
+            else:
+                D0c, Dc, Dgc, d0c = born_detector_gram(patches, probes, H3, model.omode_occu)
+                Dg = Dgc if Dg is None else Dg + Dgc
+                T_parts.append(Dc.sum(dim=0))  # full-depth sum = exact target
+                D_parts.append(Dc[:n_keep].clone())
+            d0n2 += d0c
+            D0_parts.append(D0c)
+            del D0c, Dc
+        assert D_parts  # idx is never empty: at least one chunk accumulated
+        D0 = torch.cat(D0_parts, dim=0)
+        Dn = torch.cat(D_parts, dim=1)
+        T = torch.cat(T_parts, dim=0)
+
+        def _fit(m):
+            if seq:
+                return born_seq_detector_coeffs(A, rhs, t, m, ridge=ridge, d0_norm2=d0n2)
+            return born_detector_coeffs(Dg, m, ridge=ridge, d0_norm2=d0n2)
+
+        c, det_res = _fit(n)
+        if grow_tol is not None and det_res > float(grow_tol) and n < n_limit:
+            n += 1
+            model.born_iterations = n
+            c, det_res = _fit(n)
+            grew = True
+        Dn = Dn[:n]
+        model.opt_born_coeffs.data = torch.stack([c.real, c.imag], -1).to(
+            dtype=model.opt_born_coeffs.dtype, device=model.opt_born_coeffs.device
+        )
+
+        # diagnostics for logging only — the fit above never saw the data.
+        # eps_int: the resummed model INTENSITY error vs the exact detector
+        # intensity of the current object (the online tilde-epsilon); det_res
+        # is its field-space counterpart from the fit itself.
+        meas = model.get_measurements(idx)
+        Ny, Nx = D0.shape[-2:]
+        norm_weight = (model.omode_occu / (Nx * Ny)).view(1, 1, -1, 1, 1)
+        F = D0 + (c.to(D0.device).view(-1, 1, 1, 1, 1, 1) * Dn).sum(dim=0)
+
+        def _dp_of(field):
+            dp = torch.fft.fftshift(
+                torch.sum(field.abs().square() * norm_weight, dim=(1, 2)), dim=(-2, -1)
+            )
+            if model.detector_blur_std:
+                dp = gaussian_blur(dp, kernel_size=[5, 5], sigma=model.detector_blur_std)
+            return dp
+
+        dp = _dp_of(F)
+        dp_exact = _dp_of(D0 + T)
+        eps_int = ((dp - dp_exact).norm() / dp_exact.norm()).item()
+        res = ((dp - meas).norm() / meas.norm()).item()
+
+    coeff_str = " ".join(f"{a:+.3f}{b:+.3f}j" for a, b in model.opt_born_coeffs.tolist())
+    base = "detector-ms" if seq else "detector"
+    tag = base if grow_tol is None else f"{base}, n={n}{' grew' if grew else ''}"
+    vprint(
+        f"Refit born_coeffs at iter {niter} ({len(idx)} views, {tag}): "
+        f"rel det residual {det_res:.3e}, rel int error {eps_int:.3e}, "
+        f"rel data residual {res:.3e}, c = [{coeff_str}]",
+        verbose=verbose,
+    )
+
+
+@torch._dynamo.disable
+def _refit_born_coeffs_gmres(model, niter, cfg, verbose=True):
+    """Residual-minimizing (GMRES) Born-coefficient update on the calibration views.
+
+    Chooses the coefficients that minimize the wave-equation residual over the
+    cached Krylov basis (born_helpers.born_gmres_coeffs) — a convex closed-form fit
+    computed entirely from the current object operator. The measured data
+    never enters the fit, so the coefficients track truncation error only and
+    cannot absorb object error (no gauge leak); the logged rel data residual
+    is diagnostic. The Gram matrix is additive over views, so accumulation is
+    chunked to bound memory (all n+2 order volumes are held per chunk only).
+    With cfg['grow_tol'] set, each refit probes one order of lookahead and
+    grows model.born_iterations (and opt_born_coeffs) in place whenever the
+    current-order equation residual exceeds the tolerance — the classical
+    "iterate to tolerance" GMRES policy, driven entirely by the operator.
+    """
+    from ptyrad.forward_models.born_helpers import born_gmres_coeffs, born_krylov_gram
+
+    n = model.born_iterations
+    idx = model.born_refit_views
+    pin = bool(cfg.get("pin_first", True))
+    ridge = float(cfg.get("ridge", 1e-3))
+    # Adaptive order growth: probe one order of lookahead in the Gram (the
+    # basis recursion is unchanged by extra orders, so G[:m+2, :m+2] is
+    # exactly the Gram of order m) and promote born_iterations when the
+    # equation residual at the current order exceeds grow_tol. Monotone,
+    # at most +1 per refit, capped at n_limit and the nilpotent Nz.
+    grow_tol = cfg.get("grow_tol")
+    n_limit = min(int(cfg.get("n_limit") or model.n_slice), model.n_slice)
+    n_probe = min(n + 1, n_limit) if (grow_tol is not None and n < n_limit) else n
+    grew = False
+    with torch.no_grad():
+        G = None
+        D0_parts, D_parts = [], []
+        for sl in idx.split(8):
+            patches = model.get_obj_patches(sl)
+            probes = model.get_probes(sl)
+            H3 = model.get_propagators_3d(model.get_propagators(sl))
+            D0c, Dc, Gc = born_krylov_gram(patches, probes, H3, n_probe, model.omode_occu)
+            G = Gc if G is None else G + Gc
+            D0_parts.append(D0c)
+            D_parts.append(Dc)
+        assert G is not None  # idx is never empty: at least one chunk accumulated
+        D0 = torch.cat(D0_parts, dim=0)
+        Dn = torch.cat(D_parts, dim=1)
+
+        c, eq_res = born_gmres_coeffs(
+            G[: n + 2, : n + 2].clone(),
+            n,
+            pin_first=pin,
+            ridge=ridge,
+        )
+        if n_probe > n and eq_res > float(grow_tol):
+            c, eq_res = born_gmres_coeffs(G, n_probe, pin_first=pin, ridge=ridge)
+            n = n_probe
+            model.born_iterations = n_probe
+            grew = True
+        Dn = Dn[:n]
+        model.opt_born_coeffs.data = torch.stack([c.real, c.imag], -1).to(
+            dtype=model.opt_born_coeffs.dtype, device=model.opt_born_coeffs.device
+        )
+
+        # data residual for logging only — the fit above never saw the data
+        meas = model.get_measurements(idx)
+        Ny, Nx = D0.shape[-2:]
+        norm_weight = (model.omode_occu / (Nx * Ny)).view(1, 1, -1, 1, 1)
+        F = D0 + (c.to(D0.device).view(-1, 1, 1, 1, 1, 1) * Dn).sum(dim=0)
+        dp = torch.fft.fftshift(torch.sum(F.abs().square() * norm_weight, dim=(1, 2)), dim=(-2, -1))
+        if model.detector_blur_std:
+            dp = gaussian_blur(dp, kernel_size=[5, 5], sigma=model.detector_blur_std)
+        res = ((dp - meas).norm() / meas.norm()).item()
+
+    coeff_str = " ".join(f"{a:+.3f}{b:+.3f}j" for a, b in model.opt_born_coeffs.tolist())
+    tag = "gmres" if grow_tol is None else f"gmres, n={n}{' grew' if grew else ''}"
+    vprint(
+        f"Refit born_coeffs at iter {niter} ({len(idx)} views, {tag}): "
+        f"rel eq residual {eq_res:.3e}, rel data residual {res:.3e}, "
+        f"c = [{coeff_str}]",
+        verbose=verbose,
+    )
 
 
 def toggle_grad_requires(model, niter, verbose=True):
@@ -1011,8 +1253,9 @@ def optuna_objective(trial, params, init, loss_fn, constraint_fn, device="cuda",
         "slr": "probe_pos_shifts",
         "tlr": "obj_tilts",
         "dzlr": "slice_thickness",
+        "bclr": "born_coeffs",
     }
-    for vname in ["plr", "oalr", "oplr", "slr", "tlr", "dzlr"]:
+    for vname in ["plr", "oalr", "oplr", "slr", "tlr", "dzlr", "bclr"]:
         if tune_params[vname]["state"]:
             vparams = tune_params[vname]
             params["model_params"]["update_params"][lr_to_tensor[vname]]["lr"] = get_optuna_suggest(

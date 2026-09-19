@@ -309,7 +309,7 @@ def validate_source_params_pair(
         if not isinstance(params_value, expected_type):
             raise TypeError(
                 f"For {source_name}_source='{source_value}', "
-                f"{source_name}_params must be of type {expected_type.__name__}, "
+                f"{source_name}_params must be of type {getattr(expected_type, '__name__', expected_type)}, "
                 f"but got {type(params_value).__name__}."
             )
 
@@ -1014,8 +1014,8 @@ class InitParams(BaseModel):
     @field_validator("tilt_params")
     @classmethod
     def validate_tilt_params(
-        cls, v: TiltParams | FilePathWithKey | pathlib.Path | np.ndarray, info
-    ) -> TiltParams | FilePathWithKey | pathlib.Path | np.ndarray:
+        cls, v: TiltParams | FilePathWithKey | pathlib.Path | np.ndarray | None, info
+    ) -> TiltParams | FilePathWithKey | pathlib.Path | np.ndarray | None:
         if v is None:
             return None
         if isinstance(v, (TiltParams, np.ndarray)):
