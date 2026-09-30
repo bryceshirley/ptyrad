@@ -163,7 +163,7 @@ class ModelParams(BaseModel):
         "with twice the slices). The fourth-order schemes require "
         "propagator_kernel='fresnel'. With n_slices=1 they fall back to the "
         "single-transmission model (logged once). Removed 2026-09-30 (fe_v3 "
-        "verdicts, git history): 'lt_x2', 'saba3', kick_mode='untied', and "
+        "verdicts): 'lt_x2', 'saba3', kick_mode='untied', and "
         "transmission_correction='gradient'.",
     )
 

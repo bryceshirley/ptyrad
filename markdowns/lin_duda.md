@@ -3,10 +3,11 @@
 Condensed 2026-09-30 from `lin_duda_test_report.md` (ptychobench 3D
 test/benchmark, 2026-09-27/28), `report.md` (MultiLinDuda in
 Waller-Lab/multi-layer-born, 2026-09-28), and `tem_ptycho_application.md`
-(the proposal). Full reports: git history, commit 7e333cd. The
-implementations were deleted in the 2026-09-30 cleanup (the
-multi-layer-born clone + branch `linduda-lt` + its patch, the ptychobench
-checkout and worktrees) — reviving means reimplementing from the math here.
+(the proposal; full reports deleted in the 2026-09-30 cleanup — this
+condensation is the surviving record). The implementations were deleted
+too (the multi-layer-born clone + branch `linduda-lt` + its patch, the
+ptychobench checkout and worktrees) — reviving means reimplementing from
+the math here.
 
 ## What Lin–Duda is
 

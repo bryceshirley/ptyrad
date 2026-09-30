@@ -69,7 +69,7 @@ for the forward-consistency check.
 ## Reconstructing in PtyRAD
 
 The dedicated smoke/dense128b config templates were removed in the
-2026-09-30 params cleanup (git history, commit 03e0acc, has them). Adapt
+2026-09-30 params cleanup. Adapt
 one of the kept configs instead — `demo/params/pso_born_grow.yml` (Born +
 adaptive order growth, the right starting point for generated deep
 stacks) or `demo/params/pso_ms_b1_n100.yml` (multislice) — using the

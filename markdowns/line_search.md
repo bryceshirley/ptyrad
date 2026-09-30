@@ -1,11 +1,11 @@
 # Exact line-search / maximum-likelihood engines — what was tried, what survived
 
-Condensed 2026-09-30 from `LINESEARCH_BORN_SPEC.md` (the port spec; last
-tracked before commit 999a03d) and the ML-ISS campaign records. Surviving
-code: `src/ptyrad/mliss.py` + `test/test_mliss.py` / `test_mliss_m2.py`
-(committed e619471). Retired: `linesearch.py` (exact quartic line search;
-survives at aa212b7 and on branch `ml-strategies` in the sep13 worktree
-lineage) and `mlms.py` (ML-multislice; same branch). The shared helpers
+Condensed 2026-09-30 from `LINESEARCH_BORN_SPEC.md` (the port spec;
+tracked until the scripts retirement — content survives at 5857c92) and
+the ML-ISS campaign records. Surviving code: `src/ptyrad/mliss.py` +
+`test/test_mliss.py` / `test_mliss_m2.py`. Retired: `linesearch.py`
+(exact quartic line search; survives at aa212b7) and `mlms.py`
+(ML-multislice; deleted with the reproduce worktrees). The shared helpers
 and `brent_min` moved verbatim INTO mliss.py at retirement.
 
 ## The structural fact everything rests on

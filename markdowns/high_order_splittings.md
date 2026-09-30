@@ -4,7 +4,8 @@ Condensed 2026-09-30 from `CHIN_SPLITTING_REPORT.md` (2026-09-25),
 `fe_v2_results.md`/`fe_v3_results.md` (forward-error studies v2/v3,
 2026-09-26/28), `claims_ledger.md` (C1–C24), `DEPTH_DIAGNOSIS.md`,
 `CRYO_RESULTS.md`, and the deep-stack Born benchmark (`PROMPT.md`/
-`WORKLOG.md`). Full reports: git history, commit 7e333cd.
+`WORKLOG.md`); the full reports were deleted in the 2026-09-30 cleanup —
+this condensation is the surviving record.
 
 ## What survives in the code (the paper set)
 
@@ -68,7 +69,7 @@ scheme; visually the dumbbells resolve under chin and merge under lt11.
 At 6 slices no scheme keeps the fine band and LT additionally loses half
 the MAIN band (0.53).
 
-## What was tried and removed (2026-09-30; git history has it all)
+## What was tried and removed (2026-09-30)
 
 **saba3** (3-pt Gauss–Legendre, 3 FFT pairs/slice; local order 7 with g),
 **lt_x2** (two half-phase transmissions per slab — the cost-matched
