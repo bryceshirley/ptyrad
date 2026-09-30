@@ -7,6 +7,7 @@ name = "ptyrad"
 dynamic = ["version"]
 authors = [
   { name="Chia-Hao Lee", email="cl2696@cornell.edu" },
+  { name="Bryce Shirley", email="bryce.shirley@stfc.ac.uk"}
 ]
 description = "PtyRAD: Ptychographic Reconstruction with Automatic Differentiation"
 readme = "README.md"
@@ -40,8 +41,16 @@ dependencies = [
   "tqdm>=4.67.3",
 ]
 
+[project.optional-dependencies]
+# synthetic 4D-STEM dataset generation (src/generate_data, `generate-data` CLI)
+datagen = [
+  "abtem>=1.0.10",
+  "cupy-cuda12x[ctk]>=14.2.0",
+]
+
 [project.scripts]
 ptyrad = "ptyrad.cli:main"
+generate-data = "generate_data.cli:main"
 
 [project.urls]
 "Homepage" = "https://github.com/chiahao3/ptyrad"
@@ -72,7 +81,50 @@ select = [
 ignore = [
     "E501",  # line too long (handled by formatter)
     "T201", # print statements (allowed in CLI tool)
+    "E741",  # ambiguous variable name: O is the object transmission function throughout the physics code
 ]
+
+[tool.ruff.lint.per-file-ignores]
+# tests and analysis/benchmark scripts set env vars and disable dynamo
+# before importing torch, so module imports cannot all sit at the top
+"test/**" = ["E402"]
+"scripts/**" = ["E402"]
+"analysis/**" = ["E402"]
+"born_coeff_test*.py" = ["E402"]
+"born_vs_recon*.py" = ["E402"]
+
+[tool.ty.src]
+include = ["src"]
+
+# generate_data leans on untyped optional deps (abtem, cupy, ase)
+[[tool.ty.overrides]]
+include = ["src/generate_data/**"]
+
+[tool.ty.overrides.rules]
+unresolved-import = "ignore"
+
+# Legacy untyped modules: attribute access through torch nn.Module's
+# __getattr__ (registered buffers/params come back as Tensor | Module) and
+# Optional-heavy initialization code produce stub-driven noise these rules
+# cannot see through. New code (e.g. forward_models/) gets full strictness.
+[[tool.ty.overrides]]
+include = [
+    "src/ptyrad/initialization.py",
+    "src/ptyrad/models.py",
+    "src/ptyrad/reconstruction.py",
+    "src/ptyrad/visualization.py",
+    "src/ptyrad/utils/image_proc.py",
+]
+
+[tool.ty.overrides.rules]
+unresolved-attribute = "ignore"
+not-subscriptable = "ignore"
+not-iterable = "ignore"
+call-non-callable = "ignore"
+invalid-argument-type = "ignore"
+unsupported-operator = "ignore"
+no-matching-overload = "ignore"
+invalid-method-override = "ignore"
 
 [tool.ruff.format]
 quote-style = "double"

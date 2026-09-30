@@ -1,0 +1,442 @@
+# PSO (PrScO3), Chin 4A fourth-order splitting at HALF the slices of the
+# 21-slice Lie-Trotter benchmark: 11 slices x 19.1 A, dz-matched
+# regularisation (z-blur std in A, oalr/oplr and sparse weight scaled with
+# dz). Result (markdowns/high_order_splittings.md): loss_single@100 0.2647
+# vs benchmark 0.2638 (= run-to-run noise), z-sum phase corr 0.964, and 8x
+# more fine-band (0.3-0.6 Nyquist) power than lt11 — the Pr-O dumbbells
+# resolve. Cost: two FFT pairs/slice = Lie-Trotter at 2x slices.
+#
+# The fourth-order schemes REQUIRE propagator_kernel: fresnel (with angular
+# spectrum the double commutator is nonlocal and the order is lost).
+# splitting_gradient_term: false (g0) is the production choice — the g-term
+# is measured neutral on real data at +65% runtime.
+#
+# Wide-angle alternative (Hamiltonian correction, not a splitting): the
+# Lin-Duda cross term via solver_type: 'linduda' with linduda_order: 1 —
+# see markdowns/lin_duda.md for the win regime (thick + heavy + low-kV +
+# wide collection; PSO is marginal but testable). Splitting order and the
+# cross term fix DIFFERENT errors: chin_4a/4b converge the factorization,
+# linduda upgrades the generator.
+#
+# Run from demo/: PTYRAD_DISABLE_ISS_PRECOND=1 CUDA_VISIBLE_DEVICES=<UUID> \
+#   ../.venv/bin/python -m ptyrad run --params_path params/pso_chin4a_matched.yml
+init_params:
+  probe_illum_type: electron
+  probe_kv: 300
+  probe_conv_angle: 21.4
+  probe_defocus: -200
+  probe_c3: 0
+  probe_c5: 0
+  meas_Npix: 256
+  pos_N_scans: 4096
+  pos_N_scan_slow: 64
+  pos_N_scan_fast: 64
+  pos_scan_step_size: 0.41
+  meas_calibration:
+    mode: fitRBF
+    value: null
+  probe_pmode_max: 4
+  probe_pmode_init_pows:
+  - 0.02
+  obj_omode_max: 1
+  obj_omode_init_occu:
+    occu_type: uniform
+    init_occu: null
+  obj_Nlayer: 11
+  obj_slice_thickness: 19.09090909090909
+  meas_permute: null
+  meas_reshape: null
+  meas_flipT: null
+  meas_crop:
+  - null
+  - null
+  - - 68
+    - 188
+  - - 68
+    - 188
+  meas_pad:
+    mode: on_the_fly
+    padding_type: power
+    target_Npix: 256
+    value: 0
+  meas_resample:
+    mode: null
+    scale_factors:
+    - 2
+    - 2
+  meas_add_source_size: null
+  meas_add_detector_blur: null
+  meas_remove_neg_values:
+    mode: clip_neg
+    value: null
+    force: false
+  meas_normalization:
+    mode: max_at_one
+  meas_add_poisson_noise: null
+  meas_export: null
+  probe_permute: null
+  pos_scan_flipT: null
+  pos_scan_affine: null
+  pos_scan_rand_std: 0.15
+  meas_source: file
+  meas_params:
+    path: data/PSO/sample_data_PrScO3.mat
+    key: dp
+  probe_source: simu
+  probe_params: null
+  pos_source: simu
+  pos_params: null
+  obj_source: simu
+  obj_params: null
+  tilt_source: simu
+  tilt_params:
+    tilt_type: all
+    init_tilts:
+    - - 0
+      - 0
+hypertune_params:
+  if_hypertune: false
+  collate_results: true
+  append_params: true
+  n_trials: 5
+  timeout: null
+  sampler_params:
+    name: TPESampler
+    configs:
+      multivariate: true
+      group: true
+      constant_liar: true
+  pruner_params:
+    name: HyperbandPruner
+    configs:
+      min_resource: 5
+      reduction_factor: 2
+  storage_path: sqlite:///hypertune.sqlite3
+  study_name: PSO
+  error_metric: loss
+  tune_params:
+    optimizer:
+      state: false
+      suggest: cat
+      kwargs:
+        choices:
+        - Adam
+        - AdamW
+        - RMSprop
+        - SGD
+        optim_configs: {}
+    batch_size:
+      state: false
+      suggest: int
+      kwargs:
+        low: 16
+        high: 512
+        log: true
+    plr:
+      state: false
+      suggest: cat
+      kwargs:
+        choices:
+        - 0.01
+        - 0.0001
+        - 0.0001
+    oalr:
+      state: false
+      suggest: float
+      kwargs:
+        low: 0.0001
+        high: 0.01
+        step: null
+        log: true
+    oplr:
+      state: false
+      suggest: float
+      kwargs:
+        low: 0.0001
+        high: 0.01
+        step: null
+        log: true
+    slr:
+      state: false
+      suggest: float
+      kwargs:
+        low: 0.0001
+        high: 0.01
+        step: null
+        log: true
+    tlr:
+      state: false
+      suggest: float
+      kwargs:
+        low: 0.0001
+        high: 0.01
+        step: null
+        log: true
+    dzlr:
+      state: false
+      suggest: float
+      kwargs:
+        low: 0.0001
+        high: 0.01
+        step: null
+        log: true
+    dx:
+      state: false
+      suggest: float
+      kwargs:
+        low: 0.14
+        high: 0.16
+        step: null
+        log: false
+    pmode_max:
+      state: false
+      suggest: int
+      kwargs:
+        low: 1
+        high: 8
+        step: 1
+        log: false
+    conv_angle:
+      state: false
+      suggest: float
+      kwargs:
+        low: 24
+        high: 26
+        step: 1
+        log: false
+    defocus:
+      state: false
+      suggest: float
+      kwargs:
+        low: -50
+        high: 50
+        step: 0.1
+        log: false
+    c3:
+      state: false
+      suggest: float
+      kwargs:
+        low: 4000
+        high: 10000
+        step: null
+        log: false
+    c5:
+      state: false
+      suggest: float
+      kwargs:
+        low: 50000
+        high: 100000
+        step: 5000
+        log: false
+    Nlayer:
+      state: false
+      suggest: int
+      kwargs:
+        low: 1
+        high: 8
+        step: 1
+        log: false
+    dz:
+      state: false
+      suggest: float
+      kwargs:
+        low: 4
+        high: 8
+        step: 0.5
+        log: false
+    scale:
+      state: true
+      suggest: float
+      kwargs:
+        low: 0.8
+        high: 1.2
+        step: 0.02
+        log: false
+    asymmetry:
+      state: false
+      suggest: float
+      kwargs:
+        low: -0.2
+        high: 0.2
+        step: 0.05
+        log: false
+    rotation:
+      state: true
+      suggest: float
+      kwargs:
+        low: -4
+        high: 4
+        step: 0.5
+        log: false
+    shear:
+      state: false
+      suggest: float
+      kwargs:
+        low: -4
+        high: 4
+        step: 0.5
+        log: false
+    tilt_y:
+      state: false
+      suggest: float
+      kwargs:
+        low: -5
+        high: 5
+        step: 0.5
+        log: false
+    tilt_x:
+      state: false
+      suggest: float
+      kwargs:
+        low: -5
+        high: 5
+        step: 0.5
+        log: false
+model_params:
+  solver_type: multislice
+  born_iterations: 4
+  obj_preblur_std: null
+  detector_blur_std: 1
+  optimizer_params:
+    name: Adam
+    configs: {}
+    load_state: null
+  update_params:
+    obja:
+      start_iter: 1
+      lr: 0.00095455
+    objp:
+      start_iter: 1
+      lr: 0.00095455
+    obj_tilts:
+      start_iter: null
+      lr: 0
+    slice_thickness:
+      start_iter: null
+      lr: 0
+    probe:
+      start_iter: 1
+      lr: 0.0001
+    probe_pos_shifts:
+      start_iter: null
+      lr: 0
+    born_coeffs:
+      start_iter: null
+      lr: 0
+  propagator_kernel: fresnel
+  splitting: chin_4a
+loss_params:
+  loss_single:
+    state: true
+    weight: 1.0
+    dp_pow: 0.5
+  loss_poissn:
+    state: false
+    weight: 1.0
+    dp_pow: 1.0
+    eps: 1.0e-06
+  loss_pacbed:
+    state: false
+    weight: 0.5
+    dp_pow: 0.2
+  loss_sparse:
+    state: true
+    weight: 0.052381
+    ln_order: 1
+  loss_simlar:
+    state: false
+    weight: 0.1
+    obj_type: both
+    scale_factor:
+    - 1
+    - 1
+    - 1
+    blur_std: 1
+constraint_params:
+  ortho_pmode:
+    freq: 1
+  probe_mask_k:
+    freq: null
+    radius: 0.22
+    width: 0.05
+    power_thresh: 0.95
+  fix_probe_int:
+    freq: 1
+  obj_rblur:
+    freq: 1
+    obj_type: both
+    kernel_size: 5
+    std: 0.4
+  obj_zblur:
+    freq: 1
+    obj_type: both
+    kernel_size: 5
+    std: 0.5238
+  kr_filter:
+    freq: null
+    obj_type: both
+    radius: 0.15
+    width: 0.05
+  kz_filter:
+    freq: null
+    obj_type: both
+    beta: 1
+    alpha: 1
+  complex_ratio:
+    freq: null
+    obj_type: both
+    alpha1: 1
+    alpha2: 0
+  mirrored_amp:
+    freq: 1
+    relax: 0.1
+    scale: 0.03
+    power: 4
+  obja_thresh:
+    freq: 1
+    relax: 0
+    thresh:
+    - 0.96
+    - 1.04
+  objp_postiv:
+    freq: 1
+    relax: 0
+  tilt_smooth:
+    freq: null
+    std: 2
+recon_params:
+  NITER: 100
+  INDICES_MODE:
+    mode: full
+    subscan_slow: null
+    subscan_fast: null
+  BATCH_SIZE:
+    size: 1
+    grad_accumulation: 1
+  GROUP_MODE: random
+  SAVE_ITERS: 5
+  output_dir: output/chin_bench_b1
+  recon_dir_affixes:
+  - default
+  prefix_time: date
+  prefix: chin4a_matched_n100
+  postfix: ''
+  save_result:
+  - model
+  - objp
+  result_modes:
+    obj_dim:
+    - 2
+    - 3
+    - 4
+    FOV:
+    - crop
+    bit:
+    - '8'
+  selected_figs:
+  - loss
+  - forward
+  - probe_r_amp
+  - pos
+  copy_params: true
+  if_quiet: false

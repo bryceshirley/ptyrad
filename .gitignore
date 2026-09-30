@@ -21,3 +21,9 @@ docs/.ipynb_checkpoints/
 *.log
 *.npy
 /demo/*
+!/demo/params/
+!/A100_results/**
+.venv
+.ruff_cache
+.pytest_cache
+
