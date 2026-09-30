@@ -80,15 +80,7 @@ class TestLoadFunctions:
         with pytest.raises((FileNotFoundError, OSError)):
             load_npy("nonexistent_file.npy")
 
-    def test_load_raw(self):
-        """Test loading raw binary data - requires exact file format."""
-        # This test is skipped as it requires exact file format matching
-        pytest.skip("Requires exact file format matching for raw loader")
 
-    def test_load_params(self):
-        """Test loading YAML parameter files - requires complete params."""
-        # This test is skipped as it requires complete parameter validation
-        pytest.skip("Requires complete parameter validation")
 
 
 @pytest.fixture

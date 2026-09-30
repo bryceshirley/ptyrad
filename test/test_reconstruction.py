@@ -13,25 +13,9 @@ from test.utils import minimal_model_params
 class TestReconstruction:
     """Test suite for reconstruction module."""
 
-    def test_solver_initialization(self):
-        """Test basic solver initialization - requires complete params."""
-        # This test is skipped as it requires complex initialization
-        pytest.skip("Requires complete parameter setup for solver initialization")
 
-    def test_solver_with_different_devices(self):
-        """Test solver initialization on different devices - requires complete params."""
-        # This test is skipped as it requires complex initialization
-        pytest.skip("Requires complete parameter setup for device testing")
 
-    def test_solver_loss_initialization(self):
-        """Test that solver correctly initializes loss function - requires complete params."""
-        # This test is skipped as it requires complex initialization
-        pytest.skip("Requires complete parameter setup for loss initialization")
 
-    def test_solver_constraint_initialization(self):
-        """Test that solver correctly initializes constraint function - requires complete params."""
-        # This test is skipped as it requires complex initialization
-        pytest.skip("Requires complete parameter setup for constraint initialization")
 
     def test_solver_parameter_validation(self):
         """Test solver parameter validation."""
@@ -56,20 +40,8 @@ class TestReconstruction:
         with pytest.raises(Exception):  # Could be KeyError or other initialization errors
             PtyRADSolver(incomplete_params, device="cpu", seed=42)
 
-    def test_solver_quiet_mode(self):
-        """Test solver quiet mode setting - requires complete params."""
-        # This test is skipped as it requires complex initialization
-        pytest.skip("Requires complete parameter setup for quiet mode testing")
 
-    def test_solver_reconstruction_preparation(self):
-        """Test solver reconstruction preparation - requires complex setup."""
-        # This test is skipped as it requires complex initialization and full workflow
-        pytest.skip("Requires complex initialization for full reconstruction workflow")
 
-    def test_solver_hypertune_mode(self):
-        """Test solver hypertune mode - requires complex setup."""
-        # This test is skipped as it requires complex initialization and full workflow
-        pytest.skip("Requires complex initialization for hypertune workflow")
 
     def test_reconstruction_utility_functions(self):
         """Test reconstruction utility functions that don't require full initialization."""
@@ -120,34 +92,4 @@ class TestReconstruction:
         assert len(optimizer.param_groups) > 0
 
 
-@pytest.fixture
-def minimal_solver_params():
-    """Fixture providing minimal solver parameters for testing."""
-    return {
-        "init_params": {
-            "meas_Npix": 32,
-            "pos_N_scan_slow": 4,
-            "pos_N_scan_fast": 4,
-            "pos_scan_step_size": 0.4290,
-            "probe_kv": 80,
-            "probe_conv_angle": 24.9,
-            "probe_pmode_max": 1,
-            "obj_Nlayer": 1,
-            "obj_slice_thickness": 2,
-        },
-        "loss_params": {"MSE": {"state": True, "weight": 1.0, "power": 1}},
-        "constraint_params": {},
-        "model_params": minimal_model_params(),
-        "recon_params": {
-            "NITER": 2,
-            "SAVE_ITERS": None,
-            "BATCH_SIZE": {"size": 2, "grad_accumulation": 1},
-            "if_quiet": True,
-        },
-    }
 
-
-def test_solver_with_fixture(minimal_solver_params):
-    """Example test using the minimal solver params fixture - requires complete params."""
-    # This test is skipped as it requires complex initialization
-    pytest.skip("Requires complete parameter setup for solver testing")

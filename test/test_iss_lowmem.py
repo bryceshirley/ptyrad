@@ -25,13 +25,13 @@ def _setup(B, omode, Nz, Ny, Nx, pmode, Bp, seed=0):
     patches = torch.rand(B, omode, Nz, Ny, Nx, 2, generator=g, dtype=torch.float64)
     patches[..., 0] = 1.0 + 0.2 * (patches[..., 0] - 0.5)
     patches[..., 1] *= 0.4
-    probe = torch.randn(Bp, pmode, Ny, Nx, generator=g, dtype=torch.float64) \
-        + 1j * torch.randn(Bp, pmode, Ny, Nx, generator=g, dtype=torch.float64)
+    probe = torch.randn(Bp, pmode, Ny, Nx, generator=g, dtype=torch.float64) + 1j * torch.randn(
+        Bp, pmode, Ny, Nx, generator=g, dtype=torch.float64
+    )
     ky = torch.fft.fftfreq(Ny, dtype=torch.float64)
     kx = torch.fft.fftfreq(Nx, dtype=torch.float64)
     H1 = torch.exp(-1j * 0.3 * (ky[:, None] ** 2 + kx[None, :] ** 2) * Ny * Nx)
-    H = (H1 ** torch.arange(Nz, dtype=torch.float64).view(Nz, 1, 1)).view(
-        1, 1, 1, Nz, Ny, Nx)
+    H = (H1 ** torch.arange(Nz, dtype=torch.float64).view(Nz, 1, 1)).view(1, 1, 1, Nz, Ny, Nx)
     occu = torch.linspace(1.0, 0.5, omode, dtype=torch.float64)
     occu = occu / occu.sum()
     cot = torch.randn(B, Ny, Nx, generator=g, dtype=torch.float64)
@@ -56,14 +56,17 @@ def test_lowmem_matches_autograd(linearise, Bp, chunk):
 
     assert torch.allclose(dp1, dp2, rtol=1e-12, atol=1e-14)
     assert torch.allclose(p1.grad, p2.grad, rtol=1e-9, atol=1e-12 * p1.grad.abs().max())
-    assert torch.allclose(pr1.grad, pr2.grad, rtol=1e-9,
-                          atol=1e-12 * pr1.grad.abs().max())
+    assert torch.allclose(pr1.grad, pr2.grad, rtol=1e-9, atol=1e-12 * pr1.grad.abs().max())
 
 
 def test_lowmem_default_occupancy_and_float32():
     patches, probe, H, occu, cot = _setup(2, 1, 3, 16, 16, 2, 1, seed=1)
-    patches, probe, H, cot = (patches.float(), probe.to(torch.complex64),
-                              H.to(torch.complex64), cot.float())
+    patches, probe, H, cot = (
+        patches.float(),
+        probe.to(torch.complex64),
+        H.to(torch.complex64),
+        cot.float(),
+    )
     p1 = patches.clone().requires_grad_(True)
     pr1 = probe.clone().requires_grad_(True)
     dp1 = iss_forward(p1, pr1, H, None)
@@ -73,7 +76,5 @@ def test_lowmem_default_occupancy_and_float32():
     dp2 = iss_forward_lowmem(p2, pr2, H, None)
     (dp2 * cot).sum().backward()
     assert torch.allclose(dp1, dp2, rtol=1e-5, atol=1e-8)
-    assert torch.allclose(p1.grad, p2.grad, rtol=1e-4,
-                          atol=1e-5 * p1.grad.abs().max())
-    assert torch.allclose(pr1.grad, pr2.grad, rtol=1e-4,
-                          atol=1e-5 * pr1.grad.abs().max())
+    assert torch.allclose(p1.grad, p2.grad, rtol=1e-4, atol=1e-5 * p1.grad.abs().max())
+    assert torch.allclose(pr1.grad, pr2.grad, rtol=1e-4, atol=1e-5 * pr1.grad.abs().max())
