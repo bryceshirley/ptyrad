@@ -41,7 +41,7 @@ CKPT = os.path.join(
     REPO,
     "demo",
     "output",
-    "test_100",
+    "tBL_WSe2",
     "tBL_WSe2_multislice",
     "20260923_full_mlms_full_N16384_dp128_flipT100_random32_p6_1obj_12slice_"
     "dz1_plr1e-4_oalr5e-4_oplr5e-4_orblur0.5_ozblur1.0_mamp0.03_4.0_"
