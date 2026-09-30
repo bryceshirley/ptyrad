@@ -38,6 +38,42 @@ class PtychoAD(torch.nn.Module):
             self.born_iterations = model_params.get("born_iterations", 1)
             self.linduda_order = model_params.get("linduda_order", 2)
 
+            # Propagator kernel and multislice splitting scheme (validated here
+            # as well as in params.model_params so direct PtychoAD users get the
+            # same start-up errors).
+            self.propagator_kernel = model_params.get("propagator_kernel", "angular_spectrum")
+            self.splitting = model_params.get("splitting", "lie_trotter")
+            self.chin4b_drop_end_props = bool(model_params.get("chin4b_drop_end_props", False))
+            self.splitting_gradient_term = bool(
+                model_params.get("splitting_gradient_term", True)
+            )
+            if self.propagator_kernel not in ("angular_spectrum", "fresnel"):
+                raise ValueError(
+                    f"Invalid propagator_kernel: '{self.propagator_kernel}', "
+                    "use 'angular_spectrum' or 'fresnel'"
+                )
+            if self.splitting not in ("lie_trotter", "chin_4a", "chin_4b"):
+                raise ValueError(
+                    f"Invalid splitting: '{self.splitting}', "
+                    "use 'lie_trotter', 'chin_4a', or 'chin_4b'"
+                )
+            if self.splitting in ("chin_4a", "chin_4b"):
+                if self.solver_type != "multislice":
+                    raise ValueError(
+                        f"splitting='{self.splitting}' requires solver_type='multislice', "
+                        f"got '{self.solver_type}'"
+                    )
+            if self.splitting in ("chin_4a", "chin_4b"):
+                if self.propagator_kernel != "fresnel":
+                    raise ValueError(
+                        f"splitting='{self.splitting}' requires propagator_kernel='fresnel': "
+                        "with the angular-spectrum kernel the double commutator [V,[T,V]] "
+                        "is not a local multiplication and the fourth-order schemes are "
+                        "not fourth order"
+                    )
+
+            # Gradient-corrected transmissions for the Lie-Trotter multislice
+            # path (symmetric-BCH [Y,[Y,X]] cancellation, zero extra FFTs).
             if init_variables.get("on_the_fly_meas_padded", None) is not None:
                 self.meas_padded = torch.tensor(
                     init_variables["on_the_fly_meas_padded"], dtype=torch.float32, device=device
@@ -119,9 +155,23 @@ class PtychoAD(torch.nn.Module):
                 "omode_occu",
                 torch.tensor(init_variables["omode_occu"], dtype=torch.float32, device=device),
             )
-            self.register_buffer(
-                "H", torch.tensor(init_variables["H"], dtype=torch.complex64, device=device)
-            )
+            if self.propagator_kernel == "fresnel":
+                # Rebuild the slice propagator with the paraxial (Fresnel)
+                # kernel; init_variables["H"] is always built angular-spectrum
+                # by Initializer.init_H, so the default stays bit-for-bit.
+                import numpy as np
+
+                from ptyrad.utils import fresnel_evolution
+
+                H_init = fresnel_evolution(
+                    init_variables["H"].shape[-2:],
+                    float(np.asarray(init_variables["dx"]).ravel()[0]),
+                    float(np.asarray(init_variables["slice_thickness"]).ravel()[0]),
+                    float(np.asarray(init_variables["lambd"]).ravel()[0]),
+                ).astype("complex64")
+            else:
+                H_init = init_variables["H"]
+            self.register_buffer("H", torch.tensor(H_init, dtype=torch.complex64, device=device))
             self.register_buffer(
                 "measurements",
                 torch.tensor(init_variables["measurements"], dtype=torch.float32, device=device),
@@ -158,6 +208,14 @@ class PtychoAD(torch.nn.Module):
             self.n_slice = self.opt_objp.shape[1]
             self.Nx, self.Ny = self.opt_probe.shape[-1], self.opt_probe.shape[-2]
 
+            if self.splitting in ("chin_4a", "chin_4b") and self.n_slice == 1:
+                vprint(
+                    f"splitting='{self.splitting}' with n_slices=1 has no propagation to "
+                    "split: keeping the single-transmission model (splitting='lie_trotter')",
+                    verbose=verbose,
+                )
+                self.splitting = "lie_trotter"
+
             self.random_seed = init_variables["random_seed"]
             self.length_unit = init_variables["length_unit"]
             self.scan_affine = init_variables["scan_affine"]
@@ -170,8 +228,8 @@ class PtychoAD(torch.nn.Module):
                 self.lr_params.get("born_coeffs", 0) != 0
                 and self.start_iter.get("born_coeffs") is not None
             )
-            # In-reconstruction GMRES refit of the coefficients from the Krylov
-            # Gram (see reconstruction.refit_born_coeffs); replaces AD updates.
+            # In-reconstruction detector-fit refit of the coefficients
+            # (see reconstruction.refit_born_coeffs); replaces AD updates.
             self.born_refit = model_params.get("born_coeffs_refit")
             refit_on = bool(self.born_refit and self.born_refit.get("start_iter"))
             if refit_on:
@@ -205,6 +263,13 @@ class PtychoAD(torch.nn.Module):
             self.iter_times = []
             self.dz_iters = []
             self.avg_tilt_iters = []
+            # Born-coefficient history (filled only when use_born_coeffs):
+            # born_coeffs_iters: (niter, (n, 2) pseudo-complex coeffs) per
+            # iteration, whatever updates them (AD or refit);
+            # born_refit_iters: (niter, det_res, delta_model, eps_int,
+            # data_res, target_shift, dc_rel) per refit call.
+            self.born_coeffs_iters = []
+            self.born_refit_iters = []
 
             # Create grids for shifting
             self.create_grids()
@@ -273,6 +338,11 @@ class PtychoAD(torch.nn.Module):
         self.optimizable_params = []
         for param_name, lr in lr_params.items():
             if param_name not in self.optimizable_tensors:
+                # inactive entries for tensors this model does not hold are
+                # harmless; only an ACTIVE entry for a missing tensor is a
+                # config error
+                if not lr and self.start_iter.get(param_name) is None:
+                    continue
                 raise ValueError(f"Invalid parameter name: '{param_name}'")
 
             tensor = self.optimizable_tensors[param_name]
@@ -303,6 +373,14 @@ class PtychoAD(torch.nn.Module):
 
         self.k = 2 * torch.pi / self.lambd
         self.Kz = torch.sqrt(torch.clamp(self.k**2 - Kx**2 - Ky**2, min=0.0))
+        # Per-unit-dz propagation phase of the configured kernel: the
+        # angular-spectrum dispersion Kz (carrier included), or the paraxial
+        # (Fresnel) dispersion -(Kx^2+Ky^2)/(2k) (carrier removed). For the
+        # default 'angular_spectrum' this is self.Kz itself (bit-for-bit).
+        if self.propagator_kernel == "fresnel":
+            self.Kz_prop = -(Kx**2 + Ky**2) / (2 * self.k)
+        else:
+            self.Kz_prop = self.Kz
 
     def init_compilation_iters(self):
         """Determine iteration bounds requiring dynamic graph compilation."""
@@ -355,6 +433,40 @@ class PtychoAD(torch.nn.Module):
             .permute(1, 2, 3, 4, 5, 0)
         )
 
+    def get_g_patches(self, indices):
+        """
+        Gradient-correction patches g_k = grad(chi_k) . grad(chi_k) for the
+        Chin 4A/4B splittings.
+
+        chi_k = phase_k - i*log(amp_k); the transverse gradient is taken with
+        fourth-order central differences on the FULL object canvas
+        (replicate-padded at the canvas edges, so there is no periodic
+        wrap-around at patch edges) using the physical pixel size, then
+        cropped with the patch indices. The complex dot product uses no
+        conjugation, so absorbing objects are covered. Fully differentiable
+        w.r.t. obja/objp, computed once per forward call and shared across
+        probe modes. Note: computed from the raw canvas; obj_preblur_std is
+        not reflected here.
+
+        Used by the Chin 4A/4B splittings.
+
+        Returns:
+            (N, omode, Nz, Ny, Nx, 2) float tensor holding Re(g_k), Im(g_k).
+        """
+        from ptyrad.utils import fd_gradient4
+
+        dx = float(self.dx)
+        gyp, gxp = fd_gradient4(self.opt_objp, dx)
+        gyl, gxl = fd_gradient4(torch.log(self.opt_obja + 1e-10), dx)
+        # (d chi)^2 = (d phase)^2 - (d logamp)^2 - 2i (d phase)(d logamp), summed over y, x
+        g_re = gyp**2 - gyl**2 + gxp**2 - gxl**2
+        g_im = -2.0 * (gyp * gyl + gxp * gxl)
+        g = torch.stack([g_re, g_im], dim=-1)  # (omode, Nz, Noy, Nox, 2)
+
+        grid_y = self.rpy_grid[None, :, :] + self.crop_pos[indices, None, None, 0]
+        grid_x = self.rpx_grid[None, :, :] + self.crop_pos[indices, None, None, 1]
+        return g[:, :, grid_y, grid_x, :].permute(2, 0, 1, 3, 4, 5)
+
     def get_probes(self, indices):
         """Batch-generate complex probes with shift offsets."""
         probe = self.get_complex_probe_view()
@@ -366,14 +478,14 @@ class PtychoAD(torch.nn.Module):
         return probe.unsqueeze(0)
 
     def get_propagators(self, indices):
-        """Retrieves Fresnel propagators for the current batch state."""
+        """Retrieves the slice propagators (configured kernel) for the current batch state."""
         tilt_obj = self.tilt_obj
         global_tilt = self.opt_obj_tilts.shape[0] == 1
         change_tilt = self.lr_params.get("obj_tilts", 0) != 0
         change_thickness = self.change_thickness
 
         dz = self.opt_slice_thickness
-        Kz = self.Kz
+        Kz = self.Kz_prop
         Ky, Kx = self.propagator_grid
 
         tilts = self.opt_obj_tilts if global_tilt else self.opt_obj_tilts[indices]
@@ -420,12 +532,6 @@ class PtychoAD(torch.nn.Module):
                     n_max=self.born_iterations,
                     coeffs=coeffs,
                 )
-        elif self.solver_type == "suzuki_trotter":
-            from ptyrad.forward_models import suzukitrotter_forward
-
-            dp_fwd = suzukitrotter_forward(
-                object_patches, probes, propagators, omode_occu=self.omode_occu
-            )
         elif self.solver_type == "strang":
             from ptyrad.forward_models import strang_forward
 
@@ -442,11 +548,41 @@ class PtychoAD(torch.nn.Module):
                 M=self.linduda_order,
             )
         elif self.solver_type == "multislice":
-            from ptyrad.forward_models import multislice_forward
+            if self.splitting == "chin_4a":
+                from ptyrad.forward_models import multislice_forward_chin4a
 
-            dp_fwd = multislice_forward(
-                object_patches, probes, propagators, omode_occu=self.omode_occu
-            )
+                H_half, g_patches = propagators
+                dp_fwd = multislice_forward_chin4a(
+                    object_patches,
+                    probes,
+                    H_half,
+                    g_patches,
+                    self.opt_slice_thickness,
+                    self.k,
+                    omode_occu=self.omode_occu,
+                )
+            elif self.splitting == "chin_4b":
+                from ptyrad.forward_models import multislice_forward_chin4b
+
+                H_a1, H_2a1, H_a2, g_patches = propagators
+                dp_fwd = multislice_forward_chin4b(
+                    object_patches,
+                    probes,
+                    H_a1,
+                    H_2a1,
+                    H_a2,
+                    g_patches,
+                    self.opt_slice_thickness,
+                    self.k,
+                    omode_occu=self.omode_occu,
+                    apply_end_props=not self.chin4b_drop_end_props,
+                )
+            else:
+                from ptyrad.forward_models import multislice_forward
+
+                dp_fwd = multislice_forward(
+                    object_patches, probes, propagators, omode_occu=self.omode_occu
+                )
         else:
             raise ValueError(f"Invalid solver_type: {self.solver_type}")
 
@@ -517,8 +653,30 @@ class PtychoAD(torch.nn.Module):
 
         elif self.solver_type == "strang":
             dz_half = self.opt_slice_thickness / 2.0
-            H_half_tensor = torch_phasor(dz_half * self.Kz)
+            H_half_tensor = torch_phasor(dz_half * self.Kz_prop)
             propagators = (propagators, H_half_tensor.unsqueeze(0))
+
+        elif self.solver_type == "multislice" and self.splitting == "chin_4a":
+            # Fractional Fresnel kernel K(dz/2), built analytically with the
+            # same tilt terms and batching as H (never as a power of H, which
+            # is wrong wherever the phase has wrapped). g = None drops the
+            # gradient term (splitting_gradient_term: false) and skips the
+            # canvas-g gather entirely.
+            dz = self.opt_slice_thickness
+            g = self.get_g_patches(indices) if self.splitting_gradient_term else None
+            propagators = (self.make_propagator(0.5 * dz, indices), g)
+
+        elif self.solver_type == "multislice" and self.splitting == "chin_4b":
+            from ptyrad.forward_models.multislice import CHIN_4B_A1, CHIN_4B_A2
+
+            dz = self.opt_slice_thickness
+            g = self.get_g_patches(indices) if self.splitting_gradient_term else None
+            propagators = (
+                self.make_propagator(CHIN_4B_A1 * dz, indices),
+                self.make_propagator(2.0 * CHIN_4B_A1 * dz, indices),
+                self.make_propagator(CHIN_4B_A2 * dz, indices),
+                g,
+            )
 
         dp_fwd = self.get_forward_meas(object_patches, probes, propagators)
 
@@ -574,7 +732,7 @@ class PtychoAD(torch.nn.Module):
     def make_propagator(self, dz, indices):
         """Analytic propagator for an arbitrary thickness dz (tilt scaled with it)."""
         Ky, Kx = self.propagator_grid
-        H = torch_phasor(dz * self.Kz)
+        H = torch_phasor(dz * self.Kz_prop)
         if self.tilt_obj:
             tilts = (
                 self.opt_obj_tilts

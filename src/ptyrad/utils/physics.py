@@ -741,7 +741,16 @@ def orthogonalize_modes_vec_np(modes, sort=False):
 
 # Propagator functions
 def near_field_evolution(Npix_shape, dx, dz, lambd):
-    """Fresnel propagator"""
+    """
+    Angular-spectrum propagator.
+
+    Despite the historical "Fresnel" naming around the codebase, this builds
+    the exact angular-spectrum kernel exp(1j * dz * sqrt(k^2 - Kx^2 - Ky^2)),
+    carrier phase exp(1j * k * dz) included — not the paraxial (Fresnel)
+    kernel. For the paraxial kernel see `fresnel_evolution`.
+
+    Returns the kernel ifftshifted (zero frequency at the corner in k-space).
+    """
     #  Translated and simplified from Yi's fold_slice Matlab implementation into numPy by Chia-Hao Lee
 
     ygrid = (np.arange(-Npix_shape[0] // 2, Npix_shape[0] // 2) + 0.5) / Npix_shape[0]
@@ -759,8 +768,39 @@ def near_field_evolution(Npix_shape, dx, dz, lambd):
     return H
 
 
+def fresnel_evolution(Npix_shape, dx, dz, lambd):
+    """
+    Fresnel (paraxial) propagator, carrier phase removed.
+
+    Paraxial counterpart of `near_field_evolution` (angular spectrum): the
+    dispersion sqrt(k^2 - Kx^2 - Ky^2) is replaced by its second-order
+    expansion k - (Kx^2 + Ky^2)/(2k) and the carrier exp(1j * k * dz) is
+    dropped, giving exp(-1j * dz * (Kx^2 + Ky^2) / (2k)). The frequency grids
+    are built with exactly the same expressions as `near_field_evolution`
+    (including the +0.5 half-bin offset), so the two kernels differ only in
+    the dispersion relation.
+
+    This is the kernel required by the Chin 4A/4B fourth-order splittings,
+    whose gradient correction assumes the paraxial kinetic operator.
+
+    Returns the kernel ifftshifted (zero frequency at the corner in k-space).
+    """
+    ygrid = (np.arange(-Npix_shape[0] // 2, Npix_shape[0] // 2) + 0.5) / Npix_shape[0]
+    xgrid = (np.arange(-Npix_shape[1] // 2, Npix_shape[1] // 2) + 0.5) / Npix_shape[1]
+
+    k = 2 * np.pi / lambd
+    ky = 2 * np.pi * ygrid / dx
+    kx = 2 * np.pi * xgrid / dx
+    Ky, Kx = np.meshgrid(ky, kx, indexing="ij")
+    H = np.fft.ifftshift(
+        np.exp(-1j * dz * (Kx**2 + Ky**2) / (2 * k))
+    )  # H has zero frequency at the corner in k-space
+
+    return H
+
+
 def near_field_evolution_torch(Npix_shape, dx, dz, lambd, dtype=torch.complex64, device="cuda"):
-    """Fresnel propagator"""
+    """Angular-spectrum propagator (see `near_field_evolution`)."""
     # Translated and simplified from Yi's fold_slice Matlab implementation into PyTorch by Chia-Hao Lee
     # This is currently only used in 'obj_z_recenter' constraint to shift the probe defocus.
     # The forward pass uses the propagator direcly constructed in `PtychoAD.get_propagators`` for efficiency.

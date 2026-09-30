@@ -21,6 +21,35 @@ def torch_phasor(phase):
     return torch.polar(torch.ones_like(phase), phase)
 
 
+def fd_gradient4(field, dx):
+    """
+    Fourth-order central-difference transverse gradient over the last 2 dims.
+
+    Non-periodic: the field is replicate-padded by 2 px, so there is no
+    wrap-around at the array edges (interior accuracy O(dx^4), reduced order
+    only in the outermost 2 px). Differentiable; used for the g_k =
+    grad(chi).grad(chi) correction terms of the multislice splittings.
+
+    Args:
+        field (torch.Tensor): real tensor of shape (..., Ny, Nx).
+        dx (float): physical pixel size.
+
+    Returns:
+        (gy, gx): tensors of the same shape as `field`.
+    """
+    shape = field.shape
+    f = field.reshape(-1, 1, shape[-2], shape[-1])
+    fp = torch.nn.functional.pad(f, (2, 2, 2, 2), mode="replicate")
+    inv12h = 1.0 / (12.0 * dx)
+    gy = (
+        -fp[:, :, 4:, 2:-2] + 8 * fp[:, :, 3:-1, 2:-2] - 8 * fp[:, :, 1:-3, 2:-2] + fp[:, :, :-4, 2:-2]
+    ) * inv12h
+    gx = (
+        -fp[:, :, 2:-2, 4:] + 8 * fp[:, :, 2:-2, 3:-1] - 8 * fp[:, :, 2:-2, 1:-3] + fp[:, :, 2:-2, :-4]
+    ) * inv12h
+    return gy.reshape(shape), gx.reshape(shape)
+
+
 def exponential_decay(r, a, b):
     return a * np.exp(-b * r)
 

@@ -56,6 +56,7 @@ from .image_proc import (  # noqa: F401
 from .math_ops import (  # noqa: F401
     compose_affine_matrix,
     exponential_decay,
+    fd_gradient4,
     fftshift2,
     ifftshift2,
     make_gaussian_mask,
@@ -65,6 +66,7 @@ from .math_ops import (  # noqa: F401
 )
 from .physics import (  # noqa: F401
     complex_object_z_resample_torch,
+    fresnel_evolution,
     get_default_probe_simu_params,
     get_EM_constants,
     infer_dx_from_params,

@@ -249,79 +249,150 @@ def strang_forward(object_patches, probe, H_tuple, omode_occu=None, eps=1e-10):
     return dp_fwd
 
 
-# @torch.compile(mode="max-autotune")
-def suzukitrotter_forward(object_patches, probe, H, omode_occu=None, eps=1e-10):
+# ---------------------------------------------------------------------------
+# Chin fourth-order gradient splittings (4A and 4B)
+#
+# References: S. A. Chin, Phys. Lett. A 226, 344 (1997);
+#             S. A. Chin and C. R. Chen, J. Chem. Phys. 117, 1409 (2002).
+#
+# Each object slice k is treated as one layered slab of thickness dz, uniform
+# in z, with chi_k = phase_k - i*log(amp_k) so that O_k = exp(i*chi_k). Both
+# schemes reach fourth order by adding the double-commutator correction
+# [V,[T,V]], which for the PARAXIAL (Fresnel) kinetic operator
+# T = -(1/(2 k0)) * Laplacian is the LOCAL multiplication
+# g_k = grad(chi_k) . grad(chi_k) (transverse gradient, complex dot product,
+# no conjugation, so absorbing objects are covered). With the angular-spectrum
+# kernel the double commutator is NOT a local multiplication and the schemes
+# drop to second order — hence both functions require the Fresnel kernel
+# K(d) = ifftshift(exp(-1j * d * (Kx^2 + Ky^2) / (2 k0))) (carrier removed).
+# With this kernel sign convention and O = amp * exp(+i*phase), the correction
+# sign is s = +1 (a wrong sign drops the schemes to second order; verified by
+# the order-of-convergence tests in test/test_chin_splitting.py).
+#
+# Cost: both schemes use two FFT pairs per slice — the same as Lie-Trotter
+# with twice as many slices.
+# ---------------------------------------------------------------------------
+
+# 4B Gauss-Legendre drift fractions (a1 + a2 + a1 = 1)
+CHIN_4B_A1 = 0.5 * (1.0 - 1.0 / 3.0**0.5)
+CHIN_4B_A2 = 1.0 / 3.0**0.5
+
+
+def _chin_transmission(object_patches, g_patches, chi_frac, g_coeff, eps):
     """
-    Computes the multislice electron diffraction pattern using 4th-order Suzuki-Trotter Splitting.
-    Maintains the exact interface and output of the 1st-order vectorized forward model.
+    Build the corrected slice transmission exp(i*chi_frac*chi + i*g_coeff*g)
+    for all slices at once.
+
+    chi = phase - i*log(amp) and g = grad(chi).grad(chi) enter as
+    W = chi_frac*chi + g_coeff*g, and the factor exp(i*W) is assembled as
+    torch.polar(exp(-Im W), Re W). Fractional powers/logs are applied to the
+    real amplitude/phase components before the polar cast (Inductor-safe).
+
+    Args:
+        object_patches: (N, omode, Nz, Ny, Nx, 2) pseudo-complex amp/phase.
+        g_patches: (N, omode, Nz, Ny, Nx, 2) pseudo-complex Re(g)/Im(g),
+            or None to drop the gradient term (g = 0).
+        chi_frac (float): fraction of chi in the exponent (2/3 for 4A, 1/2 for 4B).
+        g_coeff (torch.Tensor): real scalar s*dz/(72*k0) for 4A or
+            s*(2-sqrt(3))*dz/(48*k0) for 4B, with s = +1.
+        eps (float): numerical floor inside log(amp).
+
+    Returns:
+        (N, omode, Nz, Ny, Nx) complex transmission per slice.
     """
-    # Force memory to be C-contiguous for CUDAGraph safety
+    amp = object_patches[..., 0]
+    phase = object_patches[..., 1]
+    w_re = chi_frac * phase
+    w_im = -chi_frac * torch.log(amp.clamp_min(eps))
+    if g_patches is not None:
+        w_re = w_re + g_coeff * g_patches[..., 0]
+        w_im = w_im + g_coeff * g_patches[..., 1]
+    return torch.polar(torch.exp(-w_im), w_re).contiguous()
+
+
+def _multislice_forward_chin4a_impl(
+    object_patches, probe, H_half, g_patches, dz, k0, omode_occu=None, eps=1e-10
+):
+    """
+    Multislice diffraction forward model using Chin's 4A fourth-order gradient
+    splitting (potential outermost; Simpson weights 1/6, 2/3, 1/6).
+
+    One slice of thickness dz is
+
+        exp(i chi_k/6) K(dz/2) T_Ak K(dz/2) exp(i chi_k/6),
+        T_Ak = exp( i (2/3) chi_k + i dz g_k / (72 k0) ),
+
+    with K the FRESNEL propagator (required; see module comment) and
+    g_k = grad(chi_k).grad(chi_k). Between slices the neighbouring boundary
+    phases are merged into a single pointwise factor exp(i (chi_k+chi_{k+1})/6);
+    the two end phases exp(i chi_1/6), exp(i chi_S/6) are applied explicitly
+    (pointwise, free). The probe stays at the entrance plane of the first
+    slab, and the exit wave leaves at the back face of the last slab, i.e. the
+    total drift is n_slices*dz (Lie-Trotter in this codebase drifts
+    (n_slices-1)*dz — the extra dz/2 at each end is the slab-vs-plane
+    convention, a pure defocus offset).
+
+    Cost: two FFT pairs (one K(dz/2) each) per slice — the same as
+    Lie-Trotter with twice as many slices.
+
+    Args:
+        object_patches (torch.Tensor): (N, omode, Nz, Ny, Nx, 2) pseudo-complex
+            object patches (float amplitude and phase).
+        probe (torch.Tensor): (N, pmode, Ny, Nx) complex probe(s) at the
+            entrance plane.
+        H_half (torch.Tensor): (N, Ky, Kx) complex Fresnel kernel K(dz/2),
+            built with the same tilt terms and batching as the full-dz H.
+        g_patches (torch.Tensor): (N, omode, Nz, Ny, Nx, 2) pseudo-complex
+            Re(g_k)/Im(g_k), computed with non-periodic finite differences and
+            the physical pixel size (see PtychoAD.get_g_patches).
+        dz (torch.Tensor): real scalar slice thickness (physical units).
+        k0 (torch.Tensor): real scalar wavenumber 2*pi/lambda.
+        omode_occu (torch.Tensor, optional): (omode,) occupancies summing to 1.
+        eps (float, optional): numerical stability floor. Defaults to 1e-10.
+
+    Returns:
+        torch.Tensor: (N, Ky, Kx) float forward diffraction patterns.
+    """
+    # These .contiguous() are needed for torch.compile in Linux
     object_patches = object_patches.contiguous()
     probe = probe.contiguous()
-    H = H.contiguous()
+    H_half = H_half.contiguous()
+    if g_patches is not None:
+        g_patches = g_patches.contiguous()
 
     if omode_occu is None:
         objp = object_patches[..., 1]
         omode_occu = torch.ones(objp.size(1), dtype=objp.dtype, device=objp.device) / objp.size(1)
 
-    omode_occu = omode_occu.contiguous()
-
-    # Suzuki-Trotter fractional constants
-    p = 1.0 / (4.0 - 4.0 ** (1.0 / 3.0))
-    w2 = 1.0 - 4.0 * p
-
-    # Precompute fractional propagators
-    H_p_half = torch.pow(H, p / 2.0).contiguous()
-    H_p = torch.pow(H, p).contiguous()
-    H_mid = torch.pow(H, (p + w2) / 2.0).contiguous()
-
-    # Extract full amplitude and phase volumes
     amp = object_patches[..., 0]
     phase = object_patches[..., 1]
-
-    # Pre-calculate the fractional object transmissions for ALL slices at once.
-    # Applying fractional powers to real components before polar casting ensures
-    # Inductor doesn't crash on the backward pass.
-    O_p_cplx = torch.polar(amp**p, phase * p).contiguous()
-    O_w2_cplx = torch.polar(amp**w2, phase * w2).contiguous()
-
     n_slices = object_patches.shape[2]
-    psi = probe[:, :, None, :, :].contiguous()
+
+    # T_Ak = exp(i (2/3) chi_k + i dz g_k/(72 k0)), correction sign s = +1
+    T_cplx = _chin_transmission(object_patches, g_patches, 2.0 / 3.0, dz / (72.0 * k0), eps)
+
+    # Boundary phases exp(i chi_k/6): end factors and merged interior pairs
+    # exp(i (chi_k + chi_{k+1})/6). Fractional powers on real components
+    # before the polar cast (Inductor-safe).
+    amp6 = amp.clamp_min(eps) ** (1.0 / 6.0)
+    ph6 = phase * (1.0 / 6.0)
+    B_in = torch.polar(amp6[:, :, 0], ph6[:, :, 0]).contiguous()  # (N, omode, Ny, Nx)
+    B_out = torch.polar(amp6[:, :, -1], ph6[:, :, -1]).contiguous()
+    B_mid = torch.polar(
+        amp6[:, :, 1:] * amp6[:, :, :-1], ph6[:, :, 1:] + ph6[:, :, :-1]
+    ).contiguous()  # (N, omode, Nz-1, Ny, Nx)
+
+    psi = probe[:, :, None, :, :].contiguous()  # (N, pmode, omode, Ny, Nx)
+    psi = psi * B_in[:, None]
 
     for n in range(n_slices):
-        # Slice the precomputed complex volumes and add the 'pmode' singleton dimension
-        # Shape: (N, omode, Nz, Ny, Nx) -> (N, 1, omode, Ny, Nx)
-        O_p = O_p_cplx[:, None, :, n, :, :]
-        O_w2 = O_w2_cplx[:, None, :, n, :, :]
+        psi = ifft2(H_half[:, None, None] * fft2(psi))
+        psi = psi * T_cplx[:, None, :, n]
+        psi = ifft2(H_half[:, None, None] * fft2(psi))
+        if n < n_slices - 1:
+            psi = psi * B_mid[:, None, :, n]
 
-        # --- 4th ORDER S-T FRACTAL ---
-
-        # 1. Drift p/2
-        psi = ifft2(H_p_half[:, None, None] * fft2(psi))
-
-        # 2. Kick p, Drift p, Kick p
-        psi = psi * O_p
-        psi = ifft2(H_p[:, None, None] * fft2(psi))
-        psi = psi * O_p
-
-        # 3. Drift (p + w2)/2 (Merged boundary)
-        psi = ifft2(H_mid[:, None, None] * fft2(psi))
-
-        # 4. Kick w2 (The negative step)
-        psi = psi * O_w2
-
-        # 5. Drift (p + w2)/2 (Merged boundary)
-        psi = ifft2(H_mid[:, None, None] * fft2(psi))
-
-        # 6. Kick p, Drift p, Kick p
-        psi = psi * O_p
-        psi = ifft2(H_p[:, None, None] * fft2(psi))
-        psi = psi * O_p
-
-        # 7. Drift p/2
-        psi = ifft2(H_p_half[:, None, None] * fft2(psi))
-
-        # --- END FRACTAL ---
+    psi = psi * B_out[:, None]
 
     dp_fwd = (
         torch.sum(
@@ -331,3 +402,115 @@ def suzukitrotter_forward(object_patches, probe, H, omode_occu=None, eps=1e-10):
         + eps
     )
     return dp_fwd
+
+
+def _multislice_forward_chin4b_impl(
+    object_patches,
+    probe,
+    H_a1,
+    H_2a1,
+    H_a2,
+    g_patches,
+    dz,
+    k0,
+    omode_occu=None,
+    eps=1e-10,
+    apply_end_props=True,
+):
+    """
+    Multislice diffraction forward model using Chin's 4B fourth-order gradient
+    splitting (kinetic outermost; Gauss-Legendre points a1 = (1-1/sqrt(3))/2,
+    a2 = 1/sqrt(3)).
+
+    One slice of thickness dz is
+
+        K(a1 dz) T_Bk K(a2 dz) T_Bk K(a1 dz),
+        T_Bk = exp( i chi_k/2 + i (2 - sqrt(3)) dz g_k / (48 k0) ),
+
+    with K the FRESNEL propagator (required; see module comment). Between
+    slices the adjoining drifts K(a1 dz) K(a1 dz) are merged into K(2 a1 dz),
+    so the interior costs two FFT pairs (K(a2 dz) and K(2 a1 dz)) per slice —
+    the same as Lie-Trotter with twice as many slices. The probe enters at
+    the front face of the first slab and the exit wave leaves at the back
+    face of the last slab (total drift n_slices*dz).
+
+    End drifts (apply_end_props):
+        True (default): the entrance and exit K(a1 dz) are applied explicitly
+        (one extra FFT pair each, once per forward pass).
+        False (far-field data only): both end drifts are dropped. The exit
+        K(a1 dz) is a unit-modulus multiplication in k-space, so it cannot
+        change far-field intensities; the entrance K(a1 dz) is absorbed into
+        the probe, WHOSE PLANE THEREBY SHIFTS by a1*dz ~ 0.2113*dz into the
+        first slab (i.e. the optimized probe converges to K(a1 dz)*probe; a
+        pure defocus offset to account for when comparing probes).
+
+    Args:
+        object_patches (torch.Tensor): (N, omode, Nz, Ny, Nx, 2) pseudo-complex
+            object patches (float amplitude and phase).
+        probe (torch.Tensor): (N, pmode, Ny, Nx) complex probe(s).
+        H_a1 (torch.Tensor): (N, Ky, Kx) Fresnel kernel K(a1*dz).
+        H_2a1 (torch.Tensor): (N, Ky, Kx) Fresnel kernel K(2*a1*dz).
+        H_a2 (torch.Tensor): (N, Ky, Kx) Fresnel kernel K(a2*dz).
+            All three must be built with the same tilt terms and batching as
+            the full-dz H (never as powers of H).
+        g_patches (torch.Tensor): (N, omode, Nz, Ny, Nx, 2) pseudo-complex
+            Re(g_k)/Im(g_k) (see PtychoAD.get_g_patches).
+        dz (torch.Tensor): real scalar slice thickness (physical units).
+        k0 (torch.Tensor): real scalar wavenumber 2*pi/lambda.
+        omode_occu (torch.Tensor, optional): (omode,) occupancies summing to 1.
+        eps (float, optional): numerical stability floor. Defaults to 1e-10.
+        apply_end_props (bool, optional): apply the entrance/exit K(a1 dz)
+            explicitly. Defaults to True.
+
+    Returns:
+        torch.Tensor: (N, Ky, Kx) float forward diffraction patterns.
+    """
+    # These .contiguous() are needed for torch.compile in Linux
+    object_patches = object_patches.contiguous()
+    probe = probe.contiguous()
+    H_a1 = H_a1.contiguous()
+    H_2a1 = H_2a1.contiguous()
+    H_a2 = H_a2.contiguous()
+    if g_patches is not None:
+        g_patches = g_patches.contiguous()
+
+    if omode_occu is None:
+        objp = object_patches[..., 1]
+        omode_occu = torch.ones(objp.size(1), dtype=objp.dtype, device=objp.device) / objp.size(1)
+
+    n_slices = object_patches.shape[2]
+
+    # T_Bk = exp(i chi_k/2 + i (2-sqrt(3)) dz g_k/(48 k0)), correction sign s = +1
+    g_coeff = (2.0 - 3.0**0.5) / 48.0 * dz / k0
+    T_cplx = _chin_transmission(object_patches, g_patches, 0.5, g_coeff, eps)
+    T_in = T_out = T_cplx
+
+    psi = probe[:, :, None, :, :].contiguous()  # (N, pmode, omode, Ny, Nx)
+
+    if apply_end_props:
+        psi = ifft2(H_a1[:, None, None] * fft2(psi))
+
+    for n in range(n_slices):
+        psi = psi * T_in[:, None, :, n]
+        psi = ifft2(H_a2[:, None, None] * fft2(psi))
+        psi = psi * T_out[:, None, :, n]
+        if n < n_slices - 1:
+            psi = ifft2(H_2a1[:, None, None] * fft2(psi))
+
+    if apply_end_props:
+        psi = ifft2(H_a1[:, None, None] * fft2(psi))
+
+    dp_fwd = (
+        torch.sum(
+            (fftshift2(fft2(psi, norm="ortho"))).abs().square() * omode_occu[:, None, None],
+            dim=(1, 2),
+        )
+        + eps
+    )
+    return dp_fwd
+
+
+# Compiled entry points; the _impl functions stay reachable for float64
+# gradcheck and reference tests.
+multislice_forward_chin4a = torch.compile(_multislice_forward_chin4a_impl, mode="max-autotune")
+multislice_forward_chin4b = torch.compile(_multislice_forward_chin4b_impl, mode="max-autotune")
