@@ -3,7 +3,7 @@
 Recreates demo/born_term_norms_wse2.png (original 2026-09-29, unsaved
 inline script; recreated 2026-09-30): the weak-scattering counterpart of
 analysis/born_term_norms.py. The reference is the converged 100-iteration
-ML-MS multislice reconstruction of the tBL-WSe2 dataset (12 slices, 1 A);
+Adam multislice reconstruction of the tBL-WSe2 dataset (12 slices, 1 A);
 term norms decay monotonically (no multiple-scattering hump) from ~2.5e-1
 at m=1 to ~1e-13 at m=12. The tuned profiles sit on the measured curve at
 the leading orders; at m >= 5 the TSVD solve lets |c_m| grow large in the
@@ -43,7 +43,7 @@ CKPT = os.path.join(
     "output",
     "tBL_WSe2",
     "tBL_WSe2_multislice",
-    "20260923_full_mlms_full_N16384_dp128_flipT100_random32_p6_1obj_12slice_"
+    "20260923_full_adam_ms_full_N16384_dp128_flipT100_random32_p6_1obj_12slice_"
     "dz1_plr1e-4_oalr5e-4_oplr5e-4_orblur0.5_ozblur1.0_mamp0.03_4.0_"
     "oathr0.98_oposc_sng1.0_spr0.1",
     "model_iter0100.hdf5",
