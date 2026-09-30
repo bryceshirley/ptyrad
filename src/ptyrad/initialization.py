@@ -2030,13 +2030,19 @@ class Initializer:
             pos = self._load_pos_from_ptyshv(pos_params)
         elif pos_source == "py4DSTEM":
             pos = self._load_pos_from_py4dstem(pos_params)
+        elif pos_source == "file":
+            # Load an (N,2) array of probe positions (object-pixel coords, row=(y,x))
+            # directly from file, mirroring tilt_source='file'. Added for the tilt-
+            # series experiment where positions are a custom (tiled) scan that 'simu'
+            # cannot generate. Backward-compatible: only triggers on pos_source='file'.
+            pos = np.float32(load_array_from_file(**pos_params, ndims=[2]))
         elif pos_source == "simu":
             pos = self._simulate_pos(pos_params)
         elif pos_source == "foldslice_hdf5":
             pos = self._load_pos_from_foldslice(pos_params)
         else:
             raise ValueError(
-                f"Unsupported position source '{pos_source}'. Use 'custom', 'PtyRAD', 'PtyShv', 'py4DSTEM', 'simu', or 'foldslice_hdf5'."
+                f"Unsupported position source '{pos_source}'. Use 'custom', 'file', 'PtyRAD', 'PtyShv', 'py4DSTEM', 'simu', or 'foldslice_hdf5'."
             )
 
         return pos

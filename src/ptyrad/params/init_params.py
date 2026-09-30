@@ -272,6 +272,7 @@ SOURCE_PARAMS_MAPPING = {
         "PtyShv": pathlib.Path,
         "py4DSTEM": pathlib.Path,
         "foldslice_hdf5": pathlib.Path,
+        "file": FilePathWithKey,
         "custom": np.ndarray,
     },
     "tilt": {
@@ -764,15 +765,17 @@ class InitParams(BaseModel):
     For 'custom' probe source, pass the 3D numpy array to the 'probe_params' entry after you load this .yml as a dict
     """
 
-    pos_source: Literal["simu", "PtyRAD", "PtyShv", "py4DSTEM", "foldslice_hdf5", "custom"] = Field(
+    pos_source: Literal["simu", "PtyRAD", "PtyShv", "py4DSTEM", "foldslice_hdf5", "file", "custom"] = Field(
         default="simu", description="Data source for probe positions"
     )
     """
     Data source of the probe positions.
-    Currently supporting 'simu', 'PtyRAD', 'PtyShv', 'py4DSTEM', 'foldslice_hdf5', and 'custom'
+    Currently supporting 'simu', 'PtyRAD', 'PtyShv', 'py4DSTEM', 'foldslice_hdf5', 'file', and 'custom'.
+    For 'file', provide a dict {'path': <PATH>, 'key': <KEY>} (like 'meas_params') pointing to an
+    (N_scans,2) array of probe positions in object-pixel coords; supported types: tif, mat, hdf5, npy.
     """
 
-    pos_params: pathlib.Path | np.ndarray | None = Field(
+    pos_params: FilePathWithKey | pathlib.Path | np.ndarray | None = Field(
         default=None, description="Parameters for probe positions loading/initialization"
     )
     """
@@ -970,21 +973,27 @@ class InitParams(BaseModel):
     @field_validator("pos_params")
     @classmethod
     def validate_pos_params(
-        cls, v: pathlib.Path | np.ndarray | None, info
-    ) -> dict[str, Any] | pathlib.Path | np.ndarray | None:
+        cls, v: FilePathWithKey | pathlib.Path | np.ndarray | None, info
+    ) -> FilePathWithKey | pathlib.Path | np.ndarray | None:
         if v is None:
             return None
+        if isinstance(v, (np.ndarray)):
+            return v
+        if isinstance(v, FilePathWithKey):
+            if not v.__dict__["path"].is_file():
+                raise FileNotFoundError(
+                    f"{info.field_name}: Path '{v}' does not point to a valid file"
+                )
+            return v
         if isinstance(v, pathlib.Path):
             if not v.is_file():
                 raise FileNotFoundError(
                     f"{info.field_name}: Path '{v}' does not point to a valid file"
                 )
             return v
-        if isinstance(v, (np.ndarray)):
-            return v
         else:
             raise ValueError(
-                f"{info.field_name} must be either None, a valid file path, or a NumPy array, got {type(v).__name__}"
+                f"{info.field_name} must be either None, a FilePathWithKey dict, a valid file path, or a NumPy array, got {type(v).__name__}"
             )
 
     @field_validator("obj_params")
