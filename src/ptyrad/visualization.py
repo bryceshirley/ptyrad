@@ -470,6 +470,102 @@ def plot_slice_thickness(dz_iters, last_n_iters=10, show_fig=True, pass_fig=Fals
         return fig
 
 
+def plot_born_coeffs(
+    born_coeffs_iters, born_refit_iters=None, show_fig=True, pass_fig=False
+):
+    """Born-coefficient trajectories and refit convergence.
+
+    Left panel: |c_m| vs iteration, one curve per scattering order (from
+    born_coeffs_iters: list of (niter, (n, 2) pseudo-complex coeffs) —
+    orders that appear mid-run via adaptive growth start at their first
+    recorded iteration). Centre panel: arg(c_m) vs iteration, unwrapped
+    along the trajectory per order. Right panel (only when
+    born_refit_iters is non-empty): the refit convergence curves on a log
+    scale — det residual (the fit's own residual, a direct detector-error
+    estimate), model error vs exact multislice, rel intensity error, rel
+    data residual, and the hybrid-target diagnostics (target shift,
+    coefficient pull) when they are nonzero.
+    """
+    iters = np.array([it for it, _ in born_coeffs_iters])
+    n_max = max(c.shape[0] for _, c in born_coeffs_iters)
+    mags = np.full((len(iters), n_max), np.nan)
+    phases = np.full((len(iters), n_max), np.nan)
+    for i, (_, c) in enumerate(born_coeffs_iters):
+        cc = c[:, 0] + 1j * c[:, 1]
+        mags[i, : c.shape[0]] = np.abs(cc)
+        phases[i, : c.shape[0]] = np.angle(cc)
+    # unwrap each order's phase along the iterations it exists for
+    for m in range(n_max):
+        valid = np.isfinite(phases[:, m])
+        if np.any(valid):
+            phases[valid, m] = np.unwrap(phases[valid, m])
+
+    ncols = 3 if born_refit_iters else 2
+    plt.ioff()  # Temporarily disable the interactive plotting mode
+    fig, axs = plt.subplots(nrows=1, ncols=ncols, figsize=(8 * ncols, 6))
+    axs = np.atleast_1d(axs)
+
+    # one hue ramp, dark = high order (orders are ordinal, not categorical)
+    colors = plt.cm.Blues(np.linspace(0.35, 0.95, n_max))
+    for ax, values in ((axs[0], mags), (axs[1], phases)):
+        for m in range(n_max):
+            ax.plot(iters, values[:, m], color=colors[m], lw=2)
+            last = np.where(np.isfinite(values[:, m]))[0]
+            if len(last):
+                ax.annotate(
+                    f"m={m + 1}",
+                    (iters[last[-1]], values[last[-1], m]),
+                    xytext=(4, 0),
+                    textcoords="offset points",
+                    fontsize=10,
+                    color=colors[m],
+                )
+        ax.grid(True)
+        ax.set_xlabel("Iterations", fontsize=16)
+        ax.xaxis.set_major_locator(ticker.MaxNLocator(integer=True))
+    axs[0].set_ylabel(r"$|c_m|$", fontsize=16)
+    axs[0].set_title(
+        f"Born coefficients (n={int(np.sum(np.isfinite(mags[-1])))}) "
+        f"at iter {int(iters[-1])}",
+        fontsize=16,
+    )
+    axs[1].set_ylabel(r"$\arg c_m$ (rad, unwrapped)", fontsize=16)
+    axs[1].set_title(f"Coefficient phases at iter {int(iters[-1])}", fontsize=16)
+
+    if born_refit_iters:
+        data = np.array(born_refit_iters)  # (N, 7)
+        r_iters = data[:, 0]
+        curves = [
+            (1, "rel det residual (fit)", "tab:blue", "-"),
+            (2, "model error vs exact MS", "tab:orange", "-"),
+            (3, "rel int error", "tab:green", "--"),
+            (4, "rel data residual", "tab:red", "-"),
+        ]
+        # hybrid-target diagnostics only when they carry signal
+        if np.any(data[:, 5] > 0):
+            curves += [
+                (5, "target shift", "tab:purple", "-"),
+                (6, r"$\|c-c_{MS}\|/\|c_{MS}\|$", "tab:purple", "--"),
+            ]
+        for col, label, color, ls in curves:
+            axs[2].semilogy(r_iters, data[:, col], color=color, ls=ls, lw=2, label=label)
+        axs[2].grid(True, which="both", alpha=0.3)
+        axs[2].set_xlabel("Iterations", fontsize=16)
+        axs[2].set_ylabel("Relative error", fontsize=16)
+        axs[2].set_title(
+            f"Refit convergence: det res {data[-1, 1]:.3e} at iter {int(r_iters[-1])}",
+            fontsize=16,
+        )
+        axs[2].xaxis.set_major_locator(ticker.MaxNLocator(integer=True))
+        axs[2].legend(fontsize=10, frameon=False)
+
+    plt.tight_layout()
+    if show_fig:
+        plt.show()
+    if pass_fig:
+        return fig
+
+
 def plot_probe_modes(
     init_probe=None,
     opt_probe=None,
@@ -595,6 +691,7 @@ def plot_summary(
 ):
     """Wrapper function for most visualization function"""
     # selected_figs can take 'loss', 'forward', 'probe_r_amp', 'probe_k_amp', 'probe_k_phase', 'pos', 'tilt', or 'all'
+    # 'born_coeffs' is plotted automatically whenever the Born coefficients are active
     # Note: Set show_fig=False and save_fig=True if you just want to save the figure without showing
 
     # Sets figure saving to be True if you accidiently disable both show_fig and save_fig
@@ -762,6 +859,25 @@ def plot_summary(
         if save_fig:
             fig_slice_thickness.savefig(
                 safe_filename(output_path + f"/summary_slice_thickness{collate_str}{iter_str}.png")
+            )
+
+    # Born coefficient trajectories + refit convergence: plotted
+    # automatically alongside everything else whenever the coefficients
+    # are active (AD-tuned, warm-started, or refit-managed) — the history
+    # only fills when use_born_coeffs is set, so no selected_figs key is
+    # required (though 'born_coeffs' / 'all' also work explicitly).
+    if getattr(model, "born_coeffs_iters", None):
+        fig_born = plot_born_coeffs(
+            model.born_coeffs_iters,
+            getattr(model, "born_refit_iters", None),
+            show_fig=show_fig,
+            pass_fig=True,
+        )
+        if show_fig:
+            fig_born.show()
+        if save_fig:
+            fig_born.savefig(
+                safe_filename(output_path + f"/summary_born_coeffs{collate_str}{iter_str}.png")
             )
 
     # Close figures after saving

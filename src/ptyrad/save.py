@@ -96,6 +96,16 @@ def save_array(
 ###### These are results saving functions ######
 
 
+def _pad_stack(arrays):
+    """Stack (n_i, 2) arrays into one (N, max_n, 2) array, NaN-padding the
+    order dimension (adaptive-growth runs record more orders later on)."""
+    n_max = max(a.shape[0] for a in arrays)
+    out = np.full((len(arrays), n_max, arrays[0].shape[-1]), np.nan, dtype=np.float32)
+    for i, a in enumerate(arrays):
+        out[i, : a.shape[0]] = a
+    return out
+
+
 def make_save_dict(output_path, model, params, optimizer, niter, indices, batch_losses):
     """Make a dict to save relevant paramerers"""
 
@@ -148,6 +158,18 @@ def make_save_dict(output_path, model, params, optimizer, niter, indices, batch_
         "loss_iters": model.loss_iters,
         "iter_times": model.iter_times,
         "dz_iters": model.dz_iters,
+        # Born-coefficient history (empty lists when coefficients inactive).
+        # born_coeffs_iters is NaN-padded to the max order so adaptive-
+        # growth runs still stack into one regular array for hdf5.
+        "born_refit_iters": np.array(model.born_refit_iters)
+        if getattr(model, "born_refit_iters", None)
+        else None,
+        "born_coeffs_iters_niter": np.array([it for it, _ in model.born_coeffs_iters])
+        if getattr(model, "born_coeffs_iters", None)
+        else None,
+        "born_coeffs_iters": _pad_stack([c for _, c in model.born_coeffs_iters])
+        if getattr(model, "born_coeffs_iters", None)
+        else None,
         "avg_iter_t": avg_iter_t,
         "niter": niter,
         "indices": indices,

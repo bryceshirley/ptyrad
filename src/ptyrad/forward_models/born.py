@@ -4,9 +4,9 @@ The Born series is a combinatorial expansion of the multislice operator, and
 the parallel formulation replaces the sequential propagation loop with a
 parallel prefix sum (`cumsum`) over the slices. The series is nilpotent
 across slices, so it terminates exactly at the number of slices, and higher
-`n_max` adds nothing. The recursion primitives and the residual-minimizing
-(GMRES) coefficient machinery live in born_helpers (born_krylov_gram /
-born_gmres_coeffs); the coefficients passed in here only reweight the
+`n_max` adds nothing. The recursion primitives and the detector-space
+coefficient fit live in born_helpers (born_detector_basis /
+born_qr_coeffs); the coefficients passed in here only reweight the
 per-order detector sum.
 """
 
