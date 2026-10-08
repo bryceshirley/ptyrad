@@ -5,13 +5,14 @@ Extends born_remainder_wse2.py. For each truncation order M = 1..12 and both
 perturbations (chord Delta O = O - 1, tangent Delta O = i phi), computes:
 
   * measured   ||T - psihat^{(<=M)}|| / ||T||            (plain unit weights)
-  * tuned      ||T - psihat_c^{(<=M)}|| / ||T||          with the global
-    least-squares coefficients c (the born_qr_coeffs fit, paper Eq.
-    weighted-sum), fit across all sampled views against the true multislice
-    target — re-solved here fully in complex128 on a column-normalized basis
-    (born_qr_coeffs returns complex64 c and its basis columns span ~14
-    decades at high M, which pushed the tuned curve above the plain one at
-    the round-off floor)
+  * tuned      ||T - psihat_c^{(<=M)}|| / ||T||          with least-squares
+    coefficients c (the born_qr_coeffs fit, paper Eq. weighted-sum) fitted
+    at batch size 1 — one independent fit per view against the true
+    multislice target, so tuned <= plain holds view by view, not just in
+    aggregate. Solved fully in complex128 on a per-view column-normalized
+    basis (born_qr_coeffs returns complex64 c and its basis columns span
+    ~14 decades at high M, which pushed the tuned curve above the plain
+    one at the round-off floor)
   * bound A (a posteriori, triangle inequality on the computed term norms):
       chord:   sum_{m>M} ||D_m|| / ||T||
       tangent: sum_{m>M} ||D_m|| / ||T||  +  ||T - tangent full series|| / ||T||
@@ -186,39 +187,39 @@ def main():
 
         # sqrt occupancy weights for the fit norm (matches vnorm)
         w_fit = wf.sqrt().unsqueeze(0)  # (1, 1, 1, omode, 1, 1)
-        n_T_glob = (n_T**2).sum().sqrt().item()
 
+        B_all = T.shape[0]
         curves = {}  # (model, kind) -> (N_ORDER, N_VIEWS)
         for name in ("chord", "tangent"):
             term = torch.stack([vnorm(D[name][m]) for m in range(N_ORDER)])  # (12, B)
-            s = (term**2).sum(dim=1).sqrt()  # global column norms, (12,)
-            # measured plain + tuned remainders. The tuned fit is the global
-            # least squares of born_qr_coeffs, but solved here fully in
-            # complex128 on a column-normalized basis, and the tuned remainder
-            # is evaluated as a correction to the plain remainder field —
-            # c = 1 is feasible, so the tuned curve can never sit above the
-            # plain one beyond float64 round-off.
+            # measured plain + tuned remainders. The tuned fit is the
+            # born_qr_coeffs least squares at batch size 1: one independent
+            # solve per view, fully in complex128 on a per-view
+            # column-normalized basis, and the tuned remainder is evaluated
+            # as a correction to the plain remainder field — c = 1 is
+            # feasible per view, so tuned <= plain view by view beyond
+            # float64 round-off.
             plain, tuned = [], []
             psi_leq = D0.clone()
             for M in range(1, N_ORDER + 1):
                 psi_leq = psi_leq + D[name][M - 1]
                 R_plain = T - psi_leq  # = T_tail of the order-M fit
                 plain.append((vnorm(R_plain) / n_T).cpu())
-                b = (R_plain * w_fit.squeeze(0)).reshape(-1)
-                b_norm = torch.linalg.vector_norm(b).item()
-                if b_norm < 1e-13 * n_T_glob:
-                    # nothing left to fit: keep unit weights (c -> 1 limit)
-                    tuned.append(plain[-1])
-                    continue
+                b = (R_plain * w_fit.squeeze(0)).reshape(B_all, -1, 1)
+                s_v = term[:M].to(torch.complex128)  # per-view column norms (M, B)
                 A = (
-                    (D[name][:M] * w_fit).reshape(M, -1)
-                    / s[:M].to(torch.complex128).view(-1, 1)
-                ).T
+                    (D[name][:M] * w_fit).reshape(M, B_all, -1)
+                    / s_v.unsqueeze(-1)
+                ).permute(1, 2, 0)  # (B, L, M)
                 y = torch.linalg.lstsq(
-                    A.cpu(), b.cpu()[:, None], driver="gelsd"
-                ).solution[:, 0].to(A.device)
-                x = (y / s[:M].to(torch.complex128)).view(-1, 1, 1, 1, 1, 1)
-                R_tuned = R_plain - (x * D[name][:M]).sum(dim=0)
+                    A.cpu(), b.cpu(), driver="gelsd"
+                ).solution[..., 0].to(A.device)  # (B, M)
+                x = (y.T / s_v).view(M, B_all, 1, 1, 1, 1)
+                # nothing left to fit for a view: keep unit weights (c -> 1)
+                fitted = (
+                    b[..., 0].norm(dim=1) >= 1e-13 * n_T
+                ).view(1, B_all, 1, 1, 1, 1)
+                R_tuned = R_plain - (x * D[name][:M] * fitted).sum(dim=0)
                 tuned.append((vnorm(R_tuned) / n_T).cpu())
             curves[name, "plain"] = torch.stack(plain).numpy()
             curves[name, "tuned"] = torch.stack(tuned).numpy()
@@ -275,7 +276,7 @@ def main():
                     color=C_BOUND_A, fontsize=9)
         for kind, color, marker, label in (
             ("plain", C_PLAIN, "o", "measured, unit weights"),
-            ("tuned", C_TUNED, "s", "tuned coefficients $c_m$"),
+            ("tuned", C_TUNED, "s", "tuned $c_m$ (per-view fit, batch 1)"),
         ):
             v = curves[name, kind]
             ax.fill_between(m_axis, v.min(axis=1), v.max(axis=1),
