@@ -258,8 +258,8 @@ def main():
         for s in ("top", "right"):
             a.spines[s].set_visible(False)
     series = {
-        "chord": (C_PLAIN, r"chord $\Delta O = O - 1$ (non-linearised)"),
-        "tangent": (C_TUNED, r"tangent $\Delta O = i\varphi$ (linearised)"),
+        "chord": (C_PLAIN, r"chord $\Delta O_j = O_j - 1$ (non-linearised)"),
+        "tangent": (C_TUNED, r"tangent $\Delta O_j = i\varphi_j$ (linearised)"),
     }
     # tuned curves stay in the CSV but are not plotted: on this specimen
     # tuning cannot improve the chord (tuned == plain at every M)
@@ -272,7 +272,7 @@ def main():
     ax.set_ylabel(r"$\|\hat R_M\| \,/\, \|\hat\psi_{\mathrm{MS}}\|$")
     ax.set_title("field remainder", fontsize=11)
     axI.set_ylabel(
-        r"$\|\hat I_M - \hat I_{\mathrm{MS}}\|_2 \,/\, \|\hat I_{\mathrm{MS}}\|_2$"
+        r"$\|I^{(\leq M)} - I_{\mathrm{MS}}\|_2 \,/\, \|I_{\mathrm{MS}}\|_2$"
     )
     axI.set_title("detector intensity error", fontsize=11)
     fig.legend(loc="lower center", ncol=2, framealpha=0.9, fontsize=9,
