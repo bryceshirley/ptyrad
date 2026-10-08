@@ -1,33 +1,22 @@
 """Relative remainder of the truncated Born series with bounds and tuned
-coefficients — tBL-WSe2.
+coefficients — PSO (PrScO3).
 
-Extends born_remainder_wse2.py. For each truncation order M = 1..12 and both
-perturbations (chord Delta O = O - 1, tangent Delta O = i phi), computes:
+The PSO counterpart of born_remainder_bounds_wse2.py (see that script for
+the full method notes): detector-plane remainder ||R_M|| / ||psihat_MS||
+for truncation orders M = 1..21 on the converged 21-slice (dz 10 A)
+multislice reconstruction of the PrScO3 dataset, chord vs tangent, with
 
-  * measured   ||T - psihat^{(<=M)}|| / ||T||            (plain unit weights)
-  * tuned      ||T - psihat_c^{(<=M)}|| / ||T||          with least-squares
-    coefficients c (the born_qr_coeffs fit, paper Eq. weighted-sum) fitted
-    at batch size 1 — one independent fit per view against the true
-    multislice target, so tuned <= plain holds view by view, not just in
-    aggregate. Solved fully in complex128 on a per-view column-normalized
-    basis (born_qr_coeffs returns complex64 c and its basis columns span
-    ~14 decades at high M, which pushed the tuned curve above the plain
-    one at the round-off floor)
-  * a priori bound (sup-norm path counting): each order-m term is a sum of
-    C(N,m) paths; unitary propagators and pointwise slice multiplications give
-      ||psihat^{(m)}|| <= e_m(eps_1..eps_N) ||P||,
-    with eps_j = max_x |Delta O_j(x)| over the view's patch and e_m the
-    elementary symmetric polynomial, so
-      ||R_M|| / ||T|| <= (||P|| / ||T||) sum_{m>M} e_m(eps).
-    For the tangent the limit differs from multislice; the gap is bounded by
-    the product-difference inequality
-      ||MS - prod(1 + i phi)|| <= ||P|| sum_j h_j prod_{k != j} max(a_k, b_k),
-    h_j = max|O_j - 1 - i phi_j|, a_k = max|O_k|, b_k = max|1 + i phi_k|.
+  * measured plain (unit weights) remainder
+  * tuned coefficients at batch size 1 (one complex128 least-squares fit
+    per view on a per-view column-normalized basis)
+  * the a priori elementary-symmetric sup-norm bound
 
-Same complex128 + unimodular-H treatment as born_remainder_wse2.py.
+All fields complex128; the propagator is renormalized to exact unit
+modulus so the chord series terminates to the multislice target at the
+float64 floor.
 
 Run (from the repo root):
-  CUDA_VISIBLE_DEVICES=0 ~/ptyrad/.venv/bin/python analysis/born_remainder_bounds_wse2.py
+  CUDA_VISIBLE_DEVICES=0 ~/ptyrad/.venv/bin/python analysis/born_remainder_bounds_pso.py
 """
 
 import os
@@ -52,27 +41,28 @@ from ptyrad.reconstruction import PtyRADSolver  # noqa: E402
 from torch.fft import fft2, ifft2  # noqa: E402
 
 REPO = os.path.join(os.path.dirname(__file__), "..")
-PARAMS = os.path.join(REPO, "demo", "params", "tBL_WSe2_reconstruct.yml")
+PARAMS = os.path.join(REPO, "demo", "params", "pso_ms_b1_n100.yml")
 CKPT = os.path.join(
     os.path.expanduser("~"),
     "ptyrad",
     "demo",
     "output",
-    "tBL_WSe2_multislice",
-    "20260723_full_N16384_dp128_flipT100_random32_p6_1obj_12slice_"
-    "dz1_plr1e-4_oalr5e-4_oplr5e-4_orblur0.5_ozblur1.0_mamp0.03_4.0_"
-    "oathr0.98_oposc_sng1.0_spr0.1",
-    "model_iter0100.hdf5",
+    "PSO_ms_paper",
+    "20260912_full_N4096_dp256_sparse32_p4_1obj_21slice_dz10_plr1e-4_"
+    "oalr5e-4_oplr5e-4_slr5e-4_dpblur1_orblur0.4_ozblur1_mamp0.03_4_"
+    "oathr0.96_oposc_sng1.0_spr0.1",
+    "model_iter0080.hdf5",
 )
-OUT_PNG = os.path.join(REPO, "demo", "born_remainder_bounds_wse2.png")
-OUT_CSV = os.path.join(REPO, "demo", "born_remainder_bounds_wse2.csv")
+OUT_PNG = os.path.join(REPO, "demo", "born_remainder_bounds_pso.png")
+OUT_CSV = os.path.join(REPO, "demo", "born_remainder_bounds_pso.csv")
 N_VIEWS = 32
-N_ORDER = 12
+N_ORDER = 21
+N_LAYER = 21
+DZ = 10.0
 
-# dataviz reference palette (light mode): series hues + neutral chart ink
-C_PLAIN = "#2a78d6"  # categorical slot 1, blue  — measured plain series
-C_TUNED = "#eb6834"  # categorical slot 2, orange — tuned coefficients
-C_BOUND_B = "#898781"  # muted ink — a priori bound (reference line)
+C_PLAIN = "#2a78d6"
+C_TUNED = "#eb6834"
+C_BOUND_B = "#898781"
 C_GRID = "#e1e0d9"
 C_SURFACE = "#fcfcfb"
 
@@ -90,34 +80,27 @@ def detector_orders(obj, Psi_state, H, n_max):
 
 
 def esp_tails(eps):
-    """eps: (B, Nz) numpy. Returns (B, Nz) where out[v, M-1] = sum_{m>M} e_m,
-    with e_m the elementary symmetric polynomials of eps[v]."""
+    """eps: (B, Nz) numpy. out[v, M-1] = sum_{m>M} e_m(eps[v])."""
     B, Nz = eps.shape
     out = np.zeros((B, Nz))
     for v in range(B):
         poly = np.array([1.0])
         for e in eps[v]:
             poly = np.convolve(poly, [1.0, e])
-        e_m = poly[1:]  # e_1..e_Nz (coefficient of t^m in prod(1 + eps t))
-        tails = np.cumsum(e_m[::-1])[::-1]  # tails[m-1] = sum_{k>=m} e_k
+        e_m = poly[1:]
+        tails = np.cumsum(e_m[::-1])[::-1]
         out[v, : Nz - 1] = tails[1:]
         out[v, Nz - 1] = 0.0
     return out
 
 
 def cone_tails(w1, eps):
-    """Cone-aware a priori tails. w1, eps: (B, Nz) numpy.
-
-    The first scattering event of every path acts on the KNOWN freely
-    propagated (defocused) probe, so its sup-norm factor eps_j ||P|| is
-    replaced by the computed w1_j = ||Delta O_j P_j|| — this term sees the
-    beam cone's footprint, position and defocus spread at slice j exactly.
-    Later events keep sup-norm factors: after a scattering event the field
-    is no longer confined to the vacuum cone, so without an assumption on
-    the object's maximum scattering angle no smaller support is rigorous.
-
-    out[v, M-1] = sum_j w1[v, j] * sum_{k>=M} e_k(eps[v, j+1:]).
-    """
+    """Cone-aware a priori tails (see born_remainder_bounds_wse2.py): the
+    first scattering event of every path acts on the known freely propagated
+    (defocused) probe, so its sup-norm factor eps_j ||P|| is replaced by the
+    computed w1_j = ||Delta O_j P_j||, which sees the beam cone's footprint
+    at slice j exactly; later events keep sup-norm factors.
+    out[v, M-1] = sum_j w1[v, j] * sum_{k>=M} e_k(eps[v, j+1:])."""
     B, Nz = eps.shape
     out = np.zeros((B, Nz))
     for v in range(B):
@@ -125,7 +108,7 @@ def cone_tails(w1, eps):
             poly = np.array([1.0])
             for e in eps[v, j + 1 :]:
                 poly = np.convolve(poly, [1.0, e])
-            tails = np.cumsum(poly[::-1])[::-1]  # tails[k] = sum_{i>=k} e_i
+            tails = np.cumsum(poly[::-1])[::-1]
             for M in range(1, Nz + 1):
                 if M < len(tails):
                     out[v, M - 1] += w1[v, j] * tails[M]
@@ -140,7 +123,7 @@ def main():
     ip["obj_source"], ip["obj_params"] = "PtyRAD", CKPT
     ip["probe_source"], ip["probe_params"] = "PtyRAD", CKPT
     ip["pos_source"], ip["pos_params"] = "PtyRAD", CKPT
-    ip["obj_Nlayer"], ip["obj_slice_thickness"] = 12, 1.0
+    ip["obj_Nlayer"], ip["obj_slice_thickness"] = N_LAYER, DZ
     params["recon_params"]["if_quiet"] = True
     solver = PtyRADSolver(params, device=device, seed=42)
     model = PtychoAD(
@@ -149,7 +132,9 @@ def main():
 
     n_pos = model.crop_pos.shape[0]
     idx = torch.linspace(0, n_pos - 1, N_VIEWS).long().to(device)
-    wf = model.omode_occu.to(torch.float64).clamp(min=0).view(1, 1, -1, 1, 1)
+    # fields are staged to CPU as they are computed (21 orders x 2 models of
+    # 256px complex128 frames exceed the GPU); all curve arithmetic runs on CPU
+    wf = model.omode_occu.to(torch.float64).clamp(min=0).view(1, 1, -1, 1, 1).cpu()
 
     def vnorm(field):
         return (field.abs().square().to(torch.float64) * wf).sum(dim=(1, 2, 3, 4)).sqrt()
@@ -160,11 +145,11 @@ def main():
     w1_l = {"chord": [], "tangent": []}
     plateau_prior_l = []
     with torch.no_grad():
-        for sl in idx.split(8):
+        for sl in idx.split(4):  # 256px frames, 21 slices: small chunks
             patches = model.get_obj_patches(sl).to(torch.float64)
             probes = model.get_probes(sl).to(torch.complex128)
             H1 = model.get_propagators(sl).to(torch.complex128)
-            H1 = H1 / H1.abs()  # exact unimodularity (see born_remainder_wse2.py)
+            H1 = H1 / H1.abs()  # exact unimodularity
             powers = [torch.ones_like(H1)]
             for _ in range(model.n_slice - 1):
                 powers.append(powers[-1] * H1)
@@ -180,42 +165,41 @@ def main():
             obj_chord = (O - 1.0).unsqueeze(1)
             obj_tan = (1j * ph.to(torch.complex128)).unsqueeze(1)
 
-            # per-view, per-slice sup-norm perturbation strengths (over omode too)
-            eps_l["chord"].append(
-                (O - 1.0).abs().amax(dim=(1, 3, 4)).cpu().numpy()
-            )
+            eps_l["chord"].append((O - 1.0).abs().amax(dim=(1, 3, 4)).cpu().numpy())
             eps_l["tangent"].append(ph.abs().amax(dim=(1, 3, 4)).cpu().numpy())
-            h = (O - 1.0 - 1j * ph).abs().amax(dim=(1, 3, 4)).cpu().numpy()  # (B, Nz)
+            h = (O - 1.0 - 1j * ph).abs().amax(dim=(1, 3, 4)).cpu().numpy()
             a = amp.amax(dim=(1, 3, 4)).cpu().numpy()
             b = np.sqrt(1.0 + eps_l["tangent"][-1] ** 2)
             g = np.maximum(a, b)
-            # sum_j h_j prod_{k != j} g_k, per view
             prod_g = g.prod(axis=1, keepdims=True)
             plateau_prior_l.append((h * prod_g / g).sum(axis=1))
 
-            T_l.append(born_multislice_target(patches, probes, H3))
-            D0_l.append(D0)
+            T_l.append(born_multislice_target(patches, probes, H3).cpu())
+            D0_l.append(D0.cpu())
             occ6 = wf.view(1, 1, -1, 1, 1, 1)
             for name, obj in (("chord", obj_chord), ("tangent", obj_tan)):
-                D_l[name].append(detector_orders(obj, Psi0, H3, N_ORDER))
+                D_l[name].append(detector_orders(obj, Psi0, H3, N_ORDER).cpu())
                 # first-event norms ||Delta O_j P_j|| for the cone-aware bound
-                # (the H.conj() in _born_scatter is unimodular: norm unchanged)
                 scat1 = _born_scatter(obj, Psi0, H3, 0)
                 w1_l[name].append(
                     (scat1.abs().square().to(torch.float64) * occ6.to(scat1.device))
                     .sum(dim=(1, 2, 4, 5)).sqrt().cpu().numpy()
                 )
                 del scat1
+            del Psi0, obj_chord, obj_tan, O
+            torch.cuda.empty_cache()
 
         D0 = torch.cat(D0_l, dim=0)
         T = torch.cat(T_l, dim=0)
         D = {k: torch.cat(v, dim=1) for k, v in D_l.items()}
+        D_l.clear()
         eps = {k: np.concatenate(v, axis=0) for k, v in eps_l.items()}
         w1 = {k: np.concatenate(v, axis=0) for k, v in w1_l.items()}
         plateau_prior = np.concatenate(plateau_prior_l)
 
         n_T = vnorm(T)
         n_D0 = vnorm(D0)
+        w_fit = wf.sqrt().unsqueeze(0)
 
         def intensity(field):  # occupancy-weighted detector intensity map
             return (field.abs().square().to(torch.float64) * wf).sum(dim=(1, 2))
@@ -223,40 +207,29 @@ def main():
         I_ref = intensity(T)
         n_I = I_ref.flatten(1).norm(dim=1)  # per-view Frobenius norm
 
-        # sqrt occupancy weights for the fit norm (matches vnorm)
-        w_fit = wf.sqrt().unsqueeze(0)  # (1, 1, 1, omode, 1, 1)
-
         B_all = T.shape[0]
-        curves = {}  # (model, kind) -> (N_ORDER, N_VIEWS)
+        curves = {}
         for name in ("chord", "tangent"):
-            term = torch.stack([vnorm(D[name][m]) for m in range(N_ORDER)])  # (12, B)
-            # measured plain + tuned remainders. The tuned fit is the
-            # born_qr_coeffs least squares at batch size 1: one independent
-            # solve per view, fully in complex128 on a per-view
-            # column-normalized basis, and the tuned remainder is evaluated
-            # as a correction to the plain remainder field — c = 1 is
-            # feasible per view, so tuned <= plain view by view beyond
-            # float64 round-off.
+            term = torch.stack([vnorm(D[name][m]) for m in range(N_ORDER)])
             plain, tuned, plain_I, tuned_I = [], [], [], []
             psi_leq = D0.clone()
             for M in range(1, N_ORDER + 1):
                 psi_leq = psi_leq + D[name][M - 1]
-                R_plain = T - psi_leq  # = T_tail of the order-M fit
+                R_plain = T - psi_leq
                 plain.append((vnorm(R_plain) / n_T).cpu())
                 plain_I.append(
                     ((intensity(psi_leq) - I_ref).flatten(1).norm(dim=1) / n_I).cpu()
                 )
                 b = (R_plain * w_fit.squeeze(0)).reshape(B_all, -1, 1)
-                s_v = term[:M].to(torch.complex128)  # per-view column norms (M, B)
+                s_v = term[:M].to(torch.complex128)
                 A = (
                     (D[name][:M] * w_fit).reshape(M, B_all, -1)
                     / s_v.unsqueeze(-1)
-                ).permute(1, 2, 0)  # (B, L, M)
+                ).permute(1, 2, 0)
                 y = torch.linalg.lstsq(
-                    A.cpu(), b.cpu(), driver="gelsd"
-                ).solution[..., 0].to(A.device)  # (B, M)
+                    A, b, driver="gelsd"
+                ).solution[..., 0]
                 x = (y.T / s_v).view(M, B_all, 1, 1, 1, 1)
-                # nothing left to fit for a view: keep unit weights (c -> 1)
                 fitted = (
                     b[..., 0].norm(dim=1) >= 1e-13 * n_T
                 ).view(1, B_all, 1, 1, 1, 1)
@@ -271,7 +244,6 @@ def main():
             curves[name, "plainI"] = torch.stack(plain_I).numpy()
             curves[name, "tunedI"] = torch.stack(tuned_I).numpy()
 
-            # a priori bound: sup-norm path counting
             bound_b = esp_tails(eps[name]).T * (n_D0 / n_T).cpu().numpy()[None, :]
             if name == "tangent":
                 bound_b = bound_b + (
@@ -312,7 +284,7 @@ def main():
     for a in (ax, axI):
         a.set_facecolor(C_SURFACE)
         a.set_yscale("log")
-        a.set_xticks(m_axis)
+        a.set_xticks(np.arange(1, N_ORDER + 1, 2))
         a.set_xlabel("truncation order $M$")
         a.grid(alpha=0.9, which="major", color=C_GRID, lw=0.7)
         for s in ("top", "right"):
@@ -337,22 +309,22 @@ def main():
         v = curves[name, "plain"]
         ax.fill_between(m_axis, v.min(axis=1), v.max(axis=1),
                         color=color, alpha=0.13, lw=0)
-        ax.plot(m_axis, v.mean(axis=1), marker="o", ms=5.5, lw=2.0,
+        ax.plot(m_axis, v.mean(axis=1), marker="o", ms=5, lw=2.0,
                 color=color, zorder=5, label=f"{mdl_label}: measured")
         v = curves[name, "tuned"]
-        ax.plot(m_axis, v.mean(axis=1), marker="s", ms=5, lw=1.8, ls="--",
+        ax.plot(m_axis, v.mean(axis=1), marker="s", ms=4.5, lw=1.8, ls="--",
                 mfc="none", color=color, zorder=5,
                 label=f"{mdl_label.split(' ')[0]}: tuned $c_m$ (per-view fit, batch 1)")
         v = curves[name, "plainI"]
         axI.fill_between(m_axis, v.min(axis=1), v.max(axis=1),
                          color=color, alpha=0.13, lw=0)
-        axI.plot(m_axis, v.mean(axis=1), marker="o", ms=5.5, lw=2.0,
+        axI.plot(m_axis, v.mean(axis=1), marker="o", ms=5, lw=2.0,
                  color=color, zorder=5, label=f"{mdl_label}: measured")
         v = curves[name, "tunedI"]
-        axI.plot(m_axis, v.mean(axis=1), marker="s", ms=5, lw=1.8, ls="--",
+        axI.plot(m_axis, v.mean(axis=1), marker="s", ms=4.5, lw=1.8, ls="--",
                  mfc="none", color=color, zorder=5,
                  label=f"{mdl_label.split(' ')[0]}: tuned $c_m$")
-    ax.set_ylim(1e-16, 3e2)
+    ax.set_ylim(bottom=1e-16)
     ax.set_ylabel(r"$\|\hat R_M\| \,/\, \|\hat\psi_{\mathrm{MS}}\|$")
     ax.set_title("field remainder", fontsize=11)
     # legend order: chord measured/tuned/bound, tangent measured/tuned/bound
@@ -366,8 +338,8 @@ def main():
     axI.set_title("detector intensity error", fontsize=11)
     axI.legend(loc="lower left", framealpha=0.9, fontsize=8)
     fig.suptitle(
-        f"Truncated Born series vs multislice — tBL-WSe$_2$, 12 slices, "
-        f"{N_VIEWS} views (bands: view range)",
+        f"Truncated Born series vs multislice — PrScO$_3$, {N_LAYER} slices "
+        f"of {DZ:g} Å, {N_VIEWS} views (bands: view range)",
         fontsize=12,
     )
     fig.tight_layout(rect=(0, 0, 1, 0.95))
