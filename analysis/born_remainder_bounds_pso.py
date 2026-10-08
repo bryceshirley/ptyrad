@@ -54,7 +54,6 @@ CKPT = os.path.join(
     "model_iter0080.hdf5",
 )
 OUT_PNG = os.path.join(REPO, "demo", "born_remainder_bounds_pso.png")
-OUT_ALT = os.path.join(REPO, "demo", "born_remainder_bounds_alt_pso.png")
 OUT_CSV = os.path.join(REPO, "demo", "born_remainder_bounds_pso.csv")
 N_VIEWS = 32
 N_ORDER = 21
@@ -309,8 +308,10 @@ def main():
                     A, b, driver="gelsd"
                 ).solution[..., 0]
                 x = (y.T / s_v).view(M, B_all, 1, 1, 1, 1)
+                # guard at the float64 floor (not looser — see the WSe2
+                # script: a 1e-13 threshold drags tuned up toward plain)
                 fitted = (
-                    b[..., 0].norm(dim=1) >= 1e-13 * n_T
+                    b[..., 0].norm(dim=1) >= 1e-14 * n_T
                 ).view(1, B_all, 1, 1, 1, 1)
                 R_tuned = R_plain - (x * D[name][:M] * fitted).sum(dim=0)
                 tuned.append((vnorm(R_tuned) / n_T).cpu())
@@ -349,24 +350,38 @@ def main():
         for kind in ("boundB", "boundC", "boundD"):
             ok = np.all(curves[name, kind] >= curves[name, "plain"] - 1e-12)
             print(f"{kind} >= measured for every view and order ({name}): {ok}")
+    # position-averaged error: energy-weighted RMS over the sampled views,
+    # sqrt(sum_v ||R_v||^2 / sum_v ||T_v||^2) — a single curve, no band
+    wv_T = (n_T**2).cpu().numpy()
+    wv_I = (n_I**2).cpu().numpy()
+
+    def rms(v, w):
+        return np.sqrt((v**2 * w[None, :]).sum(axis=1) / w.sum())
+
+    agg = {}
+    for (name, kind), v in curves.items():
+        agg[name, kind] = rms(v, wv_I if kind.endswith("I") else wv_T)
+
     with open(OUT_CSV, "w") as f:
         cols = [f"{n}_{k}_{s}" for n in ("chord", "tangent") for k in kinds
-                for s in ("mean", "min", "max")]
+                for s in ("rms", "mean", "min", "max")]
         f.write("M," + ",".join(cols) + "\n")
         for m in range(N_ORDER):
             row = [str(m + 1)]
             for n in ("chord", "tangent"):
                 for k in kinds:
                     v = curves[n, k][m]
-                    row += [f"{v.mean():.8g}", f"{v.min():.8g}", f"{v.max():.8g}"]
+                    row += [f"{agg[n, k][m]:.8g}", f"{v.mean():.8g}",
+                            f"{v.min():.8g}", f"{v.max():.8g}"]
             f.write(",".join(row) + "\n")
 
-    # two panels: left = field remainder (with cone-aware a priori bounds),
-    # right = detector intensity error. color = model family (chord blue,
-    # tangent orange), line style = variant (solid measured, dashed tuned,
-    # dotted bound)
+    # two panels: left = field remainder (exit plane; identical at the
+    # detector since the gauge is unimodular and F is unitary), right =
+    # detector intensity error. color = model family (chord blue, tangent
+    # orange), line style = variant (solid measured, dashed tuned); each
+    # curve is the energy-weighted RMS over the sampled positions
     fig, (ax, axI) = plt.subplots(
-        1, 2, figsize=(12.6, 6.8), dpi=150, facecolor=C_SURFACE
+        1, 2, figsize=(12.6, 6.0), dpi=150, facecolor=C_SURFACE
     )
     for a in (ax, axI):
         a.set_facecolor(C_SURFACE)
@@ -380,36 +395,16 @@ def main():
         "chord": (C_PLAIN, r"chord $\Delta O = O - 1$ (non-linearised)"),
         "tangent": (C_TUNED, r"tangent $\Delta O = i\varphi$ (linearised)"),
     }
-    bound_labels = {
-        "chord":
-            r"chord a priori cone bound $\sum_j \|\Delta O_j"
-            r" \mathcal{P}_{z_j} P\| \sum_{n\geq M} e_n(\varepsilon_{>j})$",
-        "tangent":
-            r"tangent a priori cone bound $\sum_j \|\Delta O_j"
-            r" \mathcal{P}_{z_j} P\| \sum_{n\geq M} e_n(\varepsilon_{>j})"
-            r"\ +$ lin. gap",
-    }
     for name, (color, mdl_label) in series.items():
-        v = curves[name, "boundC"]
-        ax.plot(m_axis, v.mean(axis=1), ls=":", lw=1.6, color=color,
-                alpha=0.7, zorder=2, label=bound_labels[name])
-        v = curves[name, "plain"]
-        ax.fill_between(m_axis, v.min(axis=1), v.max(axis=1),
-                        color=color, alpha=0.13, lw=0)
-        ax.plot(m_axis, v.mean(axis=1), marker="o", ms=5, lw=2.0,
+        ax.plot(m_axis, agg[name, "plain"], marker="o", ms=5, lw=2.0,
                 color=color, zorder=5, label=f"{mdl_label}: measured")
-        v = curves[name, "tuned"]
-        ax.plot(m_axis, v.mean(axis=1), marker="s", ms=4.5, lw=1.8, ls="--",
-                mfc="none", color=color, zorder=5,
+        ax.plot(m_axis, agg[name, "tuned"], marker="s", ms=4.5, lw=1.8,
+                ls="--", mfc="none", color=color, zorder=5,
                 label=f"{mdl_label.split(' ')[0]}: tuned $c_m$ (per-view fit, batch 1)")
-        v = curves[name, "plainI"]
-        axI.fill_between(m_axis, v.min(axis=1), v.max(axis=1),
-                         color=color, alpha=0.13, lw=0)
-        axI.plot(m_axis, v.mean(axis=1), marker="o", ms=5, lw=2.0,
+        axI.plot(m_axis, agg[name, "plainI"], marker="o", ms=5, lw=2.0,
                  color=color, zorder=5)
-        v = curves[name, "tunedI"]
-        axI.plot(m_axis, v.mean(axis=1), marker="s", ms=4.5, lw=1.8, ls="--",
-                 mfc="none", color=color, zorder=5)
+        axI.plot(m_axis, agg[name, "tunedI"], marker="s", ms=4.5, lw=1.8,
+                 ls="--", mfc="none", color=color, zorder=5)
     ax.set_ylim(bottom=1e-16)
     ax.set_ylabel(r"$\|\hat R_M\| \,/\, \|\hat\psi_{\mathrm{MS}}\|$")
     ax.set_title("field remainder", fontsize=11)
@@ -417,80 +412,16 @@ def main():
         r"$\|\hat I_M - \hat I_{\mathrm{MS}}\|_2 \,/\, \|\hat I_{\mathrm{MS}}\|_2$"
     )
     axI.set_title("detector intensity error", fontsize=11)
-    # one shared legend below both panels (the intensity panel reuses the
-    # same styles), keeping the axes large
-    handles, labels = ax.get_legend_handles_labels()
-    order = [1, 2, 0, 4, 5, 3]
-    fig.legend([handles[i] for i in order], [labels[i] for i in order],
-               loc="lower center", ncol=2, framealpha=0.9, fontsize=9,
+    fig.legend(loc="lower center", ncol=2, framealpha=0.9, fontsize=9,
                columnspacing=1.4)
     fig.suptitle(
         f"Truncated Born series vs multislice — PrScO$_3$, {N_LAYER} slices "
-        f"of {DZ:g} Å, {N_VIEWS} views (bands: view range)",
+        f"of {DZ:g} Å, averaged over {N_VIEWS} positions",
         fontsize=12,
     )
-    fig.tight_layout(rect=(0, 0.17, 1, 0.95))
+    fig.tight_layout(rect=(0, 0.12, 1, 0.95))
     fig.savefig(OUT_PNG, facecolor=C_SURFACE)
 
-    # ------------------------------------------------------------------
-    # alternative-bounds comparison: measured vs cone-aware vs sup-norm
-    # ------------------------------------------------------------------
-    fig2, ax2 = plt.subplots(figsize=(10.0, 7.4), dpi=150, facecolor=C_SURFACE)
-    ax2.set_facecolor(C_SURFACE)
-    alt_labels = {
-        ("chord", "boundD"):
-            r"chord pair (order-2 kernels, certifies $M{\geq}2$): "
-            r"$\sum_{j<k} \|\Delta O_k \mathcal{P}_{z_k-z_j}"
-            r"[\Delta O_j \mathcal{P}_{z_j} P]\| \sum_{n\geq M-1}"
-            r" e_n(\varepsilon_{>k})$",
-        ("chord", "boundC"):
-            r"chord cone (object + beam footprint $|\mathcal{P}_{z_j}P|^2$): "
-            r"$\sum_j \|\Delta O_j \mathcal{P}_{z_j} P\|"
-            r" \sum_{n\geq M} e_n(\varepsilon_{>j})$",
-        ("chord", "boundB"):
-            r"chord sup-norm (object only): $\|P\|\sum_{m>M} e_m(\varepsilon)$, "
-            r"$\varepsilon_j{=}\max_x|\Delta O_j|$",
-        ("tangent", "boundD"):
-            r"tangent pair (order-2 kernels) $+$ lin. gap",
-        ("tangent", "boundC"):
-            r"tangent cone (object + beam footprint) $+$ lin. gap",
-        ("tangent", "boundB"):
-            r"tangent sup-norm (object only) "
-            r"$+\ \|P\|\sum_j h_j \prod_{k\neq j} g_k$",
-    }
-    for name, (color, mdl_label) in series.items():
-        v = curves[name, "plain"]
-        ax2.fill_between(m_axis, v.min(axis=1), v.max(axis=1),
-                         color=color, alpha=0.13, lw=0)
-        ax2.plot(m_axis, v.mean(axis=1), marker="o", ms=5, lw=2.0,
-                 color=color, zorder=5, label=f"{mdl_label}: measured")
-        v = curves[name, "boundD"]
-        ax2.plot(m_axis, v.mean(axis=1), ls=(0, (5, 1)), lw=1.9, color=color,
-                 zorder=4, label=alt_labels[name, "boundD"])
-        v = curves[name, "boundC"]
-        ax2.plot(m_axis, v.mean(axis=1), ls=":", lw=1.7, color=color,
-                 alpha=0.7, zorder=3, label=alt_labels[name, "boundC"])
-        v = curves[name, "boundB"]
-        ax2.plot(m_axis, v.mean(axis=1), ls="-.", lw=1.3, color=color,
-                 alpha=0.45, zorder=2, label=alt_labels[name, "boundB"])
-    ax2.set_yscale("log")
-    ax2.set_ylim(bottom=1e-16)
-    ax2.set_xticks(np.arange(1, N_ORDER + 1, 2))
-    ax2.set_xlabel("truncation order $M$")
-    ax2.set_ylabel(r"$\|\hat R_M\| \,/\, \|\hat\psi_{\mathrm{MS}}\|$")
-    ax2.grid(alpha=0.9, which="major", color=C_GRID, lw=0.7)
-    for s in ("top", "right"):
-        ax2.spines[s].set_visible(False)
-    fig2.legend(loc="lower center", ncol=2, framealpha=0.9, fontsize=8.5,
-                columnspacing=1.2)
-    ax2.set_title(
-        f"A priori remainder bounds: sup-norm vs cone vs pair — PrScO$_3$, "
-        f"{N_VIEWS} views",
-        fontsize=11,
-    )
-    fig2.tight_layout(rect=(0, 0.22, 1, 1))
-    fig2.savefig(OUT_ALT, facecolor=C_SURFACE)
-    print(f"wrote {OUT_ALT}")
     print(f"wrote {OUT_PNG} and {OUT_CSV}")
     for name in ("chord", "tangent"):
         print(f"--- {name}")
