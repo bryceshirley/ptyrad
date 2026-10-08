@@ -261,16 +261,13 @@ def main():
         "chord": (C_PLAIN, r"chord $\Delta O = O - 1$ (non-linearised)"),
         "tangent": (C_TUNED, r"tangent $\Delta O = i\varphi$ (linearised)"),
     }
+    # tuned curves stay in the CSV but are not plotted: on this specimen
+    # tuning cannot improve the chord (tuned == plain at every M)
     for name, (color, mdl_label) in series.items():
         ax.plot(m_axis, agg[name, "plain"], marker="o", ms=6, lw=2.0,
-                color=color, zorder=5, label=f"{mdl_label}: measured")
-        ax.plot(m_axis, agg[name, "tuned"], marker="s", ms=5.5, lw=1.8,
-                ls="--", mfc="none", color=color, zorder=5,
-                label=f"{mdl_label.split(' ')[0]}: tuned $c_m$ (per-view fit, batch 1)")
+                color=color, zorder=5, label=mdl_label)
         axI.plot(m_axis, agg[name, "plainI"], marker="o", ms=6, lw=2.0,
                  color=color, zorder=5)
-        axI.plot(m_axis, agg[name, "tunedI"], marker="s", ms=5.5, lw=1.8,
-                 ls="--", mfc="none", color=color, zorder=5)
     ax.set_ylim(bottom=1e-16)
     ax.set_ylabel(r"$\|\hat R_M\| \,/\, \|\hat\psi_{\mathrm{MS}}\|$")
     ax.set_title("field remainder", fontsize=11)
