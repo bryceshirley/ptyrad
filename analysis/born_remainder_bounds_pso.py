@@ -116,6 +116,30 @@ def cone_tails(w1, eps):
     return out
 
 
+def pair_tails(w2, eps):
+    """Pair (second-order cone) a priori tails: the first TWO events of every
+    path carry their exact probe-weighted norms, the double-scattering
+    kernels w2[j, k] = ||Delta O_k P_{z_k-z_j}[Delta O_j P_{z_j} P]|| of Eq.
+    (double-scattering); events three onward keep sup-norm factors (see
+    born_remainder_bounds_wse2.py).
+    out[v, M-1] = sum_{j<k} w2[v, j, k] * sum_{n>=M-1} e_n(eps[v, k+1:])."""
+    B, Nz = eps.shape
+    out = np.zeros((B, Nz))
+    for v in range(B):
+        for j2 in range(1, Nz):
+            colsum = w2[v, :j2, j2].sum()
+            if colsum == 0.0:
+                continue
+            poly = np.array([1.0])
+            for e in eps[v, j2 + 1 :]:
+                poly = np.convolve(poly, [1.0, e])
+            tails = np.cumsum(poly[::-1])[::-1]
+            for M in range(1, Nz + 1):
+                if M - 1 < len(tails):
+                    out[v, M - 1] += colsum * tails[M - 1]
+    return out
+
+
 def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     os.chdir(os.path.join(REPO, "demo"))
@@ -144,7 +168,8 @@ def main():
     D_l = {"chord": [], "tangent": []}
     eps_l = {"chord": [], "tangent": []}
     w1_l = {"chord": [], "tangent": []}
-    plateau_prior_l = []
+    w2_l = {"chord": [], "tangent": []}
+    h_l, a_l, u_l, plateau_prior_l = [], [], [], []
     with torch.no_grad():
         for sl in idx.split(4):  # 256px frames, 21 slices: small chunks
             patches = model.get_obj_patches(sl).to(torch.float64)
@@ -174,18 +199,43 @@ def main():
             g = np.maximum(a, b)
             prod_g = g.prod(axis=1, keepdims=True)
             plateau_prior_l.append((h * prod_g / g).sum(axis=1))
+            h_l.append(h)
+            a_l.append(a)
+            # ||E_j P_{z_j} P|| with E_j = O_j - 1 - i phi_j: the computable
+            # single-scattering part of the linearisation gap (k-space norm,
+            # hence the sqrt(Ny*Nx) fft factor)
+            occ6 = wf.view(1, 1, -1, 1, 1, 1)
+            err = (O - 1.0 - 1j * ph).unsqueeze(1) * Psi0
+            u_l.append(
+                (err.abs().square().to(torch.float64) * occ6.to(err.device))
+                .sum(dim=(1, 2, 4, 5)).sqrt().cpu().numpy() * np.sqrt(Ny * Nx)
+            )
+            del err
 
             T_l.append(born_multislice_target(patches, probes, H3).cpu())
             D0_l.append(D0.cpu())
-            occ6 = wf.view(1, 1, -1, 1, 1, 1)
             for name, obj in (("chord", obj_chord), ("tangent", obj_tan)):
                 D_l[name].append(detector_orders(obj, Psi0, H3, N_ORDER).cpu())
-                # first-event norms ||Delta O_j P_j|| for the cone-aware bound
+                # first-event norms ||Delta O_j P_{z_j} P|| for the cone bound
                 scat1 = _born_scatter(obj, Psi0, H3, 0)
                 w1_l[name].append(
                     (scat1.abs().square().to(torch.float64) * occ6.to(scat1.device))
                     .sum(dim=(1, 2, 4, 5)).sqrt().cpu().numpy()
                 )
+                # pair weights ||Delta O_k P_{z_k-z_j}[Delta O_j P_{z_j} P]||,
+                # the double-scattering kernels of Eq. (double-scattering)
+                w2v = torch.zeros(B, Nz, Nz, dtype=torch.float64)
+                for j1 in range(Nz - 1):
+                    prop = ifft2(
+                        scat1[..., j1 : j1 + 1, :, :] * H3[..., j1 + 1 :, :, :]
+                    )
+                    pair = obj[..., j1 + 1 :, :, :] * prop
+                    w2v[:, j1, j1 + 1 :] = (
+                        (pair.abs().square().to(torch.float64) * occ6.to(pair.device))
+                        .sum(dim=(1, 2, 4, 5)).sqrt().cpu()
+                    ) * np.sqrt(Ny * Nx)
+                    del prop, pair
+                w2_l[name].append(w2v.numpy())
                 del scat1
             del Psi0, obj_chord, obj_tan, O
             torch.cuda.empty_cache()
@@ -196,6 +246,10 @@ def main():
         D_l.clear()
         eps = {k: np.concatenate(v, axis=0) for k, v in eps_l.items()}
         w1 = {k: np.concatenate(v, axis=0) for k, v in w1_l.items()}
+        w2 = {k: np.concatenate(v, axis=0) for k, v in w2_l.items()}
+        h_arr = np.concatenate(h_l)
+        a_arr = np.concatenate(a_l)
+        u_arr = np.concatenate(u_l)
         plateau_prior = np.concatenate(plateau_prior_l)
 
         n_T = vnorm(T)
@@ -214,6 +268,25 @@ def main():
                 (R.abs().square() - 2 * (T.conj() * R).real).to(torch.float64) * wf
             ).sum(dim=(1, 2))
             return (dI.flatten(1).norm(dim=1) / n_I).cpu()
+
+        # tangent linearisation gap, cone-gauged (see
+        # born_remainder_bounds_wse2.py for the derivation); like the cone
+        # weights it uses only the beam intensity footprint, and the min of
+        # the two valid gap bounds is kept
+        t_tan = eps["tangent"]
+        B_v = t_tan.shape[0]
+        ones = np.ones((B_v, 1))
+        b_tan = np.sqrt(1.0 + t_tan**2)
+        cb = np.cumprod(b_tan, axis=1)
+        c_excl = np.concatenate([ones, cb[:, :-1]], axis=1)
+        s = np.cumsum(t_tan / cb, axis=1)
+        s_excl = np.concatenate([np.zeros((B_v, 1)), s[:, :-1]], axis=1)
+        up = c_excl * s_excl
+        sa = np.cumprod(a_arr[:, ::-1], axis=1)[:, ::-1]
+        down = np.concatenate([sa[:, 1:], ones], axis=1)
+        nD0np = n_D0.cpu().numpy()
+        gap_cone = (down * (u_arr + h_arr * up * nD0np[:, None])).sum(axis=1)
+        gap_tan = np.minimum(gap_cone, plateau_prior * nD0np)
 
         B_all = T.shape[0]
         curves = {}
@@ -254,17 +327,28 @@ def main():
                 )[None, :]
             curves[name, "boundB"] = bound_b
 
-            # cone-aware a priori bound: first event weighted by the
-            # defocused probe at its slice (see cone_tails)
+            # cone-aware a priori bound: first event weighted by the beam
+            # intensity footprint at its slice (see cone_tails); the tangent
+            # adds the cone-gauged linearisation gap
             bound_c = cone_tails(w1[name], eps[name]).T / n_T.cpu().numpy()[None, :]
             if name == "tangent":
-                bound_c = bound_c + (
-                    plateau_prior * (n_D0 / n_T).cpu().numpy()
-                )[None, :]
+                bound_c = bound_c + (gap_tan / n_T.cpu().numpy())[None, :]
             curves[name, "boundC"] = bound_c
 
+            # pair bound: NOT fully a priori — it evaluates order-2 kernels,
+            # so it only certifies truncations M >= 2 without computing
+            # neglected orders (see born_remainder_bounds_wse2.py)
+            bound_d = pair_tails(w2[name], eps[name]).T / n_T.cpu().numpy()[None, :]
+            if name == "tangent":
+                bound_d = bound_d + (gap_tan / n_T.cpu().numpy())[None, :]
+            curves[name, "boundD"] = bound_d
+
     m_axis = np.arange(1, N_ORDER + 1)
-    kinds = ["plain", "tuned", "plainI", "tunedI", "boundB", "boundC"]
+    kinds = ["plain", "tuned", "plainI", "tunedI", "boundB", "boundC", "boundD"]
+    for name in ("chord", "tangent"):  # a bound that dips below measured is a bug
+        for kind in ("boundB", "boundC", "boundD"):
+            ok = np.all(curves[name, kind] >= curves[name, "plain"] - 1e-12)
+            print(f"{kind} >= measured for every view and order ({name}): {ok}")
     with open(OUT_CSV, "w") as f:
         cols = [f"{n}_{k}_{s}" for n in ("chord", "tangent") for k in kinds
                 for s in ("mean", "min", "max")]
@@ -298,12 +382,12 @@ def main():
     }
     bound_labels = {
         "chord":
-            r"chord a priori bound (cone) "
-            r"$\sum_j \|\Delta O_j P_j\| \sum_{k\geq M} e_k(\varepsilon_{>j})$",
+            r"chord a priori cone bound $\sum_j \|\Delta O_j"
+            r" \mathcal{P}_{z_j} P\| \sum_{n\geq M} e_n(\varepsilon_{>j})$",
         "tangent":
-            r"tangent a priori bound (cone) "
-            r"$\sum_j \|\Delta O_j P_j\| \sum_{k\geq M} e_k(\varepsilon_{>j})"
-            r" + \|P\|\sum_j h_j \prod_{k\neq j} g_k$",
+            r"tangent a priori cone bound $\sum_j \|\Delta O_j"
+            r" \mathcal{P}_{z_j} P\| \sum_{n\geq M} e_n(\varepsilon_{>j})"
+            r"\ +$ lin. gap",
     }
     for name, (color, mdl_label) in series.items():
         v = curves[name, "boundC"]
@@ -351,19 +435,28 @@ def main():
     # ------------------------------------------------------------------
     # alternative-bounds comparison: measured vs cone-aware vs sup-norm
     # ------------------------------------------------------------------
-    fig2, ax2 = plt.subplots(figsize=(8.8, 6.6), dpi=150, facecolor=C_SURFACE)
+    fig2, ax2 = plt.subplots(figsize=(10.0, 7.4), dpi=150, facecolor=C_SURFACE)
     ax2.set_facecolor(C_SURFACE)
     alt_labels = {
+        ("chord", "boundD"):
+            r"chord pair (order-2 kernels, certifies $M{\geq}2$): "
+            r"$\sum_{j<k} \|\Delta O_k \mathcal{P}_{z_k-z_j}"
+            r"[\Delta O_j \mathcal{P}_{z_j} P]\| \sum_{n\geq M-1}"
+            r" e_n(\varepsilon_{>k})$",
         ("chord", "boundC"):
-            r"chord cone bound $\sum_j \|\Delta O_j P_j\|"
-            r" \sum_{k\geq M} e_k(\varepsilon_{>j})$",
+            r"chord cone (object + beam footprint $|\mathcal{P}_{z_j}P|^2$): "
+            r"$\sum_j \|\Delta O_j \mathcal{P}_{z_j} P\|"
+            r" \sum_{n\geq M} e_n(\varepsilon_{>j})$",
         ("chord", "boundB"):
-            r"chord sup-norm bound $\|P\|\sum_{m>M} e_m(\varepsilon)$, "
+            r"chord sup-norm (object only): $\|P\|\sum_{m>M} e_m(\varepsilon)$, "
             r"$\varepsilon_j{=}\max_x|\Delta O_j|$",
+        ("tangent", "boundD"):
+            r"tangent pair (order-2 kernels) $+$ lin. gap",
         ("tangent", "boundC"):
-            r"tangent cone bound $+\ \|P\|\sum_j h_j \prod_{k\neq j} g_k$",
+            r"tangent cone (object + beam footprint) $+$ lin. gap",
         ("tangent", "boundB"):
-            r"tangent sup-norm bound $+\ \|P\|\sum_j h_j \prod_{k\neq j} g_k$",
+            r"tangent sup-norm (object only) "
+            r"$+\ \|P\|\sum_j h_j \prod_{k\neq j} g_k$",
     }
     for name, (color, mdl_label) in series.items():
         v = curves[name, "plain"]
@@ -371,12 +464,15 @@ def main():
                          color=color, alpha=0.13, lw=0)
         ax2.plot(m_axis, v.mean(axis=1), marker="o", ms=5, lw=2.0,
                  color=color, zorder=5, label=f"{mdl_label}: measured")
+        v = curves[name, "boundD"]
+        ax2.plot(m_axis, v.mean(axis=1), ls=(0, (5, 1)), lw=1.9, color=color,
+                 zorder=4, label=alt_labels[name, "boundD"])
         v = curves[name, "boundC"]
-        ax2.plot(m_axis, v.mean(axis=1), ls=":", lw=2.0, color=color,
-                 zorder=3, label=alt_labels[name, "boundC"])
+        ax2.plot(m_axis, v.mean(axis=1), ls=":", lw=1.7, color=color,
+                 alpha=0.7, zorder=3, label=alt_labels[name, "boundC"])
         v = curves[name, "boundB"]
-        ax2.plot(m_axis, v.mean(axis=1), ls="-.", lw=1.4, color=color,
-                 alpha=0.55, zorder=2, label=alt_labels[name, "boundB"])
+        ax2.plot(m_axis, v.mean(axis=1), ls="-.", lw=1.3, color=color,
+                 alpha=0.45, zorder=2, label=alt_labels[name, "boundB"])
     ax2.set_yscale("log")
     ax2.set_ylim(bottom=1e-16)
     ax2.set_xticks(np.arange(1, N_ORDER + 1, 2))
@@ -388,11 +484,11 @@ def main():
     fig2.legend(loc="lower center", ncol=2, framealpha=0.9, fontsize=8.5,
                 columnspacing=1.2)
     ax2.set_title(
-        f"A priori remainder bounds: sup-norm vs cone-aware — PrScO$_3$, "
+        f"A priori remainder bounds: sup-norm vs cone vs pair — PrScO$_3$, "
         f"{N_VIEWS} views",
         fontsize=11,
     )
-    fig2.tight_layout(rect=(0, 0.17, 1, 1))
+    fig2.tight_layout(rect=(0, 0.22, 1, 1))
     fig2.savefig(OUT_ALT, facecolor=C_SURFACE)
     print(f"wrote {OUT_ALT}")
     print(f"wrote {OUT_PNG} and {OUT_CSV}")
@@ -403,7 +499,8 @@ def main():
                 f"M = {m + 1:2d}: plain {curves[name, 'plain'][m].mean():.3e}  "
                 f"tuned {curves[name, 'tuned'][m].mean():.3e}  "
                 f"priorB {curves[name, 'boundB'][m].mean():.3e}  "
-                f"cone {curves[name, 'boundC'][m].mean():.3e}"
+                f"cone {curves[name, 'boundC'][m].mean():.3e}  "
+                f"pair {curves[name, 'boundD'][m].mean():.3e}"
             )
 
 
