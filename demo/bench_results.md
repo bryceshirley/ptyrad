@@ -498,3 +498,30 @@ GPUs (e.g. 8 = 2 mode groups × 4 slice blocks) → floor ≈ 65/2 ≈ 33 ms at
 Nz=512 p4, beating even an ideal MS adjoint. With enough NVLinked GPUs,
 born6 wins any depth at batch 1; MS has no parallel axis to answer with
 (modes don't change its time, slices can't split).
+
+## I. Combined mode x slice split (`bench_combo_modeslice.py`) — the 8-GPU plan
+PM mode-groups x PZ slice-blocks on PM*PZ GPUs (env PM/PZ/BORN_M/NOTRANSFER).
+Validated 2x2 on this box (exact: 7e-8). Batch 1, M=6, 256², p4, Nz=512,
+f+b INCLUDING each config's required comms (slice: none — object grads live
+distributed; mode: cross-replica grad-reduce ∝ Nz):
+
+| 4-GPU config | f+b real (PHB) | f+b floor (NVLink-attainable) |
+|---|---|---|
+| combo 2m×2z | **93.9 ms (2.52×)** | 79.0 (3.00×) |
+| pure slice 1m×4z | 100.9 (2.35×) | **64.8 (3.65×)** |
+| pure mode 4m×1z | 128.5 (1.84×) | grad-reduce-bound |
+
+- **On PCIe, combo 2×2 is the best 4-GPU config at deep Nz** (fewer chain
+  hops per group than 4z; only a 2-way grad-reduce ~11 ms vs pure mode's
+  4-way full-object reduce ~57 ms).
+- **On NVLink, pure slice wins at equal GPUs** (best floor): it PARTITIONS
+  the object, so object gradients need zero communication; every mode group
+  added costs a replica grad-reduce ∝ Nz.
+- **8-GPU NVLink extrapolation** (slice floor eff. 91% at P=4): 1m×8z f+b
+  ≈ 34–40 ms at Nz=512 → beats even an idealized hand-rolled MS adjoint
+  (~46 ms), closing §H's caveat. 4-GPU NVLink (65 ms) already beats
+  as-implemented MS (414 ms) by 6.4×.
+- GOTCHA (cost a 2× artefact before fixing): a CPU-resident `omode_occu`
+  forces a pageable H2D at each chain's end, which **blocks the host until
+  that GPU chain completes and serializes the groups** (pure mode measured
+  0.9×!). Pre-place every small tensor, including scalars/occupancies.

@@ -51,11 +51,26 @@ log "2. bench_axes_real (slice/mode/batch, N=1/8/32)"
 "$PY" bench_axes_real.py 2>"$RES/axes.err" | tee "$RES/axes.log"
 
 # ---- 2b. deep-stack Nz sweep (the multislice-comparison regime) ------------
+NG=$(nvidia-smi -L | wc -l)
 log "2b. bench_slice_nzsweep (batch-1 deep stacks, hypothesis 4; M=6/2/1)"
 for MM in 6 2 1; do
-  echo "--- BORN_M=$MM ---" | tee -a "$RES/nzsweep.log"
-  BORN_M=$MM "$PY" bench_slice_nzsweep.py 2>"$RES/nzsweep.err" | tee -a "$RES/nzsweep.log"
+  echo "--- BORN_M=$MM NGPU=$NG ---" | tee -a "$RES/nzsweep.log"
+  BORN_M=$MM NGPU=$NG "$PY" bench_slice_nzsweep.py 2>"$RES/nzsweep.err" | tee -a "$RES/nzsweep.log"
 done
+if [ "$NG" -ge 8 ]; then
+  log "2c. P-scaling + combo configs on 8 GPUs (hypothesis 5b)"
+  for P in 2 4 8; do
+    echo "--- NGPU=$P ---" | tee -a "$RES/pscale.log"
+    NGPU=$P "$PY" bench_slice_nzsweep.py 2>/dev/null | tee -a "$RES/pscale.log"
+  done
+  for CFG in "2 4" "1 8" "4 2"; do
+    set -- $CFG
+    echo "--- PM=$1 PZ=$2 ---" | tee -a "$RES/combo.log"
+    PM=$1 PZ=$2 "$PY" bench_combo_modeslice.py 2>/dev/null | tee -a "$RES/combo.log"
+  done
+fi
+log "2d. multislice head-to-head (hypothesis 5)"
+"$PY" bench_ms_vs_born_b1.py 2>"$RES/msvb.err" | tee "$RES/msvb.log"
 
 # ---- 3. end-to-end 20-iter reconstructions (~25 min each) ------------------
 if [ "${1:-}" != "--skip-recon" ]; then

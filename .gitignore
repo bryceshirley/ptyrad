@@ -36,3 +36,4 @@ docs/.ipynb_checkpoints/
 !/demo/nvlink/
 !/demo/bench_slice_nzsweep.py
 !/demo/bench_ms_vs_born_b1.py
+!/demo/bench_combo_modeslice.py

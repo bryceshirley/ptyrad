@@ -1,7 +1,8 @@
 # NVLink validation of the multi-GPU Born benchmarks (agent/operator prompt)
 
-You are on a rented NVLink GPU box (target: 2-4x A100 SXM4 or H100 SXM, e.g.
-RunPod 4x A100 SXM pod, ~$6.4/hr). Your job: re-run the multi-GPU Born-series
+You are on a rented NVLink GPU box (target: **8x A100 SXM4** (NVSwitch,
+all-to-all 600 GB/s; RunPod ~$11-14/hr) or 4x A100 SXM ~$6.4/hr; H100 ~2x
+faster, ~2x price). Your job: re-run the multi-GPU Born-series
 benchmarks from `demo/bench_results.md` on the real PSO born6 sample and
 measure what NVLink changes versus the original all-PHB PCIe box (KVM guest,
 no P2P, 4x A100 80GB PCIe). Work economically -- the full campaign fits in
@@ -45,10 +46,14 @@ End-to-end 20-iter reconstruction: baseline 64.5 s/iter; mode-split 2-GPU
    the P-GPU flat-curve extension hold for the cheap headline orders too.
 5. **Multislice head-to-head (SSH)**: `bench_ms_vs_born_b1.py` -- verify the
    NVLink box reproduces: born6 4-GPU f+b beats as-implemented MS from
-   Nz~24-32, 6.4x at Nz=512. Also test the COMBINED split (SSH.2): P_m mode
-   groups x P_z slice blocks (e.g. 2x4 on 8 GPUs) -- mode-split is a second
-   DIFFERENTIAL axis vs MS at batch 1 (MS is pmode-insensitive/launch-bound,
-   Born is pmode-proportional/compute-bound).
+   Nz~24-32, 6.4x at Nz=512. Mode-split is a second DIFFERENTIAL axis vs MS
+   at batch 1 (MS is pmode-insensitive/launch-bound, Born pmode-proportional).
+5b. **On 8 GPUs (SSI)**: run `bench_slice_nzsweep.py` with NGPU=8 (P-scaling
+   curve NGPU=2/4/8) and `bench_combo_modeslice.py` with PM=2 PZ=4, PM=1 PZ=8,
+   PM=4 PZ=2. PCIe box ranking to re-test: combo won on PCIe (fewer hops) but
+   pure slice has the best FLOOR (object partitioned -> zero grad comm), so on
+   NVLink expect **1m x 8z to win**: predicted f+b ~34-40 ms at Nz=512 M=6 --
+   beating even an idealized MS adjoint (~46 ms), closing SSH's caveat.
 6. **Mode-split end-to-end** moves from 0.95x toward its 1.13x microbench step
    gain (per-batch 10.5 MB patch transfers become cheap). Secondary.
 

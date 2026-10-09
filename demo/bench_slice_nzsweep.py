@@ -49,14 +49,14 @@ def bounds(Nz, P):
     return b
 
 
-def distribute(obj, probe, H, P):
+def distribute(obj, probe, H, P, devs=None):
     b = bounds(H.shape[3], P)
     O = torch.polar(obj[..., 0], obj[..., 1])
     objc_all = (O - 1.0).unsqueeze(1)
     blk = []
     for i in range(P):
         lo, hi = b[i], b[i + 1]
-        d = f"cuda:{i}"
+        d = devs[i] if devs else f"cuda:{i}"
         Hd = H[..., lo:hi, :, :].to(d).contiguous()
         blk.append(dict(objc=objc_all[..., lo:hi, :, :].to(d).contiguous(),
                         H=Hd, Hc=Hd.conj().contiguous(), probe=probe.to(d), dev=d))
@@ -65,7 +65,7 @@ def distribute(obj, probe, H, P):
 
 def forward_pway(blk, occu, P, notransfer=False, codec="c64"):
     for s in blk:
-        pk = fft2(s["probe"]).view(-1, PMODE, 1, 1, Ny, Nx)
+        pk = fft2(s["probe"]).view(-1, s["probe"].shape[1], 1, 1, Ny, Nx)
         s["pk"] = pk
         s["psi"] = ifft2(s["H"] * pk)
     Psi_M = blk[-1]["pk"].squeeze(3)
@@ -123,7 +123,8 @@ def tmed(fn, P, warmup=3, reps=15):
 
 
 if __name__ == "__main__":
-    print(f"batch={N}, {Ny}x{Nx}, pmode={PMODE}, M={M} (BORN_M env); times in ms")
+    P_GPU = int(os.environ.get("NGPU", "4"))  # slice blocks = GPUs (8 on an 8x SXM box)
+    print(f"P={P_GPU} slice GPUs | batch={N}, {Ny}x{Nx}, pmode={PMODE}, M={M} (BORN_M env); times in ms")
     print(f"{'Nz':>5} | {'1-GPU fwd':>10} | {'1-GPU f+b':>10} | {'4G floor':>9} "
           f"| {'floor x':>7} | {'4G sync':>8} | {'4G half':>8}")
     for Nz in (21, 32, 64, 128, 256, 512):
@@ -139,13 +140,13 @@ if __name__ == "__main__":
             b = [dict(objc=o, H=Hd, Hc=Hd.conj(), probe=pr, dev="cuda:0")]
             forward_pway(b, occu, 1).sum().backward()
         t1fb = tmed(fb, 1)
-        blk4 = distribute(obj, probe, H, 4)
-        tf = tmed(lambda: forward_pway(blk4, occu, 4, notransfer=True), 4)
+        blk4 = distribute(obj, probe, H, P_GPU)
+        tf = tmed(lambda: forward_pway(blk4, occu, P_GPU, notransfer=True), P_GPU)
         _ZERO.clear()
-        blk4b = distribute(obj, probe, H, 4)
-        ts_ = tmed(lambda: forward_pway(blk4b, occu, 4), 4)
-        blk4c = distribute(obj, probe, H, 4)
-        th = tmed(lambda: forward_pway(blk4c, occu, 4, codec="half"), 4)
+        blk4b = distribute(obj, probe, H, P_GPU)
+        ts_ = tmed(lambda: forward_pway(blk4b, occu, P_GPU), P_GPU)
+        blk4c = distribute(obj, probe, H, P_GPU)
+        th = tmed(lambda: forward_pway(blk4c, occu, P_GPU, codec="half"), P_GPU)
         print(f"{Nz:>5} | {t1*1e3:10.2f} | {t1fb*1e3:10.2f} | {tf*1e3:9.2f} "
               f"| {t1/tf:6.2f}x | {ts_*1e3:8.2f} | {th*1e3:8.2f}")
         del obj, probe, H, blk1, blk4, blk4b, blk4c, oc, Hd
