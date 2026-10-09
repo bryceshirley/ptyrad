@@ -27,3 +27,10 @@ docs/.ipynb_checkpoints/
 .ruff_cache
 .pytest_cache
 
+
+# nvlink-bench branch: track the NVLink benchmark suite
+!/demo/bench_slice_real.py
+!/demo/bench_axes_real.py
+!/demo/run_cmp_modesplit.py
+!/demo/bench_results.md
+!/demo/nvlink/
