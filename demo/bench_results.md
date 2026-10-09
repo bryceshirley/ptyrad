@@ -588,3 +588,12 @@ give the clean numbers:
 - 2-GPU slicedist at Nz=21 (smoke_slicedist_2gpu): 67.4 s/iter vs 64.5
   baseline — parity; the P=2 chain (6 hops) + halved housekeeping recovered
   the 4-GPU version's losses (105.6).
+
+### K.2 Nz=42: the PCIe crossover (2026-10-09)
+Same head-to-head at 42 slices (dz=5 A, 210 A), 2 iters, arms CONCURRENT on
+disjoint GPUs (symmetric contention, std +-0.7 s): MS 1-GPU **92.9** s/iter
+(22.7 ms/batch) vs born6 slice-2 2-GPU **89.7** (21.9 ms/batch) — **born6
+WINS 1.04x**, convergence equal (0.3560 vs 0.3562 at iter 2). Depth trend:
+0.86x @21 -> 0.96x @32 -> **1.04x @42** -> ~1.5x @64 (SSH projection).
+**Practical crossover for born6+2GPU over multislice: Nz ~ 35-40 on plain
+PCIe; NVLink moves it toward ~30 and adds ~10% at 42.**
