@@ -37,7 +37,12 @@ End-to-end 20-iter reconstruction: baseline 64.5 s/iter; mode-split 2-GPU
    down toward Nz~32 and the realized x toward the floor. This is the only
    multi-GPU axis multislice cannot copy (sequential slices), so it is the
    headline number for the Born-vs-multislice benchmark. Run the sweep; time
-   4-GPU f+b with PRE-PLACED object blocks only.
+   4-GPU f+b with PRE-PLACED object blocks only. **Repeat at BORN_M=2 and
+   BORN_M=1 (SSG.2): on PCIe the win shrinks with M (f+b @Nz=512: 2.35x M=6,
+   1.22x M=2, 1.03x M=1 -- hop latency has no cross-order overlap to hide
+   behind at small M), while the floor is M-independent (~3.3x). The NVLink
+   prediction to verify: ISS/double jump from ~1x to ~3x.** That would make
+   the P-GPU flat-curve extension hold for the cheap headline orders too.
 5. **Mode-split end-to-end** moves from 0.95x toward its 1.13x microbench step
    gain (per-batch 10.5 MB patch transfers become cheap). Secondary.
 

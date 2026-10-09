@@ -433,3 +433,27 @@ Findings:
   Nz=21 — NOT at Nz≥64. 4-GPU f+b must be measured with PRE-PLACED object
   blocks (the object lives distributed for the whole solve); moving blocks
   per step at Nz=512 costs ~0.5 GB/step and masks ~0.9× of speedup.
+
+### §G.2 Order (M) dependence — why NVLink matters MOST for ISS/double
+Same sweep at M=2 (double scattering) and M=1 (ISS), batch 1 (`BORN_M` env):
+
+| metric @ Nz=512 | M=6 | M=2 | M=1 (ISS) |
+|---|---|---|---|
+| 4G compute floor (fwd) | 3.30× | 3.30× | 3.26× |
+| 4G real fwd (PHB) | 2.10× | 1.32× | 1.20× |
+| 4G real f+b (PHB, pre-placed) | **2.35×** | **1.22×** | **1.03×** |
+| f+b crossover Nz (PHB) | ~48–64 | ~64–128 | ~512 (barely) |
+
+- The **floor is M-independent** (crossover Nz≈32, 3.3× at 512 for all M):
+  the per-order pipeline fill/drain fear doesn't materialize.
+- The **real (PHB) win shrinks as M drops**: transfer *volume* per compute is
+  M-independent (hops ∝ M, compute ∝ M·Nz), but the hop *latency* only hides
+  behind cross-order overlap — at M=1 the 3-hop chain is strictly sequential
+  with nothing to overlap, so the ~2.5 ms/hop host-staging is fully exposed
+  (vs ~0.8 ms/hop effective at M=6).
+- **Consequence for the multislice benchmark: NVLink is what unlocks
+  slice-split for the cheap orders.** On PCIe, deep-stack slice-split pays
+  only for born6 (2.35×); for ISS it's a wash (1.03×). With free carries all
+  M sit at ~3.3× — so the P-GPU flat-curve-extension claim for ISS/double
+  (the headline methods) is an NVLink-conditional claim, while for born6 it
+  already holds on PCIe.

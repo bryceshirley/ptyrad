@@ -51,8 +51,11 @@ log "2. bench_axes_real (slice/mode/batch, N=1/8/32)"
 "$PY" bench_axes_real.py 2>"$RES/axes.err" | tee "$RES/axes.log"
 
 # ---- 2b. deep-stack Nz sweep (the multislice-comparison regime) ------------
-log "2b. bench_slice_nzsweep (batch-1 deep stacks, hypothesis 4)"
-"$PY" bench_slice_nzsweep.py 2>"$RES/nzsweep.err" | tee "$RES/nzsweep.log"
+log "2b. bench_slice_nzsweep (batch-1 deep stacks, hypothesis 4; M=6/2/1)"
+for MM in 6 2 1; do
+  echo "--- BORN_M=$MM ---" | tee -a "$RES/nzsweep.log"
+  BORN_M=$MM "$PY" bench_slice_nzsweep.py 2>"$RES/nzsweep.err" | tee -a "$RES/nzsweep.log"
+done
 
 # ---- 3. end-to-end 20-iter reconstructions (~25 min each) ------------------
 if [ "${1:-}" != "--skip-recon" ]; then

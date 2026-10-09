@@ -21,7 +21,8 @@ sys.path.insert(0, os.path.join(REPO, "src"))
 from ptyrad.utils import fftshift2
 
 torch.manual_seed(0)
-Ny, Nx, PMODE, OMODE, M = 256, 256, 4, 1, 6
+Ny, Nx, PMODE, OMODE = 256, 256, 4, 1
+M = int(os.environ.get("BORN_M", "6"))  # scattering order: 6=born6, 2=double, 1=ISS
 EPS = 1e-10
 N = 1  # batch 1: the ONLY regime where Born beats multislice on one GPU
 _ZERO = {}
@@ -122,7 +123,7 @@ def tmed(fn, P, warmup=3, reps=15):
 
 
 if __name__ == "__main__":
-    print(f"batch={N}, {Ny}x{Nx}, pmode={PMODE}, M={M}; times in ms")
+    print(f"batch={N}, {Ny}x{Nx}, pmode={PMODE}, M={M} (BORN_M env); times in ms")
     print(f"{'Nz':>5} | {'1-GPU fwd':>10} | {'1-GPU f+b':>10} | {'4G floor':>9} "
           f"| {'floor x':>7} | {'4G sync':>8} | {'4G half':>8}")
     for Nz in (21, 32, 64, 128, 256, 512):
