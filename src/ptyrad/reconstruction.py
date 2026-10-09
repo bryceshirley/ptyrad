@@ -991,8 +991,16 @@ def _refit_born_coeffs_detector(model, niter, cfg, verbose=True):
     grow_tol = cfg.get("grow_tol")
     n_limit = min(int(cfg.get("n_limit") or model.n_slice), model.n_slice)
     # one extra basis order when growth is possible: the growth probe then
-    # needs no second pass
-    n_keep = min(n + 1, n_limit) if grow_tol is not None else n
+    # needs no second pass. grow_fast builds the basis to n_limit so a single
+    # refit can promote REPEATEDLY until the residual clears grow_tol —
+    # avoids spending a full epoch per order while under-ordered (an epoch at
+    # too-low order bakes an under-scattering model into the object).
+    if grow_tol is None:
+        n_keep = n
+    elif cfg.get("grow_fast"):
+        n_keep = n_limit
+    else:
+        n_keep = min(n + 1, n_limit)
     grew = False
     t_refit = perf_counter()
     with torch.no_grad():
@@ -1059,7 +1067,10 @@ def _refit_born_coeffs_detector(model, niter, cfg, verbose=True):
             c, det_res = born_qr_coeffs(
                 Dn[:n], T_fit, d0n2, omode_occu=model.omode_occu,
             )
-        if grow_tol is not None and det_res > float(grow_tol) and n < n_limit:
+        # promotion loop: plain growth has basis for one extra order (single
+        # pass); grow_fast has the basis to n_limit and keeps promoting until
+        # the residual clears the tolerance
+        while grow_tol is not None and det_res > float(grow_tol) and n < n_keep:
             n += 1
             model.born_iterations = n
             if hybrid:

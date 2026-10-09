@@ -608,3 +608,26 @@ model.born_iterations per call). Trajectory: M=1 (42.3 s/iter) -> 2 (51.1)
 the refit finds dz=5 A needs only M=5). No convergence penalty: iter-5 loss
 0.3161 on the fixed-order trajectory. Best deep-stack config on this PCIe
 box: **born-grow + 2-GPU slice split.**
+
+### K.4 Contrast deficit of grow-from-ISS: cause and fix (Nz=42, 10 iters)
+User observed grow lags fixed-M6 in CONTRAST. Three 10-iter arms (2-GPU
+slice, objp z-sum contrast std/mean at iter 10):
+
+| arm | order path | loss@10 | contrast@10 | avg s/iter |
+|---|---|---|---|---|
+| fixed M=6 | 6 | 0.2930 | 1.2560 | 90.0 |
+| grow from 1 + grow_fast | 1->3->4->5->6->7 | 0.2970 | 1.1213 | 78.5 |
+| **grow from 3** | 3->...->9 | **0.2923** | **1.2664** | 87.8 |
+
+- Cause: the FIRST EPOCH at M=1 (4096 batch-1 Adam updates under an ISS
+  forward) imprints a weak-contrast object; even instant adaptation
+  (grow_fast jumps 1->3 right after epoch 1) leaves -11% contrast.
+- Fix: **start born_iterations >= 3**. grow3 matches/exceeds fixed-6 on both
+  metrics at less compute; required order keeps climbing with the object
+  (reaches 9 by iter 10 > hand-picked 6) so growth should stay ON.
+- NEW source feature `born_coeffs_refit.grow_fast` (default false): basis
+  built to n_limit, one refit promotes REPEATEDLY until residual clears
+  grow_tol (while-loop; plain mode unchanged, bounded by n+1). Useful
+  insurance against growth lag; not a substitute for a sane start.
+- RECIPE for deep stacks: born_iterations 3 + grow_tol 1e-2 (+grow_fast) +
+  2-GPU slice split.
