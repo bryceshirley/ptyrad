@@ -402,3 +402,34 @@ at batch 32 (DDP bug below).
   make that buffer `.contiguous()` before `accelerator.prepare`. Not yet done.
 - Neither mode- nor slice-parallelism is wired into the real `ptyrad run`
   training loop yet; numbers above are the isolated born6 forward+backward.
+
+## G. Deep-stack Nz sweep — the batch-1 regime where slice-split DOES win (2026-10-09)
+Motivated by the multislice comparison (A100_results cost plots): Born/ISS
+beats multislice at batch 1 because its parallel-over-slices cumsum soaks up
+idle GPU capacity — and batch/mode parallelism are model-agnostic (multislice
+can do both equally), so **slice-split is the only multi-GPU axis multislice
+cannot copy** (its slices are sequentially dependent; Born's are a scan).
+`bench_slice_nzsweep.py`, batch 1, 256², 4 pmodes, M=6, synthetic volumes:
+
+| Nz | 1-GPU fwd | 4G fwd floor | 4G fwd real (PHB) | 1-GPU f+b | 4G f+b real (pre-placed) |
+|----|-----------|--------------|--------------------|-----------|---------------------------|
+| 21 | 3.6 ms | 5.3 (0.67×) | 6.6 (0.54×) | 9.7 ms | — (0.66×, §D) |
+| 32 | 5.6 | 5.1 (1.11×) | 6.9 (0.81×) | 15.2 | |
+| 64 | 11.2 | 5.3 (**2.12×**) | 7.9 (**1.42×**) | 30.2 | 19.0 (**1.59×**) |
+| 128 | 22.0 | 7.7 (2.88×) | 12.9 (1.71×) | 59.8 | 34.1 (1.75×) |
+| 256 | 43.8 | 13.7 (3.20×) | 22.4 (1.96×) | 118.6 | 57.0 (2.08×) |
+| 512 | 87.5 | 26.5 (3.30×) | 41.7 (2.10×) | 236.6 | 100.9 (**2.35×**) |
+
+Findings:
+- At this config the 1-GPU curve is linear in Nz from ~32 on (the A100
+  saturates); the 4-GPU floor stays FLAT to Nz≈64 — slice-split extends the
+  flat region by ~P, exactly the capability multislice lacks.
+- **Batch-1 crossover: Nz ≈ 48–64 — even on this no-P2P PCIe box.** The carry
+  per hop is one 256² field, Nz-independent, while compute grows ∝ Nz, so the
+  transfer tax amortizes with depth. 2.35× f+b at Nz=512 real; NVLink headroom
+  to the 3.3× floor (crossover would move down toward Nz≈32).
+- This CONFIRMS the long-flagged untested "deep stacks" win regime, and
+  resolves the §D verdict's scope: "no multi-GPU win at batch 1" is true at
+  Nz=21 — NOT at Nz≥64. 4-GPU f+b must be measured with PRE-PLACED object
+  blocks (the object lives distributed for the whole solve); moving blocks
+  per step at Nz=512 costs ~0.5 GB/step and masks ~0.9× of speedup.

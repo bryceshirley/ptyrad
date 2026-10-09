@@ -50,6 +50,10 @@ NOTRANSFER=1 "$PY" bench_slice_real.py 2>/dev/null | grep -E "N=[0-9]+: fwd " | 
 log "2. bench_axes_real (slice/mode/batch, N=1/8/32)"
 "$PY" bench_axes_real.py 2>"$RES/axes.err" | tee "$RES/axes.log"
 
+# ---- 2b. deep-stack Nz sweep (the multislice-comparison regime) ------------
+log "2b. bench_slice_nzsweep (batch-1 deep stacks, hypothesis 4)"
+"$PY" bench_slice_nzsweep.py 2>"$RES/nzsweep.err" | tee "$RES/nzsweep.log"
+
 # ---- 3. end-to-end 20-iter reconstructions (~25 min each) ------------------
 if [ "${1:-}" != "--skip-recon" ]; then
   if [ -f "$MAT" ]; then

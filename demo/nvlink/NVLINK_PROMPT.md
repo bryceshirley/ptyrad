@@ -31,7 +31,14 @@ End-to-end 20-iter reconstruction: baseline 64.5 s/iter; mode-split 2-GPU
    0.58x free-carry ceiling, NOT reach 1x. If it beats 1x, that is a finding.
 3. **Data-parallel all-reduce cost collapses** (14 ms -> ~1-2 ms on 4 GPUs),
    pushing batch4 fwd+bw from 2.67x toward ~3.5x (`bench_axes_real.py`).
-4. **Mode-split end-to-end** moves from 0.95x toward its 1.13x microbench step
+4. **Deep stacks (the multislice-comparison regime): batch-1 slice-split wins
+   from Nz~48-64 even on PCIe** (`bench_slice_nzsweep.py`, SSG: f+b 1.59x at
+   Nz=64 -> 2.35x at Nz=512; floor 3.3x). On NVLink the crossover should move
+   down toward Nz~32 and the realized x toward the floor. This is the only
+   multi-GPU axis multislice cannot copy (sequential slices), so it is the
+   headline number for the Born-vs-multislice benchmark. Run the sweep; time
+   4-GPU f+b with PRE-PLACED object blocks only.
+5. **Mode-split end-to-end** moves from 0.95x toward its 1.13x microbench step
    gain (per-batch 10.5 MB patch transfers become cheap). Secondary.
 
 ## Setup

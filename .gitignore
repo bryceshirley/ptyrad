@@ -34,3 +34,4 @@ docs/.ipynb_checkpoints/
 !/demo/run_cmp_modesplit.py
 !/demo/bench_results.md
 !/demo/nvlink/
+!/demo/bench_slice_nzsweep.py
