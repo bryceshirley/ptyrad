@@ -43,7 +43,13 @@ End-to-end 20-iter reconstruction: baseline 64.5 s/iter; mode-split 2-GPU
    behind at small M), while the floor is M-independent (~3.3x). The NVLink
    prediction to verify: ISS/double jump from ~1x to ~3x.** That would make
    the P-GPU flat-curve extension hold for the cheap headline orders too.
-5. **Mode-split end-to-end** moves from 0.95x toward its 1.13x microbench step
+5. **Multislice head-to-head (SSH)**: `bench_ms_vs_born_b1.py` -- verify the
+   NVLink box reproduces: born6 4-GPU f+b beats as-implemented MS from
+   Nz~24-32, 6.4x at Nz=512. Also test the COMBINED split (SSH.2): P_m mode
+   groups x P_z slice blocks (e.g. 2x4 on 8 GPUs) -- mode-split is a second
+   DIFFERENTIAL axis vs MS at batch 1 (MS is pmode-insensitive/launch-bound,
+   Born is pmode-proportional/compute-bound).
+6. **Mode-split end-to-end** moves from 0.95x toward its 1.13x microbench step
    gain (per-batch 10.5 MB patch transfers become cheap). Secondary.
 
 ## Setup

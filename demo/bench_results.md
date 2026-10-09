@@ -457,3 +457,44 @@ Same sweep at M=2 (double scattering) and M=1 (ISS), batch 1 (`BORN_M` env):
   M sit at ~3.3× — so the P-GPU flat-curve-extension claim for ISS/double
   (the headline methods) is an NVLink-conditional claim, while for born6 it
   already holds on PCIe.
+
+## H. Multislice vs born6 at BATCH 1 — can M=6 + NVLink + P GPUs beat MS?
+`bench_ms_vs_born_b1.py` (+ compiled follow-up), batch 1, 256², 4 pmodes,
+best-of-eager/compiled for each method. "f+b" = forward+adjoint, the recon
+cost and the quantity in the A100_results cost plots (measured MS f+b eager
+@Nz=64 = 21.5 ms ≈ the plot's ~21 ms — same quantity).
+
+| Nz | MS fwd (cmp) | MS f+b (best=eager) | born6 1G f+b | born6 4G floor f+b | floor vs MS |
+|----|--------------|----------------------|--------------|---------------------|-------------|
+| 21 | 0.7 | 7.2 | 9.8 | 8.4 | 0.86× |
+| 32 | 1.1 | 11.1 | 15.1 | 8.6 | 1.3× |
+| 64 | 2.0 | 21.5 | 30.2 | 11.4 | 1.9× |
+| 128 | 3.9 | 44.2 | 59.6 | 18.1 | 2.4× |
+| 256 | 7.7 | 127.1 | 118.6 | 33.6 | 3.8× |
+| 512 | 15.3 | 413.9 | 237.8 | 65.1 | **6.4×** |
+
+- **MS's adjoint is its Achilles heel**: autograd through the sequential
+  slice loop is superlinear (f+b/fwd = 27× at Nz=512 — the plots' superlinear
+  MS curve). torch.compile makes it WORSE (789 ms vs 414 eager at 512);
+  compiled born ≈ eager born (262 vs 238). Structurally: Born's cumsum
+  parallelizes the adjoint too (cumsum backward = reversed cumsum); MS's
+  adjoint is as sequential as its forward with worse constants.
+- **Verdict: YES on f+b.** born6 beats as-implemented MS on ONE GPU from
+  Nz≈256, and with 4 GPUs at the NVLink floor from **Nz≈24–32**, reaching
+  6.4× at Nz=512 (PCIe real: 4.1×). Forward-only: NO at P=4 (26.8 vs 15.3 ms
+  at 512; P=8 ≈ tie) — but recon pays f+b, not fwd.
+- Caveat: a hand-rolled optimal MS adjoint (~3× compiled fwd ≈ 46 ms @512)
+  would beat the P=4 floor (65 ms); born then needs ~8 GPUs (slice×mode,
+  below) to win again. Against ptyrad's actual MS, 4 GPUs suffice.
+
+### H.2 Probe modes: the SECOND differential axis (corrects §E's claim)
+User observation, confirmed: MS batch-1 wall-time is pmode-INSENSITIVE
+(plots: MS@N=64 ≈ 19.6 ms at p1 vs 20.9 ms at p6 — launch-bound), while
+Born is pmode-proportional (compute-bound; p6 curves bend at N≈32-64 where
+p1 is flat). So **mode-split divides Born's time by ~P_m and does ~nothing
+for MS** — NOT model-agnostic at batch 1 as §E assumed (that claim holds
+only for batch-split). Born's two differential axes COMBINE: P = P_m × P_z
+GPUs (e.g. 8 = 2 mode groups × 4 slice blocks) → floor ≈ 65/2 ≈ 33 ms at
+Nz=512 p4, beating even an ideal MS adjoint. With enough NVLinked GPUs,
+born6 wins any depth at batch 1; MS has no parallel axis to answer with
+(modes don't change its time, slices can't split).
