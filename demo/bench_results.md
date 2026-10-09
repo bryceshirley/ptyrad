@@ -631,3 +631,13 @@ slice, objp z-sum contrast std/mean at iter 10):
   insurance against growth lag; not a substitute for a sane start.
 - RECIPE for deep stacks: born_iterations 3 + grow_tol 1e-2 (+grow_fast) +
   2-GPU slice split.
+
+### K.5 Capped growth verification (grow3 + n_limit 6, Nz=42, 10 iters)
+Trajectory 3->4->5->**6 pinned from iter 4** (cap honored). iter-10 loss
+0.2934 (fixed6: 0.2930), contrast 1.2369 (fixed6 1.2560, uncapped 1.2664),
+avg **80.8 s/iter** = **1.15x vs MS** (92.9) and 1.11x vs fixed6 (90.0).
+The cap trades ~1.5% iter-10 contrast (warmup epochs at M=3-5; model is
+identical M=6 from iter 4 so expected to converge) for keeping every
+iteration faster than multislice — uncapped drifted to M=9 (est. 119 s/iter,
+slower than MS). FINAL RECIPE: born_iterations 3, grow_tol 1e-2, n_limit 6,
+(grow_fast optional), SLICE_P=2.
