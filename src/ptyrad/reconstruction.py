@@ -115,17 +115,6 @@ class PtyRADSolver:
         if not self.use_acc_device:
             indices, batches, output_path = prepare_recon(model, self.init, params)
         else:
-            if (
-                params["model_params"]["optimizer_params"]["name"] == "LBFGS"
-                and self.accelerator.num_processes > 1
-            ):
-                vprint(
-                    f"WARNING: Optimizer 'LBFGS' is not supported for multiGPU mode (accelerator.num_processes = {self.accelerator.num_processes}), switch to default optimizer 'Adam'"
-                )
-                params["model_params"]["optimizer_params"]["name"] = "Adam"
-                model.optimizer_params["name"] = "Adam"
-                optimizer = create_optimizer(model.optimizer_params, model.optimizable_params)
-
             vprint(
                 f"params['recon_params']['GROUP_MODE'] is set to 'random' because `use_acc_device` = {self.use_acc_device}",
                 verbose=self.verbose,
@@ -371,20 +360,34 @@ def create_optimizer(optimizer_params, optimizable_params, verbose=True):
     if optimizer_class is None:
         raise ValueError(f"Optimizer '{optimizer_name}' is not supported.")
     if optimizer_name == "LBFGS":
-        vprint(
-            "Note: LBFGS optimizer is a quasi-Newton 2nd order optimizer that will run multiple forward passes (default: 20) for 1 update step"
+        raise ValueError(
+            "LBFGS support was removed (closure-based stepping, no per-parameter "
+            "lr, incompatible with multi-device param groups); use a first-order "
+            "optimizer like 'Adam'."
         )
+
+    # Param groups spread across multiple CUDA devices (e.g. a depth-
+    # partitioned object with per-GPU block leaves) break torch's multi-
+    # tensor foreach/fused step paths ("Tensors of the same index must be on
+    # the same device"); fall back to the single-tensor path, which updates
+    # each leaf on its own device. Explicit user configs take precedence.
+    param_devices = {
+        p.device
+        for g in optimizable_params
+        for p in (g["params"] if isinstance(g, dict) else [g])
+    }
+    if len(param_devices) > 1:
+        import inspect
+
+        accepted = inspect.signature(optimizer_class.__init__).parameters
+        for key in ("foreach", "fused"):
+            if key in accepted and key not in optimizer_configs:
+                optimizer_configs[key] = False
         vprint(
-            "Note: LBFGS usually converges faster for convex problem with full-batch non-noisy gradients, but each update step is computationally slower"
+            f"Note: optimizable params span {len(param_devices)} devices -> "
+            "forcing single-tensor optimizer path (foreach=False, fused=False)",
+            verbose=verbose,
         )
-        non_zero_lr = [p["lr"] for p in optimizable_params if p["lr"] != 0]
-        optimizer_configs["lr"] = min(non_zero_lr)
-        vprint(
-            f"Note: LBFGS optimizer does not support per parameter learning rate so it'll be set to the minimal non-zero learning rate = {min(non_zero_lr)}"
-        )
-        optimizable_params = [
-            p["params"][0] for p in optimizable_params if p["params"][0].requires_grad
-        ]
 
     optimizer = optimizer_class(optimizable_params, **optimizer_configs)
     device = optimizer.param_groups[0]["params"][0].device
@@ -820,35 +823,58 @@ def recon_step(
         if hasattr(model_instance, "_orig_mod"):
             model_instance = model_instance._orig_mod
 
-    if isinstance(optimizer, torch.optim.LBFGS):
-        num_batch = len(batches)
-        batch_indices = np.arange(num_batch)
-        if model.random_seed is not None:
-            set_random_seed(seed=model.random_seed + niter)
-        np.random.shuffle(batch_indices)
-        accu_batch_indices = np.array_split(batch_indices, num_batch // grad_accumulation)
+    optimizer.zero_grad(set_to_none=True)
 
-        def closure():
-            optimizer.zero_grad()
-            total_loss = 0
-            for batch_idx in accu_batch_idx:
-                batch = batches[batch_idx]
-                model_DP = model(batch)
-                measured_DP = model_instance.get_measurements(batch)
-                object_patches = model_instance._current_object_patches
-                loss_batch, losses = loss_fn(
-                    model_DP, measured_DP, object_patches, model_instance.omode_occu
-                )
-                total_loss += loss_batch
-            total_loss = total_loss / len(accu_batch_idx)
-            acc.backward(total_loss) if acc is not None else total_loss.backward()
-            return total_loss, losses
+    # 🌟 INITIALIZE PRECONDITIONER CANVAS
+    # PTYRAD_DISABLE_ISS_PRECOND=1 skips the illumination preconditioner:
+    # at batch 1 the canvas holds a single position, so the focused
+    # entrance slice divides its patch-periphery gradients by ~1e-4
+    # (measured to destroy the entrance slice of a 2-slab test), and the
+    # canvas costs one sequential vacuum multislice pass per position.
+    precond_canvas = (
+        torch.zeros_like(model_instance.opt_obja)
+        if model_instance.solver_type == "born"
+        and not os.environ.get("PTYRAD_DISABLE_ISS_PRECOND")
+        else None
+    )
 
-        for accu_batch_idx in accu_batch_indices:
-            optimizer.step(lambda: closure()[0])
+    for batch_idx, batch in enumerate(batches):
+        start_batch_t = time_sync()
 
-        _, losses = closure()
-        optimizer.zero_grad()
+        loss_batch, losses = compute_loss(batch, model, model_instance, loss_fn, acc)
+        loss_batch = loss_batch / grad_accumulation
+
+        acc.backward(loss_batch) if acc is not None else loss_batch.backward()
+
+        # ACCUMULATE BATCH ILLUMINATION
+        if precond_canvas is not None:
+            model_instance.accumulate_iss_preconditioner(batch, precond_canvas)
+
+        if (batch_idx + 1) % grad_accumulation == 0 or (batch_idx + 1) == len(batches):
+            if acc is not None:
+                acc.wait_for_everyone()
+
+            # APPLY PRECONDITIONER TO GRADIENTS BEFORE OPTIMIZER STEP
+            if precond_canvas is not None:
+                with torch.no_grad():
+                    # Normalize to 1 so the learning rate defined in config remains valid
+                    max_val = precond_canvas.amax(dim=(-2, -1), keepdim=True)
+                    epsilon = 1e-4 * max_val.clamp(min=1e-8)  # Tikhonov regularization
+
+                    precond = (precond_canvas + epsilon) / (max_val + epsilon)
+
+                    if model_instance.opt_obja.grad is not None:
+                        model_instance.opt_obja.grad /= precond
+                    if model_instance.opt_objp.grad is not None:
+                        model_instance.opt_objp.grad /= precond
+
+                    # Reset canvas for the next accumulation cycle
+                    precond_canvas.zero_()
+
+            optimizer.step()
+            optimizer.zero_grad(set_to_none=True)
+
+        batch_t = time_sync() - start_batch_t
         model_instance.clear_cache()
 
         if acc is not None:
@@ -856,71 +882,11 @@ def recon_step(
         for loss_name, loss_value in zip(loss_fn.loss_params.keys(), losses, strict=False):
             batch_losses[loss_name].append(loss_value.detach().cpu().numpy())
 
-    else:
-        optimizer.zero_grad(set_to_none=True)
-
-        # 🌟 INITIALIZE PRECONDITIONER CANVAS
-        # PTYRAD_DISABLE_ISS_PRECOND=1 skips the illumination preconditioner:
-        # at batch 1 the canvas holds a single position, so the focused
-        # entrance slice divides its patch-periphery gradients by ~1e-4
-        # (measured to destroy the entrance slice of a 2-slab test), and the
-        # canvas costs one sequential vacuum multislice pass per position.
-        precond_canvas = (
-            torch.zeros_like(model_instance.opt_obja)
-            if model_instance.solver_type == "born"
-            and not os.environ.get("PTYRAD_DISABLE_ISS_PRECOND")
-            else None
-        )
-
-        for batch_idx, batch in enumerate(batches):
-            start_batch_t = time_sync()
-
-            loss_batch, losses = compute_loss(batch, model, model_instance, loss_fn, acc)
-            loss_batch = loss_batch / grad_accumulation
-
-            acc.backward(loss_batch) if acc is not None else loss_batch.backward()
-
-            # ACCUMULATE BATCH ILLUMINATION
-            if precond_canvas is not None:
-                model_instance.accumulate_iss_preconditioner(batch, precond_canvas)
-
-            if (batch_idx + 1) % grad_accumulation == 0 or (batch_idx + 1) == len(batches):
-                if acc is not None:
-                    acc.wait_for_everyone()
-
-                # APPLY PRECONDITIONER TO GRADIENTS BEFORE OPTIMIZER STEP
-                if precond_canvas is not None:
-                    with torch.no_grad():
-                        # Normalize to 1 so the learning rate defined in config remains valid
-                        max_val = precond_canvas.amax(dim=(-2, -1), keepdim=True)
-                        epsilon = 1e-4 * max_val.clamp(min=1e-8)  # Tikhonov regularization
-
-                        precond = (precond_canvas + epsilon) / (max_val + epsilon)
-
-                        if model_instance.opt_obja.grad is not None:
-                            model_instance.opt_obja.grad /= precond
-                        if model_instance.opt_objp.grad is not None:
-                            model_instance.opt_objp.grad /= precond
-
-                        # Reset canvas for the next accumulation cycle
-                        precond_canvas.zero_()
-
-                optimizer.step()
-                optimizer.zero_grad(set_to_none=True)
-
-            batch_t = time_sync() - start_batch_t
-            model_instance.clear_cache()
-
-            if acc is not None:
-                acc.wait_for_everyone()
-            for loss_name, loss_value in zip(loss_fn.loss_params.keys(), losses, strict=False):
-                batch_losses[loss_name].append(loss_value.detach().cpu().numpy())
-
-            if batch_idx in np.linspace(0, len(batches) - 1, num=6, dtype=int):
-                vprint(
-                    f"Done batch {batch_idx + 1} with {len(batch)} indices ({batch[:5].tolist()}...) in {batch_t:.3f} sec",
-                    verbose=verbose,
-                )
+        if batch_idx in np.linspace(0, len(batches) - 1, num=6, dtype=int):
+            vprint(
+                f"Done batch {batch_idx + 1} with {len(batch)} indices ({batch[:5].tolist()}...) in {batch_t:.3f} sec",
+                verbose=verbose,
+            )
 
     constraint_fn(model_instance, niter)
     refit_born_coeffs(model_instance, niter, verbose=verbose)

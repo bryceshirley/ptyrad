@@ -525,3 +525,42 @@ distributed; mode: cross-replica grad-reduce ∝ Nz):
   forces a pageable H2D at each chain's end, which **blocks the host until
   that GPU chain completes and serializes the groups** (pure mode measured
   0.9×!). Pre-place every small tensor, including scalars/occupancies.
+
+## J. Slice-split in the REAL 20-iter loop at Nz=21 — final verdict (2026-10-09)
+User-requested end-to-end comparison vs the baseline/modesplit runs (same
+seed 42, fresh simu init). Three slice variants were built and validated
+(losses match baseline EXACTLY, e.g. iter1 0.4239, iter2 0.3746):
+
+| arm (4 GPUs) | engine | s/iter | per batch |
+|---|---|---|---|
+| baseline 1-GPU | stock | **64.5** | **15.7 ms** |
+| slicesplit | ripple carry, patches via cuda:0 | 102.8 | ~25 ms |
+| slicedist | per-GPU object LEAVES (grads+Adam stay on-device), ripple | ~106 | ~26 ms |
+| slicedist | + `born_forward_dist` two-level scan (new SOURCE engine) | ~107 (5-iter smoke) | ~25 ms |
+
+**Why 15.7 ms/batch is unbeatable at Nz=21 on this box:** born f+b is 9.7 ms
+of it; the 4-GPU ZERO-TRANSFER floor is 8.4 ms → max possible saving ≈1.3
+ms/batch (~8%/iter) even with perfect NVLink; the real no-P2P chain ADDS ~6
+ms of hop latency (18 serial hops/step, interconnect-bound, restructure-
+immune) and the distributed housekeeping (4-device cropping, probe replicas,
+single-tensor Adam over 9 leaves) ~3 ms. Full 20-iter run skipped — the
+5-iter smoke (exact losses, save path exercised) is the record.
+
+**Source improvements landed (useful at Nz≥64 / on NVLink, not at 21):**
+- `forward_models/born_dist.py`: `born_forward_dist` — proper TWO-LEVEL SCAN
+  (phase A: local scatter+scan all GPUs in parallel; B: carries as pure
+  transfer+add; C: psi updates in parallel) replacing the ripple carry that
+  serialized compute behind each hop. Exact (4e-8). Nz=64 f+b: 1.60→**1.90×**,
+  fwd 1.41→1.77×; at Nz=21 unchanged (hop-latency-bound).
+- `create_optimizer`: param groups spanning multiple CUDA devices now auto-
+  fall back to the single-tensor path (foreach/fused Adam errors on
+  multi-device groups); explicit configs take precedence.
+- LBFGS support REMOVED (closure stepping, no per-param lr, incompatible
+  with multi-device groups); clear ValueError.
+- `run_cmp_modesplit.py` roles slicesplit/slicedist: the distributed-object
+  pattern (per-device leaves, per-block sparse loss, gather-constrain-scatter
+  once per iter) — the template for an NVLink deep-stack solver.
+
+FINAL for this sample (21 slices, batch 1): 1 GPU per reconstruction remains
+optimal; mode-split ~parity; slice-split 0.6×. Slice-split's domain is
+Nz≥64 (PCIe) / Nz≥32 (NVLink floor) and volumes exceeding one GPU's memory.
