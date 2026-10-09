@@ -1,7 +1,7 @@
 # Multi-GPU Born campaign — context refresh (2026-10-09)
 
 One-page state of the multi-GPU / Born-vs-multislice work. Full data:
-`demo/bench_results.md` (SSA-SSK.4). Branch: `nvlink-bench` (NOT yet pushed).
+`demo/bench_results.md` (SSA-SSK.4). Branch: `nvlink-bench` — PUSHED to github.com/bryceshirley/ptyrad (head d5aa713+).
 Box: 4x A100 80GB PCIe, KVM guest, **no NVLink/P2P** (all-PHB). Pin GPUs by
 UUID; `PTYRAD_DISABLE_ISS_PRECOND=1` mandatory for batch-1 Born runs.
 
@@ -111,8 +111,8 @@ slice-split captures the full floor at Nz<=42; do NOT upsize.
 
 ## Open / next
 
-- PUSH the branch (needs user's git credentials):
-  `git -C ~/ptyrad push -u origin nvlink-bench`
+- Branch PUSHED: pod clones with
+  `git clone -b nvlink-bench https://github.com/bryceshirley/ptyrad`
 - NVLink rental (2x A100 SXM ~ $3/h is enough; 8 GPUs pointless <=Nz 42):
   verify slice-2 real -> floor (8.86 ms @32), crossover shift to Nz~30,
   ISS/double deep-stack unlock (SSG.2), born_forward_dist at Nz>=64.
