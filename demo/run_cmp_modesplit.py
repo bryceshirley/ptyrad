@@ -26,7 +26,7 @@ torch.compiler.set_stance("force_eager")
 ROLE = sys.argv[1]
 assert ROLE in ("baseline", "modesplit", "smoke", "slicesplit", "slicesmoke",
                 "slicedist", "distsmoke")
-PARAMS = f"params/cmp_{ROLE}.yml"
+PARAMS = sys.argv[2] if len(sys.argv) > 2 else f"params/cmp_{ROLE}.yml"
 
 if ROLE in ("slicedist", "distsmoke"):
     # DISTRIBUTED-OBJECT slice split: the object itself lives partitioned as
@@ -45,14 +45,28 @@ if ROLE in ("slicedist", "distsmoke"):
     except Exception:
         from ptyrad.utils import gaussian_blur_2d as gaussian_blur
 
-    _P = 4
-    _B = [0, 7, 12, 17, 21]
+    import os
+    _P = int(os.environ.get("SLICE_P", "4"))      # GPUs = depth blocks
     _DEVS = [f"cuda:{k}" for k in range(_P)]
+    _B = None  # set from the model's Nz in init_opt_dist (work-balanced:
+    #            block0 carries the shrinking window so gets ~M/2 extra)
+
+    def _make_bounds(Nz):
+        if _P == 2:
+            return [0, min(Nz - 1, int(round((Nz + 2.5) / 2))), Nz]
+        if _P == 4 and Nz == 21:
+            return [0, 7, 12, 17, 21]
+        base, b = Nz // _P, [0]
+        for i in range(_P - 1):
+            b.append(b[-1] + base + (1 if i < Nz % _P else 0))
+        return b + [Nz]
 
     _orig_init_opt = pmodels.PtychoAD.create_optimizable_params_dict
 
     def init_opt_dist(self, *a, **kw):
         _orig_init_opt(self, *a, **kw)
+        global _B
+        _B = _make_bounds(self.opt_obja.shape[1])
         lra = self.lr_params.get("obja", 0)
         lrp = self.lr_params.get("objp", 0)
         self.obja_blks, self.objp_blks = [], []
@@ -128,15 +142,15 @@ if ROLE in ("slicedist", "distsmoke"):
             self.sp = dict(orig.loss_params["loss_sparse"])
             orig.loss_params["loss_sparse"]["state"] = False  # we add it back
             self._dummy = torch.zeros(1, 1, 1, 1, 1, 2, device="cuda:0")
-            self._w = [(_B[k + 1] - _B[k]) / _B[-1] for k in range(_P)]
 
         def __call__(self, model_DP, measured_DP, patch_blocks, omode_occu):
             loss, losses = self.orig(model_DP, measured_DP, self._dummy, omode_occu)
             if self.sp["state"]:
                 ln = self.sp["ln_order"]
+                tot = sum(pk.shape[2] for pk in patch_blocks)
                 per_omode = sum(
-                    (w * pk[..., 1].abs().pow(ln).mean(dim=(0, 2, 3, 4))).to("cuda:0")
-                    for w, pk in zip(self._w, patch_blocks))
+                    ((pk.shape[2] / tot) * pk[..., 1].abs().pow(ln).mean(dim=(0, 2, 3, 4))).to("cuda:0")
+                    for pk in patch_blocks)
                 sp = self.sp["weight"] * (per_omode.pow(1.0 / ln) * omode_occu).sum()
                 loss = loss + sp
                 losses = list(losses)

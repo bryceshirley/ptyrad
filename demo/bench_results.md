@@ -564,3 +564,27 @@ single-tensor Adam over 9 leaves) ~3 ms. Full 20-iter run skipped — the
 FINAL for this sample (21 slices, batch 1): 1 GPU per reconstruction remains
 optimal; mode-split ~parity; slice-split 0.6×. Slice-split's domain is
 Nz≥64 (PCIe) / Nz≥32 (NVLink floor) and volumes exceeding one GPU's memory.
+
+## K. 32-slice head-to-head: born6 slice-2 (2 GPU) vs multislice (1 GPU)
+User-requested, real 5-iter reconstructions (dz 10->6.5625 A, same 210 A
+thickness, seed 42). Concurrent runs contended (~89.5/89.9 s/iter, std +-8 s
+— host PCIe/CPU shared between MS data loads and carry hops); SOLO reruns
+give the clean numbers:
+
+| arm (Nz=32, solo) | s/iter | per batch | iter-2 loss |
+|---|---|---|---|
+| multislice 1-GPU | **74.6** | 18.2 ms | 0.3625 |
+| born6 slice-split 2-GPU (slicedist, SLICE_P=2) | 78.1 | 19.1 ms | 0.3625 |
+
+- **Dead heat, slight MS edge (0.96x) on this PCIe box**; convergence
+  equivalent (0.3158 vs 0.3161 at iter 5). Decomposition matches the
+  microbenches: MS 11.1 f+b + ~7 ms housekeeping; born6 11.7 + ~7 + refit.
+- The split DID rescue born6: 1-GPU born6 @32 would be ~22 ms/batch
+  (~92 s/iter) -> 2-GPU parity with MS.
+- **NVLink projection**: born f+b 11.7 -> 8.9 (measured floor) => ~68.5
+  s/iter vs MS 74.6 = **~1.09x end-to-end** at Nz=32. The 1.25x born-only
+  ratio dilutes through the fixed ~7 ms/batch both methods share. Deeper
+  stacks grow it (~1.5x at Nz=64).
+- 2-GPU slicedist at Nz=21 (smoke_slicedist_2gpu): 67.4 s/iter vs 64.5
+  baseline — parity; the P=2 chain (6 hops) + halved housekeeping recovered
+  the 4-GPU version's losses (105.6).

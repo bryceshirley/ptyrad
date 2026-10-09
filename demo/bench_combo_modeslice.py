@@ -88,7 +88,7 @@ if __name__ == "__main__":
         print(f"combo correctness (Nz=64): rel err {((Ic - I1).norm() / I1.norm()).item():.2e}")
     print(f"{'Nz':>5} | {'1-GPU fwd':>9} | {'combo fwd':>9} | {'x':>5} "
           f"| {'1-GPU f+b':>9} | {'combo f+b':>9} | {'x':>5} | {'+gradred':>8} | {'x':>5}")
-    for Nz in (64, 128, 256, 512):
+    for Nz in tuple(int(x) for x in os.environ.get("NZ_LIST", "64,128,256,512").split(",")):
         obj, probe, H, occu = make_inputs(Nz)
         oc1 = (torch.polar(obj[..., 0], obj[..., 1]) - 1).unsqueeze(1).to("cuda:0")
         Hd = H.to("cuda:0"); pr = probe.to("cuda:0")
