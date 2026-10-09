@@ -597,3 +597,14 @@ WINS 1.04x**, convergence equal (0.3560 vs 0.3562 at iter 2). Depth trend:
 0.86x @21 -> 0.96x @32 -> **1.04x @42** -> ~1.5x @64 (SSH projection).
 **Practical crossover for born6+2GPU over multislice: Nz ~ 35-40 on plain
 PCIe; NVLink moves it toward ~30 and adds ~10% at 42.**
+
+### K.3 Adaptive order growth + slice split (Nz=42, 2 GPU, 5 iters)
+born_iterations 1 + grow_tol 1e-2 (start at ISS, refit grows the order) runs
+unmodified through the DISTRIBUTED solver (forward_dist reads
+model.born_iterations per call). Trajectory: M=1 (42.3 s/iter) -> 2 (51.1)
+-> 3 (61.0) -> 4 (70.8) -> settles M=5 (79.2; residual 6.7e-3 < tol).
+**Avg 60.9 s/iter = 1.47x vs fixed-M6 slice-2 (89.7) and 1.53x vs MS 1-GPU
+(92.9)**; steady state M=5 beats MS 1.17x (better than fixed-M6's 1.04x —
+the refit finds dz=5 A needs only M=5). No convergence penalty: iter-5 loss
+0.3161 on the fixed-order trajectory. Best deep-stack config on this PCIe
+box: **born-grow + 2-GPU slice split.**
