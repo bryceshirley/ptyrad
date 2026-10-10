@@ -254,16 +254,18 @@ and transpose ~36 ms/batch vs chain's 15 ms/batch); the curves match
 exactly over every completed iteration, which together with the bitwise
 digest gate makes the equivalence conclusion safe. **Gate: pass.**
 
-An operational finding from this gate: in the real batch-1 solver the
-pinned transport was ~4× slower per batch (63 vs 15 ms) — the opposite of
-the engine-level benchmarks. Under back-to-back batch-1 traffic the
-driver's peer path stays in its fast (~0.1 ms) mode, while the pinned path
-pays host staging on every hop at pmode 4 (2 MB carries, M=6 orders, fwd +
-bwd). The transport choice is therefore regime-dependent: `peer` for hot
-single-recon batch-1 loops, `pinned` where hops are latency-exposed
-(cold/idle links, large per-step synthetic workloads). Root cause of the
-driver path's idle-mode 2.5 ms tax remains unattributed (KVM/vfio staging
-behaviour).
+**Timing caveat (contention):** the pinned arm observed ~63 ms/batch vs
+chain's 15 ms, but another session's reconstruction started on GPU 1 at
+14:41:10 — i.e. during this arm's entire run (the chain and transpose
+arms, 12:16–13:24, predate it and are clean). The "pinned 4× slower in
+the real solver" number is therefore **confounded and should not be
+trusted**; the loss-curve equivalence is unaffected (the math is
+contention-independent). A clean pinned-solver timing needs a rerun on
+idle GPUs. Until then: `peer` stays the known-good default (it holds its
+fast ~0.1 ms mode under hot batch-1 traffic); `pinned` is proven at the
+engine level for latency-exposed hops, and its solver-level comparison is
+open. Root cause of the driver path's idle-mode 2.5 ms tax remains
+unattributed (KVM/vfio staging behaviour).
 
 ## Step 5 — Benchmark grid
 
@@ -290,10 +292,11 @@ Headline speed-ups vs P=1 eager (step, pmode 1; full tables in
 * **Transport**: `pinned` ≈ `peer` in the sustained-load cells (under
   back-to-back traffic the driver path hits its fast mode) and far better
   in latency-exposed ones — in the isolated-forward timeline it cuts the
-  span 13.0 → 3.9 ms (n=256, Nz=128, M=4). BUT in the real batch-1 solver
-  it ran 4× slower per batch (Step 4b). Regime-dependent: keep `peer` as
-  default for hot batch-1 loops; `pinned` is a per-machine knob for
-  latency-exposed hops.
+  span 13.0 → 3.9 ms (n=256, Nz=128, M=4). The one real-solver pinned
+  timing came out 4× slower per batch but is **confounded** — another
+  session's job shared GPU 1 for that entire arm (Step 4b caveat). Keep
+  `peer` as the known-good default; `pinned` is a per-machine knob whose
+  solver-level verdict needs a clean rerun.
 * **Probe modes** (secondary run, n=256): pmode 4 multiplies phase-A work
   by 4 and pulls the crossover in: step M=4 Nz=32 → 1.37×, Nz=128 →
   1.69× (P1 42.0 ms vs 24.9 ms). With pmode 4 the win regime starts at
