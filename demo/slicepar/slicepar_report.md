@@ -461,3 +461,13 @@ carries are sparse — and the real batch-1 solver keeps the link hot. At
 P=3 chain ≡ direct ≡ logscan. A definitive P=4 number still needs 4
 physical GPUs, but both regimes now bracket it: hot link → chain wins;
 cold link → model favours direct, by up to 2α/order.
+
+*Provenance note on the emulation:* the other session reports its
+multislice arm was in host-side setup (data loading) on GPU 2 during this
+run. Device-side the GPU was clean — `nvidia-smi` compute-apps showed no
+context on GPUs 0/2 immediately before and after, utilization 0% — so
+there was no GPU contention; at most, host memory/PCIe traffic could have
+added noise to the pinned rows (which stage through host RAM). The tight
+IQRs (0.01–0.13 ms) and the fact that the chain-vs-direct ordering is
+identical under the peer transport (device-to-device) make the
+conclusions robust to this.
