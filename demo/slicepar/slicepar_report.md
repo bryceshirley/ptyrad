@@ -429,3 +429,35 @@ python analyze.py all && python model_fit.py     # Step 6 figures/tables
   `fig_model.png`), and this report.
 
 Nothing was pushed to any remote; no issues/PRs; the paper is untouched.
+
+## Addendum (post-study): carry-phase emulation at logical P ≥ 3
+
+Question raised afterwards: was `direct` ever *timed* at P ≥ 3? Not in the
+main study (2-GPU limit). `bench_carry_emu.py` emulates the carry phase
+alone with logical blocks round-robin on 2 physical GPUs (run on idle
+GPUs 0+2, verified clean before/after). At P=4 the chain's 3 hops are all
+genuinely cross-device and serial, as on physical hardware with equal
+per-pair cost (all-PHB). Distortions: `direct` loses 2 of 6 sends to
+same-device placement but its 3 same-direction sends share one copy path
+(physically 4 sources share the one host bridge — comparable); `logscan`'s
+round 2 is same-device → lower bound. Median ms per carry pass
+(0.5 MB totals at n=256; 33 MB at n=2048):
+
+| n | transport | P | chain | direct | logscan |
+|---|---|---|---|---|---|
+| 256 | peer | 3 | 0.193 | 0.185 | 0.191 |
+| 256 | peer | 4 | **0.245** | 0.315 | 0.260 |
+| 256 | pinned | 4 | **0.380** | 0.481 | 0.436 |
+| 2048 | peer | 4 | **6.24** | 7.81 | 6.32 |
+| 2048 | pinned | 4 | **9.34** | 11.92 | 9.47 |
+
+Verdict: **under sustained traffic, `direct` is not better — it is
+~25–30% slower than `chain` at P=4.** Back-to-back carries keep the
+driver's peer path in its fast (~0.08 ms) mode, so there is no idle-mode
+latency (α ≈ 2.05 ms) left to hide, and `direct` simply moves more
+messages/bytes (P(P−1)/2 vs P−1). The H2 win scenario needs the
+*cold-link* regime (hops at idle-mode α), which this box only shows when
+carries are sparse — and the real batch-1 solver keeps the link hot. At
+P=3 chain ≡ direct ≡ logscan. A definitive P=4 number still needs 4
+physical GPUs, but both regimes now bracket it: hot link → chain wins;
+cold link → model favours direct, by up to 2α/order.
