@@ -1,0 +1,10 @@
+/home/dnz75396/ptyrad/.venv/lib/python3.12/site-packages/torch/_inductor/lowering.py:2156: UserWarning: Torchinductor does not support code generation for complex operators. Performance may be worse than eager.
+  warnings.warn(
+fwd  P1 single_compiled -      skipz=False Nz= 32 n=256 M=1 pmode=1:     0.449 ms (iqr 0.023)
+step P1 single_compiled -      skipz=False Nz= 32 n=256 M=1 pmode=1:     1.673 ms (iqr 0.068)
+fwd  P1 single_compiled -      skipz=False Nz= 32 n=256 M=4 pmode=1:     1.064 ms (iqr 0.011)
+step P1 single_compiled -      skipz=False Nz= 32 n=256 M=4 pmode=1:     3.792 ms (iqr 0.019)
+fwd  P1 single_compiled -      skipz=False Nz=128 n=256 M=1 pmode=1:     1.558 ms (iqr 0.010)
+step P1 single_compiled -      skipz=False Nz=128 n=256 M=1 pmode=1:     4.995 ms (iqr 0.025)
+fwd  P1 single_compiled -      skipz=False Nz=128 n=256 M=4 pmode=1:     4.633 ms (iqr 0.016)
+step P1 single_compiled -      skipz=False Nz=128 n=256 M=4 pmode=1:    15.565 ms (iqr 0.021)

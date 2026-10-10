@@ -1,0 +1,6 @@
+n1024 rc=0
+n2048 rc=0
+skipz rc=0
+pmode4 rc=0
+compiled rc=0
+DONE_ALL_STAGES

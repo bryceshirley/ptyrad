@@ -1,0 +1,693 @@
+2026-10-10 12:42:06,749 - ### PtyRAD Logger configuration ###
+2026-10-10 12:42:06,749 - log_file       = 'ptyrad_log.txt'. If log_file = None, no log file will be created.
+2026-10-10 12:42:06,749 - log_dir        = 'auto'. If log_dir = 'auto', then log will be saved to `output_path` or 'logs/'.
+2026-10-10 12:42:06,749 - flush_file     = True. Automatically set to True if `log_file is not None`
+2026-10-10 12:42:06,749 - prefix_time    = datetime. If true, preset strings ('date', 'time', 'datetime'), or a string of time format, a datetime str is prefixed to the `log_file`.
+2026-10-10 12:42:06,749 - prefix_jobid   = '0'. If not 0, it'll be prefixed to the log file. This is used for hypertune mode with multiple GPUs.
+2026-10-10 12:42:06,749 - append_to_file = True. If true, logs will be appended to the existing file. If false, the log file will be overwritten.
+2026-10-10 12:42:06,749 - show_timestamp = True. If true, the printed information will contain a timestamp.
+2026-10-10 12:42:06,749 -  
+2026-10-10 12:42:09,399 - ### Initializing HuggingFace accelerator ###
+2026-10-10 12:42:09,399 - Accelerator.distributed_type = DistributedType.NO
+2026-10-10 12:42:09,399 - Accelerator.num_process      = 1
+2026-10-10 12:42:09,399 - Accelerator.mixed_precision  = no
+2026-10-10 12:42:11,232 - 'accelerate' is available but NOT using distributed mode or mixed precision
+2026-10-10 12:42:11,232 - If you want to utilize 'accelerate' for multiGPU or mixed precision, 
+2026-10-10 12:42:11,232 - Run `accelerate launch --multi_gpu --num_processes=2 --mixed_precision='no' -m ptyrad run <PTYRAD_ARGUMENTS> --gpuid 'acc'` in your terminal
+2026-10-10 12:42:11,232 -  
+2026-10-10 12:42:11,233 - ### System information ###
+2026-10-10 12:42:11,233 - Platform: Linux-6.8.0-139-generic-x86_64-with-glibc2.39
+2026-10-10 12:42:11,233 - Operating System: Linux 6.8.0-139-generic
+2026-10-10 12:42:11,233 - OS Version: #139-Ubuntu SMP PREEMPT_DYNAMIC Sat Aug  1 03:52:05 UTC 2026
+2026-10-10 12:42:11,233 - Machine: x86_64
+2026-10-10 12:42:11,233 - Processor: x86_64
+2026-10-10 12:42:11,233 - Available CPU cores: 124
+2026-10-10 12:42:11,243 - Total Memory: 885.78 GB
+2026-10-10 12:42:11,243 - Available Memory: 872.99 GB
+2026-10-10 12:42:11,243 -  
+2026-10-10 12:42:11,243 - ### GPU information ###
+2026-10-10 12:42:11,243 - CUDA Available: True
+2026-10-10 12:42:11,243 - CUDA Version: 12.8
+2026-10-10 12:42:11,249 - Available CUDA GPUs: ['NVIDIA A100 80GB PCIe', 'NVIDIA A100 80GB PCIe']
+2026-10-10 12:42:11,249 - CUDA Compute Capability: ['8.0', '8.0']
+2026-10-10 12:42:11,249 -   INFO: For torch.compile with Triton, you'll need CUDA GPU with Compute Capability >= 7.0.
+2026-10-10 12:42:11,249 -         In addition, Triton does not directly support Windows.
+2026-10-10 12:42:11,249 -         For Windows users, please follow the instruction and download `triton-windows` from https://github.com/woct0rdho/triton-windows.
+2026-10-10 12:42:11,294 - MIG (Multi-Instance GPU) mode = False
+2026-10-10 12:42:11,294 -   INFO: MIG splits a physical GPU into multiple GPU slices, but multiGPU does not support these MIG slices.
+2026-10-10 12:42:11,294 -         In addition, multiGPU is currently only available on Linux due to the limited NCCL support.
+2026-10-10 12:42:11,294 -       -> If you're doing normal reconstruction/hypertune, you can safely ignore this.
+2026-10-10 12:42:11,294 -       -> If you want to do multiGPU, you must provide multiple 'full' GPUs that are not in MIG mode.
+2026-10-10 12:42:11,294 -  
+2026-10-10 12:42:11,294 - ### Python information ###
+2026-10-10 12:42:11,294 - Python Executable: /home/dnz75396/ptyrad/.venv/bin/python
+2026-10-10 12:42:11,294 - Python Version: 3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]
+2026-10-10 12:42:11,294 -  
+2026-10-10 12:42:11,294 - ### Packages information ###
+2026-10-10 12:42:11,295 - Numpy Version (metadata): 2.4.3
+2026-10-10 12:42:11,296 - PyTorch Version (metadata): 2.10.0
+2026-10-10 12:42:11,297 - Optuna Version (metadata): 4.8.0
+2026-10-10 12:42:11,297 - Accelerate Version (metadata): 1.13.0
+2026-10-10 12:42:11,298 - PtyRAD Version (ptyrad/__init__.py): 0.1.0b12
+2026-10-10 12:42:11,298 - PtyRAD is located at: /home/dnz75396/ptyrad-slicepar/src/ptyrad/__init__.py
+2026-10-10 12:42:11,298 -  
+2026-10-10 12:42:11,298 - ### Loading params file ###
+2026-10-10 12:42:11,316 - Success! Loaded .yml file path = /home/dnz75396/ptyrad-slicepar/demo/slicepar/params_gate/gate_transpose.yml
+2026-10-10 12:42:11,467 - validate = True: Filling defaults and validating the params file...
+2026-10-10 12:42:11,468 - Success! Params file validated and defaults applied.
+2026-10-10 12:42:11,468 -  
+2026-10-10 12:42:11,468 - ### Setting GPU Device ###
+2026-10-10 12:42:11,468 - Selected GPU device: cuda:0 (NVIDIA A100 80GB PCIe)
+2026-10-10 12:42:11,468 -  
+2026-10-10 12:42:11,468 - ### Initializing Initializer ###
+2026-10-10 12:42:11,469 - init_params are displayed below:
+2026-10-10 12:42:11,469 -   random_seed: None
+2026-10-10 12:42:11,469 -   probe_illum_type: electron
+2026-10-10 12:42:11,469 -   probe_kv: 300.0
+2026-10-10 12:42:11,469 -   probe_conv_angle: 21.4
+2026-10-10 12:42:11,469 -   probe_defocus: -200.0
+2026-10-10 12:42:11,469 -   probe_c3: 0.0
+2026-10-10 12:42:11,469 -   probe_c5: 0.0
+2026-10-10 12:42:11,469 -   beam_kev: None
+2026-10-10 12:42:11,469 -   probe_dRn: None
+2026-10-10 12:42:11,469 -   probe_Rn: None
+2026-10-10 12:42:11,469 -   probe_D_H: None
+2026-10-10 12:42:11,469 -   probe_D_FZP: None
+2026-10-10 12:42:11,469 -   probe_Ls: None
+2026-10-10 12:42:11,469 -   meas_Npix: 256
+2026-10-10 12:42:11,469 -   pos_N_scans: 4096
+2026-10-10 12:42:11,469 -   pos_N_scan_slow: 64
+2026-10-10 12:42:11,469 -   pos_N_scan_fast: 64
+2026-10-10 12:42:11,469 -   pos_scan_step_size: 0.41
+2026-10-10 12:42:11,469 -   meas_calibration: {'mode': 'fitRBF', 'value': None}
+2026-10-10 12:42:11,469 -   probe_pmode_max: 4
+2026-10-10 12:42:11,469 -   probe_pmode_init_pows: [0.02]
+2026-10-10 12:42:11,469 -   obj_omode_max: 1
+2026-10-10 12:42:11,469 -   obj_omode_init_occu: {'occu_type': 'uniform', 'init_occu': None}
+2026-10-10 12:42:11,469 -   obj_Nlayer: 21
+2026-10-10 12:42:11,469 -   obj_slice_thickness: 10.0
+2026-10-10 12:42:11,470 -   meas_permute: None
+2026-10-10 12:42:11,470 -   meas_reshape: None
+2026-10-10 12:42:11,470 -   meas_flipT: None
+2026-10-10 12:42:11,470 -   meas_crop: [None, None, [68, 188], [68, 188]]
+2026-10-10 12:42:11,470 -   meas_pad: {'mode': 'on_the_fly', 'padding_type': 'power', 'target_Npix': 256, 'value': 0.0, 'threshold': 70.0}
+2026-10-10 12:42:11,470 -   meas_resample: {'mode': None, 'scale_factors': [2.0, 2.0]}
+2026-10-10 12:42:11,470 -   meas_add_source_size: None
+2026-10-10 12:42:11,470 -   meas_add_detector_blur: None
+2026-10-10 12:42:11,470 -   meas_remove_neg_values: {'mode': 'clip_neg', 'value': None, 'force': False}
+2026-10-10 12:42:11,470 -   meas_normalization: {'mode': 'max_at_one', 'value': None}
+2026-10-10 12:42:11,470 -   meas_add_poisson_noise: None
+2026-10-10 12:42:11,470 -   meas_export: None
+2026-10-10 12:42:11,470 -   probe_permute: None
+2026-10-10 12:42:11,470 -   probe_z_shift: None
+2026-10-10 12:42:11,470 -   pos_scan_flipT: None
+2026-10-10 12:42:11,470 -   pos_scan_affine: None
+2026-10-10 12:42:11,470 -   pos_scan_rand_std: 0.15
+2026-10-10 12:42:11,470 -   obj_z_crop: None
+2026-10-10 12:42:11,470 -   obj_z_pad: None
+2026-10-10 12:42:11,470 -   obj_z_resample: None
+2026-10-10 12:42:11,470 -   meas_source: file
+2026-10-10 12:42:11,470 -   meas_params: {'path': 'data/PSO/sample_data_PrScO3.mat', 'key': 'dp', 'shape': None, 'offset': None, 'gap': None}
+2026-10-10 12:42:11,470 -   probe_source: simu
+2026-10-10 12:42:11,470 -   probe_params: None
+2026-10-10 12:42:11,470 -   pos_source: simu
+2026-10-10 12:42:11,470 -   pos_params: None
+2026-10-10 12:42:11,470 -   obj_source: simu
+2026-10-10 12:42:11,471 -   obj_params: None
+2026-10-10 12:42:11,471 -   tilt_source: simu
+2026-10-10 12:42:11,471 -   tilt_params: {'tilt_type': 'all', 'init_tilts': [[0.0, 0.0]]}
+2026-10-10 12:42:11,471 -  
+2026-10-10 12:42:11,471 - ### Initializing cache ###
+2026-10-10 12:42:11,471 - use_cached_obj   = False
+2026-10-10 12:42:11,471 - use_cached_probe = False
+2026-10-10 12:42:11,471 - use_cached_pos   = False
+2026-10-10 12:42:11,471 -  
+2026-10-10 12:42:11,471 - ### Initializing measurements ###
+2026-10-10 12:42:11,471 - Loading measurements from source = 'file'
+2026-10-10 12:42:11,471 - Detected measurement file type = '.mat'
+2026-10-10 12:42:11,471 - Detected .mat v7.3 (HDF5 format). Delegating to `load_hdf5`.
+2026-10-10 12:42:15,278 - Success! Loaded .hdf5 file with key = 'dp' from path = 'data/PSO/sample_data_PrScO3.mat'
+2026-10-10 12:42:15,279 - Imported .hdf5 data shape = (4096, 256, 256)
+2026-10-10 12:42:15,279 - Imported .hdf5 data type = float64
+2026-10-10 12:42:15,500 - Casting measurements dtype to float32 (single precision) for computational efficiency.
+2026-10-10 12:42:15,501 - Imported meausrements shape / dtype = (4096, 256, 256), dtype = float32
+2026-10-10 12:42:15,666 - Imported meausrements int. statistics (min, mean, max) = (0.0000, 3.1329, 416.8463)
+2026-10-10 12:42:15,720 - Reshaping measurements into (64, 64, 256, 256) for cropping
+2026-10-10 12:42:15,720 - Cropping axis ky from 68 to 188
+2026-10-10 12:42:15,720 - Cropping axis kx from 68 to 188
+2026-10-10 12:42:15,720 - Cropped measurements have shape (N_slow, N_fast, ky, kx) = (64, 64, 120, 120)
+2026-10-10 12:42:15,720 - Update (Npix, N_scans, N_scan_slow, N_scan_fast) after the measurements cropping
+2026-10-10 12:42:15,720 - Reshape measurements back to (N, ky, kx) = (4096, 120, 120)
+2026-10-10 12:42:15,763 - No negative values found in measurements. Skipping non-neg correction.
+2026-10-10 12:42:15,763 - Normalizing measurements with mode = 'max_at_one' and value = 'None'
+2026-10-10 12:42:15,804 - Normalizing by max of the 2D mean pattern intensity: 91.590782
+2026-10-10 12:42:15,941 - meausrements int. statistics (min, mean, max) = (0.0000, 0.1555, 4.5512)
+2026-10-10 12:42:15,941 - Padding measurements with mode='on_the_fly', padding_type='power', target_Npix=256
+2026-10-10 12:42:15,955 - Using percentile = 70.00% to create an one-hot mask for measurements amplitude background fitting
+2026-10-10 12:42:15,956 - The mask has roughly 37.08 px in radius, or 0.62 of the distance from center to edge of the image
+2026-10-10 12:42:15,995 - Fitted a = 23.8710, b = 1.3862 for power law decay: y = a*r^-b
+2026-10-10 12:42:15,996 - Original meas int sum = 2239.2568, padded region int sum = 80.0559, or 3.58% more intensity after padding.
+2026-10-10 12:42:15,996 - This percentage should be ideally less than 5%, or you should set a lower threshold to exclude more central region.
+2026-10-10 12:42:15,996 - Update Npix after the measurements padding
+2026-10-10 12:42:16,013 - No negative values found in measurements. Skipping non-neg correction.
+2026-10-10 12:42:16,032 - Adjusting `meas_avg_sum` by adding 80.0559 for on_the_fly meas padding
+2026-10-10 12:42:16,069 - meausrements int. statistics (min, mean, max) = (0.0000, 0.1555, 4.5512)
+2026-10-10 12:42:16,070 - measurements                      (N, Ky, Kx) = float32, (4096, 120, 120)
+2026-10-10 12:42:16,070 -  
+2026-10-10 12:42:16,070 - ### Setting up calibration ###
+2026-10-10 12:42:16,070 - meas_calibration mode = 'fitRBF', value = None
+2026-10-10 12:42:16,070 - Using loaded raw averaged measurement (before crop/pad/resample) to fit RBF as a part of the meas calibration
+2026-10-10 12:42:16,070 - Radius of fitted bright field disk (RBF) = 26.04 px with Npix = 256
+2026-10-10 12:42:16,070 - Suggested probe_mask_k radius (RBF*2/Npix) > 0.2035
+2026-10-10 12:42:16,070 - Fitting raw averaged measurement with center, radius, and Gaussian blur std as a sanity check
+2026-10-10 12:42:16,070 - Note that the fitted Gaussian blur std (detector blur) would be affected by overlapping Bragg disks
+2026-10-10 12:42:16,071 - Initial guess: center=(127.49, 127.84), radius=26.04, Gaussian blur std=0.50
+2026-10-10 12:42:16,138 - Final fit: center=(127.49, 127.84), radius=26.04, Gaussian blur std=2.73
+2026-10-10 12:42:16,138 - WARNING: The 'fitRBF' and 'RBF' calibration methods are highly dependent on the accuracy of user-provided experimental parameters and acquisition conditions,
+2026-10-10 12:42:16,138 -          including convergence angle, kV, dose, specimen thickness, and collection angle for the estimation of RBF.
+2026-10-10 12:42:16,138 -          For example, a 5-10% error in convergence angle is fairly common.
+2026-10-10 12:42:16,138 -          Users are strongly advised to perform proper microscope calibration to ensure accurate results.
+2026-10-10 12:42:16,138 -          These method should only be used as a rough estimate and not as a substitute for proper experimental calibration.
+2026-10-10 12:42:16,139 - dx (real space pixel size of probe and object) set to 0.0936 Ang with Npix = 256
+2026-10-10 12:42:16,139 - Update dx to 0.1997 Ang due to meas_crop, Npix = 120
+2026-10-10 12:42:16,139 - Suggested probe_mask_k radius (RBF*2/Npix) changes to > 0.4341
+2026-10-10 12:42:16,139 - Update dx to 0.0936 Ang due to meas_pad (mode = on_the_fly, padding_type = power), Npix = 256
+2026-10-10 12:42:16,139 - Suggested probe_mask_k radius (RBF*2/Npix) changes to > 0.2035
+2026-10-10 12:42:16,139 -  
+2026-10-10 12:42:16,139 - ### Setting init_variables dict ###
+2026-10-10 12:42:16,139 - Derived values given input init_params:
+2026-10-10 12:42:16,139 -   kv          = 300.0 kV
+2026-10-10 12:42:16,139 -   wavelength  = 0.0197 Ang
+2026-10-10 12:42:16,139 -   conv_angle  = 21.4 mrad
+2026-10-10 12:42:16,139 -   Npix        = 256 px
+2026-10-10 12:42:16,139 -   dk          = 0.0417 Ang^-1
+2026-10-10 12:42:16,139 -   kMax        = 5.3422 Ang^-1
+2026-10-10 12:42:16,139 -   da          = 0.8217 mrad
+2026-10-10 12:42:16,139 -   angleMax    = 105.1737 mrad
+2026-10-10 12:42:16,139 -   RBF         = 26.0445 px (Inferred from the given calibration, NOT necessarily from the loaded measurement data)
+2026-10-10 12:42:16,139 -   n_alpha     = 4.9147 (# conv_angle)
+2026-10-10 12:42:16,139 -   dx          = 0.0936 Ang, Nyquist-limited dmin = 2*dx = 0.1872 Ang
+2026-10-10 12:42:16,139 -   Rayleigh-limited resolution  = 0.5612 Ang (0.61*lambda/alpha for focused probe )
+2026-10-10 12:42:16,139 -   Real space probe extent = 23.9604 Ang
+2026-10-10 12:42:16,139 -  
+2026-10-10 12:42:16,139 - ### Initializing probe ###
+2026-10-10 12:42:16,139 - Loading probe from source = 'simu'
+2026-10-10 12:42:16,139 - Using experimental parameters specified by 'init_params' for initial probe simulation.
+2026-10-10 12:42:16,140 - Start simulating STEM probe
+2026-10-10 12:42:16,147 -   kv          = 300.0 kV
+2026-10-10 12:42:16,147 -   wavelength  = 0.0197 Ang
+2026-10-10 12:42:16,147 -   conv_angle  = 21.4 mrad
+2026-10-10 12:42:16,147 -   Npix        = 256 px
+2026-10-10 12:42:16,147 -   dk          = 0.0417 Ang^-1
+2026-10-10 12:42:16,147 -   kMax        = 5.3422 Ang^-1
+2026-10-10 12:42:16,147 -   alpha_max   = 105.1700 mrad
+2026-10-10 12:42:16,147 -   dx          = 0.0936 Ang, Nyquist-limited dmin = 2*dx = 0.1872 Ang
+2026-10-10 12:42:16,147 -   Rayleigh-limited resolution  = 0.5612 Ang (0.61*lambda/alpha for focused probe )
+2026-10-10 12:42:16,147 -   Real space probe extent = 23.9604 Ang
+2026-10-10 12:42:16,147 - Start making mixed-state STEM probe with 4 incoherent probe modes
+2026-10-10 12:42:16,159 - Relative power of probe modes = [0.94 0.02 0.02 0.02]
+2026-10-10 12:42:16,160 - Loaded probe shape = (4, 256, 256), dtype = complex128
+2026-10-10 12:42:16,160 - pmode_now: 4 and pmode_max: 4, leaving the pmode unchanged.
+2026-10-10 12:42:16,162 - Orthogonalizing 4 pmodes
+2026-10-10 12:42:16,165 - Sorting 4 pmodes by their intensities
+2026-10-10 12:42:16,169 - sum(|probe_data|**2) = 2319.31, while meas.mean(0).sum() = 2319.31
+2026-10-10 12:42:16,169 - probe                         (pmode, Ny, Nx) = complex64, (4, 256, 256)
+2026-10-10 12:42:16,169 -  
+2026-10-10 12:42:16,169 - ### Initializing probe positions ###
+2026-10-10 12:42:16,169 - Loading probe positions from source = 'simu'
+2026-10-10 12:42:16,170 - Using experimental parameters specified by 'init_params' (dx, scan_step size, N_scan_slow, N_scan_fast) for initial position simulation.
+2026-10-10 12:42:16,170 - Simulating probe positions with dx = 0.0936, scan_step_size = 0.4100, N_scan_fast = 64, N_scan_slow = 64
+2026-10-10 12:42:16,172 - Applying Gaussian distributed random displacement with std = 0.15 px to scan positions
+2026-10-10 12:42:16,175 - crop_pos                                (N,2) = int16, (4096, 2)
+2026-10-10 12:42:16,175 - crop_pos 1st and last px coords (y,x)         = ([54, 54], [330, 330])
+2026-10-10 12:42:16,176 - crop_pos extent (Ang)                         = [25.83226341 25.83226341]
+2026-10-10 12:42:16,176 - probe_pos_shifts                        (N,2) = float32, (4096, 2)
+2026-10-10 12:42:16,176 -  
+2026-10-10 12:42:16,176 - ### Initializing object ###
+2026-10-10 12:42:16,176 - Loading object from source = 'simu'
+2026-10-10 12:42:16,176 - Using experimental parameters specified by 'init_params' for initial object simulation.
+2026-10-10 12:42:16,429 - omode_now: 1 and omode_max: 1, leaving the omode unchanged.
+2026-10-10 12:42:16,440 - object                    (omode, Nz, Ny, Nx) = complex64, (1, 21, 639, 639)
+2026-10-10 12:42:16,440 - object extent                 (Z, Y, X) (Ang) = [210.      59.8073  59.8073]
+2026-10-10 12:42:16,441 -  
+2026-10-10 12:42:16,441 - ### Initializing omode_occu from 'uniform' ###
+2026-10-10 12:42:16,441 - omode_occu                            (omode) = float32, (1,)
+2026-10-10 12:42:16,441 -  
+2026-10-10 12:42:16,441 - ### Initializing H (Fresnel propagator) ###
+2026-10-10 12:42:16,441 - Calculating H with probe_shape = [256. 256.] px, dx = 0.0936 Ang, slice_thickness = 10.0000 Ang, lambd = 0.0197 Ang
+2026-10-10 12:42:16,444 - H                                    (Ky, Kx) = complex64, (256, 256)
+2026-10-10 12:42:16,444 -  
+2026-10-10 12:42:16,444 - ### Initializing obj tilts from = 'simu' ###
+2026-10-10 12:42:16,444 - Initialized obj_tilts with init_tilts = [[0.0, 0.0]] (theta_y, theta_x) mrad
+2026-10-10 12:42:16,444 - obj_tilts                              (N, 2) = float32, (1, 2)
+2026-10-10 12:42:16,444 -  
+2026-10-10 12:42:16,444 - ### Checking consistency between input params with the initialized variables ###
+2026-10-10 12:42:16,444 - Npix, DP measurements, probe, and H shapes will be consistent as '256' during on-the-fly measurement padding
+2026-10-10 12:42:16,444 - N_scans, len(meas), N_scan_slow*N_scan_fast, len(crop_pos), and len(probe_pos_shifts) are consistent as '4096'
+2026-10-10 12:42:16,444 - obj.shape[0] is consistent with len(omode_occu) as '1'
+2026-10-10 12:42:16,444 - obj.shape[1] is consistent with Nlayer as '21'
+2026-10-10 12:42:16,445 - crop positions (yx_min=[54 54], yx_max=[586 586]) are well contained inside object canvas (Ny,Nx) = (639, 639).
+2026-10-10 12:42:16,445 - obj_tilts is consistent with either 1 or N_scans
+2026-10-10 12:42:16,445 - Pass the consistency check of initialized variables, initialization is done!
+2026-10-10 12:42:16,445 -  
+2026-10-10 12:42:16,445 - ### Initializing loss function ###
+2026-10-10 12:42:16,445 - Active loss types:
+2026-10-10 12:42:16,445 -   loss_single : {'state': True, 'weight': 1.0, 'dp_pow': 0.5}
+2026-10-10 12:42:16,445 -   loss_sparse : {'state': True, 'weight': 0.1, 'ln_order': 1}
+2026-10-10 12:42:16,445 -  
+2026-10-10 12:42:16,445 - ### Initializing constraint function ###
+2026-10-10 12:42:16,445 - Active constraint types:
+2026-10-10 12:42:16,445 -   ortho_pmode   : {'start_iter': 1, 'step': 1, 'end_iter': None}
+2026-10-10 12:42:16,445 -   fix_probe_int : {'start_iter': 1, 'step': 1, 'end_iter': None}
+2026-10-10 12:42:16,445 -   obj_rblur     : {'start_iter': 1, 'step': 1, 'end_iter': None, 'obj_type': 'both', 'kernel_size': 5, 'std': 0.4}
+2026-10-10 12:42:16,446 -   obj_zblur     : {'start_iter': 1, 'step': 1, 'end_iter': None, 'obj_type': 'both', 'kernel_size': 5, 'std': 1.0}
+2026-10-10 12:42:16,446 -   mirrored_amp  : {'start_iter': 1, 'step': 1, 'end_iter': None, 'relax': 0.1, 'scale': 0.03, 'power': 4.0}
+2026-10-10 12:42:16,446 -   obja_thresh   : {'start_iter': 1, 'step': 1, 'end_iter': None, 'relax': 0.0, 'thresh': [0.96, 1.04]}
+2026-10-10 12:42:16,446 -   objp_postiv   : {'start_iter': 1, 'step': 1, 'end_iter': None, 'relax': 0.0}
+2026-10-10 12:42:16,446 -  
+2026-10-10 12:42:16,446 - ### Done initializing PtyRADSolver ###
+2026-10-10 12:42:16,446 -  
+2026-10-10 12:42:16,602 - ### Starting the PtyRADSolver in reconstruct mode ###
+2026-10-10 12:42:16,602 -  
+2026-10-10 12:42:16,602 - ### Initializing PtychoAD model ###
+2026-10-10 12:42:16,784 - ### PtychoAD optimizable variables ###
+2026-10-10 12:42:16,785 - obja            : torch.Size([1, 21, 639, 639])   , torch.float32   , device:cuda:0, grad:True , lr:5e-04
+2026-10-10 12:42:16,785 - objp            : torch.Size([1, 21, 639, 639])   , torch.float32   , device:cuda:0, grad:True , lr:5e-04
+2026-10-10 12:42:16,785 - obj_tilts       : torch.Size([1, 2])              , torch.float32   , device:cuda:0, grad:False, lr:0e+00
+2026-10-10 12:42:16,785 - slice_thickness : torch.Size([])                  , torch.float32   , device:cuda:0, grad:False, lr:0e+00
+2026-10-10 12:42:16,785 - probe           : torch.Size([4, 256, 256, 2])    , torch.float32   , device:cuda:0, grad:True , lr:1e-04
+2026-10-10 12:42:16,785 - probe_pos_shifts: torch.Size([4096, 2])           , torch.float32   , device:cuda:0, grad:False, lr:0e+00
+2026-10-10 12:42:16,785 - born_coeffs     : torch.Size([6, 2])              , torch.float32   , device:cuda:0, grad:False, lr:0e+00
+2026-10-10 12:42:16,785 -  
+2026-10-10 12:42:16,785 - Total measurement values  : 58,982,400
+2026-10-10 12:42:16,785 - Total optimizing variables: 17,673,770
+2026-10-10 12:42:16,785 - Solver type               : born
+2026-10-10 12:42:17,001 - ### Done initializing PtychoAD model ###
+2026-10-10 12:42:17,001 - ### Creating PyTorch 'Adam' optimizer with configs = {'foreach': False} ###
+2026-10-10 12:42:17,002 -  
+2026-10-10 12:42:17,002 - ### Generating indices, batches, and output_path ###
+2026-10-10 12:42:17,006 - d90 = 91.000 px or 8.517 Ang
+2026-10-10 12:42:17,006 - Selecting indices with the 'full' mode 
+2026-10-10 12:42:17,862 - Generated 4096 'random' groups of ~1 scan positions in 0.006 sec
+2026-10-10 12:42:33,351 - The effective batch size is batch_size * grad_accumulation = 1 * 1 = 1
+2026-10-10 12:42:33,351 - Original recon_dir_affixes = ['default']
+2026-10-10 12:42:33,351 - Expanded recon_dir_affixes = ['indices', 'meas', 'batch', 'pmode', 'omode', 'nlayer', 'lr', 'model', 'constraint', 'loss', 'affine', 'tilt']
+2026-10-10 12:42:33,361 - output_path = '/home/dnz75396/ptyrad/demo/output/PSO/20261010_slicepar_gate_transpose_full_N4096_dp256_random1_p4_1obj_21slice_dz10_plr1e-4_oalr5e-4_oplr5e-4_dpblur1.0_orblur0.4_ozblur1.0_mamp0.03_4.0_oathr0.96_oposc_sng1.0' is generated!
+2026-10-10 12:42:49,345 -  
+2026-10-10 12:42:49,345 - ### Successfully copy 'gate_transpose.yml' to '/home/dnz75396/ptyrad/demo/output/PSO/20261010_slicepar_gate_transpose_full_N4096_dp256_random1_p4_1obj_21slice_dz10_plr1e-4_oalr5e-4_oplr5e-4_dpblur1.0_orblur0.4_ozblur1.0_mamp0.03_4.0_oathr0.96_oposc_sng1.0' ###
+2026-10-10 12:42:49,345 -  
+2026-10-10 12:42:49,346 - ### Log file is flushed (created) as /home/dnz75396/ptyrad/demo/output/PSO/20261010_slicepar_gate_transpose_full_N4096_dp256_random1_p4_1obj_21slice_dz10_plr1e-4_oalr5e-4_oplr5e-4_dpblur1.0_orblur0.4_ozblur1.0_mamp0.03_4.0_oathr0.96_oposc_sng1.0/20261010_124249_ptyrad_log.txt ###
+2026-10-10 12:42:49,346 -  
+2026-10-10 12:42:49,346 - ### Start the PtyRAD iterative ptycho reconstruction ###
+2026-10-10 12:42:49,346 -  
+2026-10-10 12:42:49,347 - Iter: 1, obja.requires_grad = True
+2026-10-10 12:42:49,347 - Iter: 1, objp.requires_grad = True
+2026-10-10 12:42:49,347 - Iter: 1, obj_tilts.requires_grad = False
+2026-10-10 12:42:49,347 - Iter: 1, slice_thickness.requires_grad = False
+2026-10-10 12:42:49,347 - Iter: 1, probe.requires_grad = True
+2026-10-10 12:42:49,347 - Iter: 1, probe_pos_shifts.requires_grad = False
+2026-10-10 12:42:49,347 - Iter: 1, born_coeffs.requires_grad = False
+2026-10-10 12:42:49,347 - Setting up PyTorch compiler with {'fullgraph': False, 'dynamic': None, 'backend': 'inductor', 'mode': 'default', 'options': None, 'disable': True}
+2026-10-10 12:42:49,915 - Done batch 1 with 1 indices ([1196]...) in 0.562 sec
+2026-10-10 12:43:19,990 - Done batch 820 with 1 indices ([3472]...) in 0.037 sec
+2026-10-10 12:43:49,958 - Done batch 1639 with 1 indices ([3187]...) in 0.037 sec
+2026-10-10 12:44:19,983 - Done batch 2458 with 1 indices ([3591]...) in 0.036 sec
+2026-10-10 12:44:50,034 - Done batch 3277 with 1 indices ([645]...) in 0.036 sec
+2026-10-10 12:45:20,080 - Done batch 4096 with 1 indices ([1672]...) in 0.036 sec
+2026-10-10 12:45:20,187 - Apply ortho pmode constraint at iter 1, relative pmode power = [0.804 0.098 0.054 0.043], probe int sum = 2646.5767
+2026-10-10 12:45:20,188 - Apply fix probe int constraint at iter 1, probe int sum = 2319.3125
+2026-10-10 12:45:20,193 - Apply lateral (y,x) Gaussian blur with std = 0.4 px on obja at iter 1
+2026-10-10 12:45:20,193 - Apply lateral (y,x) Gaussian blur with std = 0.4 px on objp at iter 1
+2026-10-10 12:45:20,310 - Apply z-direction Gaussian blur with std = 1.0 px on obja at iter 1
+2026-10-10 12:45:20,311 - Apply z-direction Gaussian blur with std = 1.0 px on objp at iter 1
+2026-10-10 12:45:20,332 - Apply relaxed (0.1*obj + (0.9*obj_new)) mirrored amplitude constraint with scale = 0.03 and power = 4.0 on obja at iter 1. obja range becomes (0.976, 1.014)
+2026-10-10 12:45:20,333 - Apply hard threshold constraint with thresh = [0.96, 1.04] on obja at iter 1
+2026-10-10 12:45:20,333 - Apply hard positivity constraint on objp with 'clip_neg' mode at iter 1. Original min = -0.145. objp range becomes (0.000, 0.193)
+2026-10-10 12:45:22,526 - Refit born_coeffs at iter 1 (32 views, detector): rel det residual 7.860e-06, rel int error 2.200e-06, rel data residual 3.626e-01, c = [+1.000+0.000j +1.000+0.000j +0.997-0.004j +1.024-0.029j +1.161+0.098j +0.781+0.571j] (2.19 s)
+2026-10-10 12:45:22,531 - Iter: 1, Total Loss: 0.4239, loss_single: 0.4221, loss_poissn: 0.0000, loss_pacbed: 0.0000, loss_sparse: 0.0018, loss_simlar: 0.0000, in 2 min 33.175 sec
+2026-10-10 12:45:22,532 -  
+2026-10-10 12:45:22,532 - Iter: 2, obja.requires_grad = True
+2026-10-10 12:45:22,532 - Iter: 2, objp.requires_grad = True
+2026-10-10 12:45:22,532 - Iter: 2, obj_tilts.requires_grad = False
+2026-10-10 12:45:22,532 - Iter: 2, slice_thickness.requires_grad = False
+2026-10-10 12:45:22,532 - Iter: 2, probe.requires_grad = True
+2026-10-10 12:45:22,532 - Iter: 2, probe_pos_shifts.requires_grad = False
+2026-10-10 12:45:22,532 - Iter: 2, born_coeffs.requires_grad = False
+2026-10-10 12:45:22,572 - Done batch 1 with 1 indices ([1196]...) in 0.039 sec
+2026-10-10 12:45:52,765 - Done batch 820 with 1 indices ([3472]...) in 0.036 sec
+2026-10-10 12:46:22,966 - Done batch 1639 with 1 indices ([3187]...) in 0.036 sec
+2026-10-10 12:46:53,159 - Done batch 2458 with 1 indices ([3591]...) in 0.036 sec
+2026-10-10 12:47:23,376 - Done batch 3277 with 1 indices ([645]...) in 0.036 sec
+2026-10-10 12:47:53,596 - Done batch 4096 with 1 indices ([1672]...) in 0.037 sec
+2026-10-10 12:47:53,601 - Apply ortho pmode constraint at iter 2, relative pmode power = [0.73  0.121 0.08  0.069], probe int sum = 2556.1541
+2026-10-10 12:47:53,602 - Apply fix probe int constraint at iter 2, probe int sum = 2319.3132
+2026-10-10 12:47:53,602 - Apply lateral (y,x) Gaussian blur with std = 0.4 px on obja at iter 2
+2026-10-10 12:47:53,603 - Apply lateral (y,x) Gaussian blur with std = 0.4 px on objp at iter 2
+2026-10-10 12:47:53,604 - Apply z-direction Gaussian blur with std = 1.0 px on obja at iter 2
+2026-10-10 12:47:53,605 - Apply z-direction Gaussian blur with std = 1.0 px on objp at iter 2
+2026-10-10 12:47:53,606 - Apply relaxed (0.1*obj + (0.9*obj_new)) mirrored amplitude constraint with scale = 0.03 and power = 4.0 on obja at iter 2. obja range becomes (0.970, 1.018)
+2026-10-10 12:47:53,606 - Apply hard threshold constraint with thresh = [0.96, 1.04] on obja at iter 2
+2026-10-10 12:47:53,607 - Apply hard positivity constraint on objp with 'clip_neg' mode at iter 2. Original min = -0.142. objp range becomes (0.000, 0.336)
+2026-10-10 12:47:55,726 - Refit born_coeffs at iter 2 (32 views, detector): rel det residual 1.863e-05, rel int error 5.305e-06, rel data residual 3.433e-01, c = [+1.000+0.000j +0.998+0.002j +0.985-0.014j +1.071-0.089j +1.344+0.231j +0.602+0.827j] (2.12 s)
+2026-10-10 12:47:55,731 - Iter: 2, Total Loss: 0.3746, loss_single: 0.3719, loss_poissn: 0.0000, loss_pacbed: 0.0000, loss_sparse: 0.0026, loss_simlar: 0.0000, in 2 min 33.194 sec
+2026-10-10 12:47:55,746 -  
+2026-10-10 12:47:55,746 - Iter: 3, obja.requires_grad = True
+2026-10-10 12:47:55,746 - Iter: 3, objp.requires_grad = True
+2026-10-10 12:47:55,746 - Iter: 3, obj_tilts.requires_grad = False
+2026-10-10 12:47:55,747 - Iter: 3, slice_thickness.requires_grad = False
+2026-10-10 12:47:55,747 - Iter: 3, probe.requires_grad = True
+2026-10-10 12:47:55,747 - Iter: 3, probe_pos_shifts.requires_grad = False
+2026-10-10 12:47:55,747 - Iter: 3, born_coeffs.requires_grad = False
+2026-10-10 12:47:55,789 - Done batch 1 with 1 indices ([1196]...) in 0.042 sec
+2026-10-10 12:48:25,976 - Done batch 820 with 1 indices ([3472]...) in 0.037 sec
+2026-10-10 12:48:56,121 - Done batch 1639 with 1 indices ([3187]...) in 0.037 sec
+2026-10-10 12:49:26,255 - Done batch 2458 with 1 indices ([3591]...) in 0.036 sec
+2026-10-10 12:49:56,393 - Done batch 3277 with 1 indices ([645]...) in 0.037 sec
+2026-10-10 12:50:26,597 - Done batch 4096 with 1 indices ([1672]...) in 0.036 sec
+2026-10-10 12:50:26,601 - Apply ortho pmode constraint at iter 3, relative pmode power = [0.654 0.14  0.105 0.101], probe int sum = 2551.6311
+2026-10-10 12:50:26,601 - Apply fix probe int constraint at iter 3, probe int sum = 2319.3130
+2026-10-10 12:50:26,602 - Apply lateral (y,x) Gaussian blur with std = 0.4 px on obja at iter 3
+2026-10-10 12:50:26,603 - Apply lateral (y,x) Gaussian blur with std = 0.4 px on objp at iter 3
+2026-10-10 12:50:26,604 - Apply z-direction Gaussian blur with std = 1.0 px on obja at iter 3
+2026-10-10 12:50:26,604 - Apply z-direction Gaussian blur with std = 1.0 px on objp at iter 3
+2026-10-10 12:50:26,606 - Apply relaxed (0.1*obj + (0.9*obj_new)) mirrored amplitude constraint with scale = 0.03 and power = 4.0 on obja at iter 3. obja range becomes (0.967, 1.018)
+2026-10-10 12:50:26,606 - Apply hard threshold constraint with thresh = [0.96, 1.04] on obja at iter 3
+2026-10-10 12:50:26,606 - Apply hard positivity constraint on objp with 'clip_neg' mode at iter 3. Original min = -0.156. objp range becomes (0.000, 0.488)
+2026-10-10 12:50:28,802 - Refit born_coeffs at iter 3 (32 views, detector): rel det residual 8.184e-05, rel int error 2.735e-05, rel data residual 3.224e-01, c = [+1.000+0.001j +0.992+0.004j +0.971-0.046j +1.182-0.139j +1.449+0.464j +0.373+0.925j] (2.19 s)
+2026-10-10 12:50:28,806 - Iter: 3, Total Loss: 0.3510, loss_single: 0.3475, loss_poissn: 0.0000, loss_pacbed: 0.0000, loss_sparse: 0.0036, loss_simlar: 0.0000, in 2 min 33.055 sec
+2026-10-10 12:50:28,819 -  
+2026-10-10 12:50:28,820 - Iter: 4, obja.requires_grad = True
+2026-10-10 12:50:28,820 - Iter: 4, objp.requires_grad = True
+2026-10-10 12:50:28,820 - Iter: 4, obj_tilts.requires_grad = False
+2026-10-10 12:50:28,820 - Iter: 4, slice_thickness.requires_grad = False
+2026-10-10 12:50:28,820 - Iter: 4, probe.requires_grad = True
+2026-10-10 12:50:28,820 - Iter: 4, probe_pos_shifts.requires_grad = False
+2026-10-10 12:50:28,820 - Iter: 4, born_coeffs.requires_grad = False
+2026-10-10 12:50:28,862 - Done batch 1 with 1 indices ([1196]...) in 0.041 sec
+2026-10-10 12:50:58,930 - Done batch 820 with 1 indices ([3472]...) in 0.037 sec
+2026-10-10 12:51:29,014 - Done batch 1639 with 1 indices ([3187]...) in 0.036 sec
+2026-10-10 12:51:59,117 - Done batch 2458 with 1 indices ([3591]...) in 0.036 sec
+2026-10-10 12:52:29,262 - Done batch 3277 with 1 indices ([645]...) in 0.036 sec
+2026-10-10 12:52:59,409 - Done batch 4096 with 1 indices ([1672]...) in 0.036 sec
+2026-10-10 12:52:59,414 - Apply ortho pmode constraint at iter 4, relative pmode power = [0.6   0.153 0.128 0.12 ], probe int sum = 2472.7571
+2026-10-10 12:52:59,414 - Apply fix probe int constraint at iter 4, probe int sum = 2319.3125
+2026-10-10 12:52:59,415 - Apply lateral (y,x) Gaussian blur with std = 0.4 px on obja at iter 4
+2026-10-10 12:52:59,416 - Apply lateral (y,x) Gaussian blur with std = 0.4 px on objp at iter 4
+2026-10-10 12:52:59,417 - Apply z-direction Gaussian blur with std = 1.0 px on obja at iter 4
+2026-10-10 12:52:59,417 - Apply z-direction Gaussian blur with std = 1.0 px on objp at iter 4
+2026-10-10 12:52:59,418 - Apply relaxed (0.1*obj + (0.9*obj_new)) mirrored amplitude constraint with scale = 0.03 and power = 4.0 on obja at iter 4. obja range becomes (0.965, 1.018)
+2026-10-10 12:52:59,419 - Apply hard threshold constraint with thresh = [0.96, 1.04] on obja at iter 4
+2026-10-10 12:52:59,419 - Apply hard positivity constraint on objp with 'clip_neg' mode at iter 4. Original min = -0.154. objp range becomes (0.000, 0.642)
+2026-10-10 12:53:02,087 - Refit born_coeffs at iter 4 (32 views, detector): rel det residual 2.881e-04, rel int error 1.167e-04, rel data residual 3.022e-01, c = [+1.000+0.003j +0.976+0.004j +0.967-0.119j +1.390-0.159j +1.491+0.817j +0.093+0.962j] (2.67 s)
+2026-10-10 12:53:02,094 - Iter: 4, Total Loss: 0.3362, loss_single: 0.3318, loss_poissn: 0.0000, loss_pacbed: 0.0000, loss_sparse: 0.0044, loss_simlar: 0.0000, in 2 min 33.268 sec
+2026-10-10 12:53:02,109 -  
+2026-10-10 12:53:02,110 - Iter: 5, obja.requires_grad = True
+2026-10-10 12:53:02,110 - Iter: 5, objp.requires_grad = True
+2026-10-10 12:53:02,110 - Iter: 5, obj_tilts.requires_grad = False
+2026-10-10 12:53:02,110 - Iter: 5, slice_thickness.requires_grad = False
+2026-10-10 12:53:02,110 - Iter: 5, probe.requires_grad = True
+2026-10-10 12:53:02,110 - Iter: 5, probe_pos_shifts.requires_grad = False
+2026-10-10 12:53:02,110 - Iter: 5, born_coeffs.requires_grad = False
+2026-10-10 12:53:02,151 - Done batch 1 with 1 indices ([1196]...) in 0.040 sec
+2026-10-10 12:53:32,289 - Done batch 820 with 1 indices ([3472]...) in 0.036 sec
+2026-10-10 12:54:02,401 - Done batch 1639 with 1 indices ([3187]...) in 0.036 sec
+2026-10-10 12:54:32,613 - Done batch 2458 with 1 indices ([3591]...) in 0.038 sec
+2026-10-10 12:55:02,845 - Done batch 3277 with 1 indices ([645]...) in 0.037 sec
+2026-10-10 12:55:33,031 - Done batch 4096 with 1 indices ([1672]...) in 0.036 sec
+2026-10-10 12:55:33,035 - Apply ortho pmode constraint at iter 5, relative pmode power = [0.564 0.161 0.143 0.132], probe int sum = 2408.2861
+2026-10-10 12:55:33,036 - Apply fix probe int constraint at iter 5, probe int sum = 2319.3130
+2026-10-10 12:55:33,036 - Apply lateral (y,x) Gaussian blur with std = 0.4 px on obja at iter 5
+2026-10-10 12:55:33,037 - Apply lateral (y,x) Gaussian blur with std = 0.4 px on objp at iter 5
+2026-10-10 12:55:33,038 - Apply z-direction Gaussian blur with std = 1.0 px on obja at iter 5
+2026-10-10 12:55:33,039 - Apply z-direction Gaussian blur with std = 1.0 px on objp at iter 5
+2026-10-10 12:55:33,040 - Apply relaxed (0.1*obj + (0.9*obj_new)) mirrored amplitude constraint with scale = 0.03 and power = 4.0 on obja at iter 5. obja range becomes (0.964, 1.018)
+2026-10-10 12:55:33,040 - Apply hard threshold constraint with thresh = [0.96, 1.04] on obja at iter 5
+2026-10-10 12:55:33,040 - Apply hard positivity constraint on objp with 'clip_neg' mode at iter 5. Original min = -0.166. objp range becomes (0.000, 0.735)
+2026-10-10 12:55:35,304 - Refit born_coeffs at iter 5 (32 views, detector): rel det residual 8.300e-04, rel int error 3.700e-04, rel data residual 2.832e-01, c = [+0.998+0.007j +0.945-0.007j +1.001-0.240j +1.682-0.093j +1.415+1.231j -0.180+0.920j] (2.26 s)
+2026-10-10 12:55:35,309 - Iter: 5, Total Loss: 0.3265, loss_single: 0.3215, loss_poissn: 0.0000, loss_pacbed: 0.0000, loss_sparse: 0.0051, loss_simlar: 0.0000, in 2 min 33.195 sec
+2026-10-10 12:55:35,657 - Saving summary figures for iter 5
+2026-10-10 12:55:39,076 -  
+2026-10-10 12:55:39,076 - Iter: 6, obja.requires_grad = True
+2026-10-10 12:55:39,076 - Iter: 6, objp.requires_grad = True
+2026-10-10 12:55:39,076 - Iter: 6, obj_tilts.requires_grad = False
+2026-10-10 12:55:39,076 - Iter: 6, slice_thickness.requires_grad = False
+2026-10-10 12:55:39,077 - Iter: 6, probe.requires_grad = True
+2026-10-10 12:55:39,077 - Iter: 6, probe_pos_shifts.requires_grad = False
+2026-10-10 12:55:39,077 - Iter: 6, born_coeffs.requires_grad = False
+2026-10-10 12:55:39,117 - Done batch 1 with 1 indices ([1196]...) in 0.040 sec
+2026-10-10 12:56:09,194 - Done batch 820 with 1 indices ([3472]...) in 0.036 sec
+2026-10-10 12:56:39,235 - Done batch 1639 with 1 indices ([3187]...) in 0.038 sec
+2026-10-10 12:57:09,316 - Done batch 2458 with 1 indices ([3591]...) in 0.037 sec
+2026-10-10 12:57:39,393 - Done batch 3277 with 1 indices ([645]...) in 0.036 sec
+2026-10-10 12:58:09,470 - Done batch 4096 with 1 indices ([1672]...) in 0.036 sec
+2026-10-10 12:58:09,474 - Apply ortho pmode constraint at iter 6, relative pmode power = [0.543 0.167 0.152 0.138], probe int sum = 2365.0894
+2026-10-10 12:58:09,475 - Apply fix probe int constraint at iter 6, probe int sum = 2319.3130
+2026-10-10 12:58:09,475 - Apply lateral (y,x) Gaussian blur with std = 0.4 px on obja at iter 6
+2026-10-10 12:58:09,476 - Apply lateral (y,x) Gaussian blur with std = 0.4 px on objp at iter 6
+2026-10-10 12:58:09,477 - Apply z-direction Gaussian blur with std = 1.0 px on obja at iter 6
+2026-10-10 12:58:09,478 - Apply z-direction Gaussian blur with std = 1.0 px on objp at iter 6
+2026-10-10 12:58:09,479 - Apply relaxed (0.1*obj + (0.9*obj_new)) mirrored amplitude constraint with scale = 0.03 and power = 4.0 on obja at iter 6. obja range becomes (0.964, 1.017)
+2026-10-10 12:58:09,479 - Apply hard threshold constraint with thresh = [0.96, 1.04] on obja at iter 6
+2026-10-10 12:58:09,480 - Apply hard positivity constraint on objp with 'clip_neg' mode at iter 6. Original min = -0.165. objp range becomes (0.000, 0.777)
+2026-10-10 12:58:11,711 - Refit born_coeffs at iter 6 (32 views, detector): rel det residual 1.683e-03, rel int error 7.855e-04, rel data residual 2.670e-01, c = [+0.993+0.012j +0.911-0.035j +1.086-0.362j +1.941+0.068j +1.233+1.555j -0.367+0.824j] (2.23 s)
+2026-10-10 12:58:11,717 - Iter: 6, Total Loss: 0.3198, loss_single: 0.3141, loss_poissn: 0.0000, loss_pacbed: 0.0000, loss_sparse: 0.0057, loss_simlar: 0.0000, in 2 min 32.635 sec
+2026-10-10 12:58:11,735 -  
+2026-10-10 12:58:11,735 - Iter: 7, obja.requires_grad = True
+2026-10-10 12:58:11,735 - Iter: 7, objp.requires_grad = True
+2026-10-10 12:58:11,736 - Iter: 7, obj_tilts.requires_grad = False
+2026-10-10 12:58:11,736 - Iter: 7, slice_thickness.requires_grad = False
+2026-10-10 12:58:11,736 - Iter: 7, probe.requires_grad = True
+2026-10-10 12:58:11,736 - Iter: 7, probe_pos_shifts.requires_grad = False
+2026-10-10 12:58:11,736 - Iter: 7, born_coeffs.requires_grad = False
+2026-10-10 12:58:11,777 - Done batch 1 with 1 indices ([1196]...) in 0.040 sec
+2026-10-10 12:58:41,948 - Done batch 820 with 1 indices ([3472]...) in 0.036 sec
+2026-10-10 12:59:12,061 - Done batch 1639 with 1 indices ([3187]...) in 0.037 sec
+2026-10-10 12:59:42,201 - Done batch 2458 with 1 indices ([3591]...) in 0.037 sec
+2026-10-10 13:00:12,330 - Done batch 3277 with 1 indices ([645]...) in 0.036 sec
+2026-10-10 13:00:42,549 - Done batch 4096 with 1 indices ([1672]...) in 0.037 sec
+2026-10-10 13:00:42,553 - Apply ortho pmode constraint at iter 7, relative pmode power = [0.531 0.171 0.157 0.141], probe int sum = 2340.3809
+2026-10-10 13:00:42,554 - Apply fix probe int constraint at iter 7, probe int sum = 2319.3127
+2026-10-10 13:00:42,554 - Apply lateral (y,x) Gaussian blur with std = 0.4 px on obja at iter 7
+2026-10-10 13:00:42,555 - Apply lateral (y,x) Gaussian blur with std = 0.4 px on objp at iter 7
+2026-10-10 13:00:42,556 - Apply z-direction Gaussian blur with std = 1.0 px on obja at iter 7
+2026-10-10 13:00:42,557 - Apply z-direction Gaussian blur with std = 1.0 px on objp at iter 7
+2026-10-10 13:00:42,558 - Apply relaxed (0.1*obj + (0.9*obj_new)) mirrored amplitude constraint with scale = 0.03 and power = 4.0 on obja at iter 7. obja range becomes (0.966, 1.016)
+2026-10-10 13:00:42,558 - Apply hard threshold constraint with thresh = [0.96, 1.04] on obja at iter 7
+2026-10-10 13:00:42,558 - Apply hard positivity constraint on objp with 'clip_neg' mode at iter 7. Original min = -0.155. objp range becomes (0.000, 0.862)
+2026-10-10 13:00:44,809 - Refit born_coeffs at iter 7 (32 views, detector): rel det residual 2.820e-03, rel int error 1.348e-03, rel data residual 2.536e-01, c = [+0.985+0.017j +0.880-0.078j +1.208-0.463j +2.142+0.284j +1.007+1.789j -0.491+0.714j] (2.25 s)
+2026-10-10 13:00:44,814 - Iter: 7, Total Loss: 0.3146, loss_single: 0.3084, loss_poissn: 0.0000, loss_pacbed: 0.0000, loss_sparse: 0.0062, loss_simlar: 0.0000, in 2 min 33.073 sec
+2026-10-10 13:00:44,831 -  
+2026-10-10 13:00:44,831 - Iter: 8, obja.requires_grad = True
+2026-10-10 13:00:44,831 - Iter: 8, objp.requires_grad = True
+2026-10-10 13:00:44,831 - Iter: 8, obj_tilts.requires_grad = False
+2026-10-10 13:00:44,831 - Iter: 8, slice_thickness.requires_grad = False
+2026-10-10 13:00:44,831 - Iter: 8, probe.requires_grad = True
+2026-10-10 13:00:44,831 - Iter: 8, probe_pos_shifts.requires_grad = False
+2026-10-10 13:00:44,831 - Iter: 8, born_coeffs.requires_grad = False
+2026-10-10 13:00:44,873 - Done batch 1 with 1 indices ([1196]...) in 0.041 sec
+2026-10-10 13:01:14,934 - Done batch 820 with 1 indices ([3472]...) in 0.037 sec
+2026-10-10 13:01:45,039 - Done batch 1639 with 1 indices ([3187]...) in 0.037 sec
+2026-10-10 13:02:15,112 - Done batch 2458 with 1 indices ([3591]...) in 0.036 sec
+2026-10-10 13:02:45,250 - Done batch 3277 with 1 indices ([645]...) in 0.036 sec
+2026-10-10 13:03:15,370 - Done batch 4096 with 1 indices ([1672]...) in 0.036 sec
+2026-10-10 13:03:15,374 - Apply ortho pmode constraint at iter 8, relative pmode power = [0.523 0.174 0.16  0.142], probe int sum = 2327.3662
+2026-10-10 13:03:15,374 - Apply fix probe int constraint at iter 8, probe int sum = 2319.3130
+2026-10-10 13:03:15,375 - Apply lateral (y,x) Gaussian blur with std = 0.4 px on obja at iter 8
+2026-10-10 13:03:15,376 - Apply lateral (y,x) Gaussian blur with std = 0.4 px on objp at iter 8
+2026-10-10 13:03:15,377 - Apply z-direction Gaussian blur with std = 1.0 px on obja at iter 8
+2026-10-10 13:03:15,377 - Apply z-direction Gaussian blur with std = 1.0 px on objp at iter 8
+2026-10-10 13:03:15,379 - Apply relaxed (0.1*obj + (0.9*obj_new)) mirrored amplitude constraint with scale = 0.03 and power = 4.0 on obja at iter 8. obja range becomes (0.962, 1.015)
+2026-10-10 13:03:15,379 - Apply hard threshold constraint with thresh = [0.96, 1.04] on obja at iter 8
+2026-10-10 13:03:15,379 - Apply hard positivity constraint on objp with 'clip_neg' mode at iter 8. Original min = -0.153. objp range becomes (0.000, 0.906)
+2026-10-10 13:03:17,567 - Refit born_coeffs at iter 8 (32 views, detector): rel det residual 4.505e-03, rel int error 2.189e-03, rel data residual 2.425e-01, c = [+0.972+0.020j +0.855-0.142j +1.382-0.549j +2.312+0.573j +0.723+1.982j -0.591+0.585j] (2.19 s)
+2026-10-10 13:03:17,572 - Iter: 8, Total Loss: 0.3104, loss_single: 0.3038, loss_poissn: 0.0000, loss_pacbed: 0.0000, loss_sparse: 0.0065, loss_simlar: 0.0000, in 2 min 32.736 sec
+2026-10-10 13:03:17,589 -  
+2026-10-10 13:03:17,590 - Iter: 9, obja.requires_grad = True
+2026-10-10 13:03:17,590 - Iter: 9, objp.requires_grad = True
+2026-10-10 13:03:17,590 - Iter: 9, obj_tilts.requires_grad = False
+2026-10-10 13:03:17,591 - Iter: 9, slice_thickness.requires_grad = False
+2026-10-10 13:03:17,591 - Iter: 9, probe.requires_grad = True
+2026-10-10 13:03:17,591 - Iter: 9, probe_pos_shifts.requires_grad = False
+2026-10-10 13:03:17,591 - Iter: 9, born_coeffs.requires_grad = False
+2026-10-10 13:03:17,632 - Done batch 1 with 1 indices ([1196]...) in 0.041 sec
+2026-10-10 13:03:47,850 - Done batch 820 with 1 indices ([3472]...) in 0.037 sec
+2026-10-10 13:04:18,070 - Done batch 1639 with 1 indices ([3187]...) in 0.036 sec
+2026-10-10 13:04:48,259 - Done batch 2458 with 1 indices ([3591]...) in 0.036 sec
+2026-10-10 13:05:18,525 - Done batch 3277 with 1 indices ([645]...) in 0.037 sec
+2026-10-10 13:05:48,706 - Done batch 4096 with 1 indices ([1672]...) in 0.038 sec
+2026-10-10 13:05:48,710 - Apply ortho pmode constraint at iter 9, relative pmode power = [0.519 0.176 0.162 0.143], probe int sum = 2319.7905
+2026-10-10 13:05:48,711 - Apply fix probe int constraint at iter 9, probe int sum = 2319.3127
+2026-10-10 13:05:48,711 - Apply lateral (y,x) Gaussian blur with std = 0.4 px on obja at iter 9
+2026-10-10 13:05:48,712 - Apply lateral (y,x) Gaussian blur with std = 0.4 px on objp at iter 9
+2026-10-10 13:05:48,713 - Apply z-direction Gaussian blur with std = 1.0 px on obja at iter 9
+2026-10-10 13:05:48,714 - Apply z-direction Gaussian blur with std = 1.0 px on objp at iter 9
+2026-10-10 13:05:48,715 - Apply relaxed (0.1*obj + (0.9*obj_new)) mirrored amplitude constraint with scale = 0.03 and power = 4.0 on obja at iter 9. obja range becomes (0.960, 1.015)
+2026-10-10 13:05:48,715 - Apply hard threshold constraint with thresh = [0.96, 1.04] on obja at iter 9
+2026-10-10 13:05:48,715 - Apply hard positivity constraint on objp with 'clip_neg' mode at iter 9. Original min = -0.153. objp range becomes (0.000, 0.926)
+2026-10-10 13:05:50,999 - Refit born_coeffs at iter 9 (32 views, detector): rel det residual 7.156e-03, rel int error 3.520e-03, rel data residual 2.336e-01, c = [+0.953+0.021j +0.842-0.237j +1.630-0.605j +2.434+0.967j +0.356+2.127j -0.666+0.426j] (2.28 s)
+2026-10-10 13:05:51,004 - Iter: 9, Total Loss: 0.3068, loss_single: 0.3000, loss_poissn: 0.0000, loss_pacbed: 0.0000, loss_sparse: 0.0069, loss_simlar: 0.0000, in 2 min 33.408 sec
+2026-10-10 13:05:51,022 -  
+2026-10-10 13:05:51,022 - Iter: 10, obja.requires_grad = True
+2026-10-10 13:05:51,022 - Iter: 10, objp.requires_grad = True
+2026-10-10 13:05:51,022 - Iter: 10, obj_tilts.requires_grad = False
+2026-10-10 13:05:51,022 - Iter: 10, slice_thickness.requires_grad = False
+2026-10-10 13:05:51,023 - Iter: 10, probe.requires_grad = True
+2026-10-10 13:05:51,023 - Iter: 10, probe_pos_shifts.requires_grad = False
+2026-10-10 13:05:51,023 - Iter: 10, born_coeffs.requires_grad = False
+2026-10-10 13:05:51,064 - Done batch 1 with 1 indices ([1196]...) in 0.040 sec
+2026-10-10 13:06:21,244 - Done batch 820 with 1 indices ([3472]...) in 0.037 sec
+2026-10-10 13:06:51,364 - Done batch 1639 with 1 indices ([3187]...) in 0.036 sec
+2026-10-10 13:07:21,460 - Done batch 2458 with 1 indices ([3591]...) in 0.036 sec
+2026-10-10 13:07:51,533 - Done batch 3277 with 1 indices ([645]...) in 0.036 sec
+2026-10-10 13:08:21,602 - Done batch 4096 with 1 indices ([1672]...) in 0.036 sec
+2026-10-10 13:08:21,606 - Apply ortho pmode constraint at iter 10, relative pmode power = [0.516 0.178 0.162 0.143], probe int sum = 2316.2100
+2026-10-10 13:08:21,607 - Apply fix probe int constraint at iter 10, probe int sum = 2319.3125
+2026-10-10 13:08:21,608 - Apply lateral (y,x) Gaussian blur with std = 0.4 px on obja at iter 10
+2026-10-10 13:08:21,608 - Apply lateral (y,x) Gaussian blur with std = 0.4 px on objp at iter 10
+2026-10-10 13:08:21,609 - Apply z-direction Gaussian blur with std = 1.0 px on obja at iter 10
+2026-10-10 13:08:21,610 - Apply z-direction Gaussian blur with std = 1.0 px on objp at iter 10
+2026-10-10 13:08:21,611 - Apply relaxed (0.1*obj + (0.9*obj_new)) mirrored amplitude constraint with scale = 0.03 and power = 4.0 on obja at iter 10. obja range becomes (0.958, 1.015)
+2026-10-10 13:08:21,611 - Apply hard threshold constraint with thresh = [0.96, 1.04] on obja at iter 10
+2026-10-10 13:08:21,612 - Apply hard positivity constraint on objp with 'clip_neg' mode at iter 10. Original min = -0.149. objp range becomes (0.000, 0.973)
+2026-10-10 13:08:23,870 - Refit born_coeffs at iter 10 (32 views, detector): rel det residual 1.064e-02, rel int error 5.262e-03, rel data residual 2.268e-01, c = [+0.929+0.015j +0.857-0.351j +1.915-0.593j +2.452+1.401j -0.032+2.173j -0.697+0.267j] (2.26 s)
+2026-10-10 13:08:23,876 - Iter: 10, Total Loss: 0.3038, loss_single: 0.2967, loss_poissn: 0.0000, loss_pacbed: 0.0000, loss_sparse: 0.0071, loss_simlar: 0.0000, in 2 min 32.848 sec
+2026-10-10 13:08:24,228 - Saving summary figures for iter 10
+2026-10-10 13:08:27,226 -  
+2026-10-10 13:08:27,226 - Iter: 11, obja.requires_grad = True
+2026-10-10 13:08:27,226 - Iter: 11, objp.requires_grad = True
+2026-10-10 13:08:27,226 - Iter: 11, obj_tilts.requires_grad = False
+2026-10-10 13:08:27,227 - Iter: 11, slice_thickness.requires_grad = False
+2026-10-10 13:08:27,227 - Iter: 11, probe.requires_grad = True
+2026-10-10 13:08:27,227 - Iter: 11, probe_pos_shifts.requires_grad = False
+2026-10-10 13:08:27,227 - Iter: 11, born_coeffs.requires_grad = False
+2026-10-10 13:08:27,269 - Done batch 1 with 1 indices ([1196]...) in 0.042 sec
+2026-10-10 13:08:57,331 - Done batch 820 with 1 indices ([3472]...) in 0.037 sec
+2026-10-10 13:09:27,398 - Done batch 1639 with 1 indices ([3187]...) in 0.036 sec
+2026-10-10 13:09:57,434 - Done batch 2458 with 1 indices ([3591]...) in 0.038 sec
+2026-10-10 13:10:27,534 - Done batch 3277 with 1 indices ([645]...) in 0.037 sec
+2026-10-10 13:10:57,684 - Done batch 4096 with 1 indices ([1672]...) in 0.036 sec
+2026-10-10 13:10:57,688 - Apply ortho pmode constraint at iter 11, relative pmode power = [0.514 0.18  0.163 0.143], probe int sum = 2315.0107
+2026-10-10 13:10:57,688 - Apply fix probe int constraint at iter 11, probe int sum = 2319.3130
+2026-10-10 13:10:57,689 - Apply lateral (y,x) Gaussian blur with std = 0.4 px on obja at iter 11
+2026-10-10 13:10:57,690 - Apply lateral (y,x) Gaussian blur with std = 0.4 px on objp at iter 11
+2026-10-10 13:10:57,691 - Apply z-direction Gaussian blur with std = 1.0 px on obja at iter 11
+2026-10-10 13:10:57,691 - Apply z-direction Gaussian blur with std = 1.0 px on objp at iter 11
+2026-10-10 13:10:57,692 - Apply relaxed (0.1*obj + (0.9*obj_new)) mirrored amplitude constraint with scale = 0.03 and power = 4.0 on obja at iter 11. obja range becomes (0.955, 1.015)
+2026-10-10 13:10:57,693 - Apply hard threshold constraint with thresh = [0.96, 1.04] on obja at iter 11
+2026-10-10 13:10:57,693 - Apply hard positivity constraint on objp with 'clip_neg' mode at iter 11. Original min = -0.145. objp range becomes (0.000, 1.034)
+2026-10-10 13:10:59,875 - Refit born_coeffs at iter 11 (32 views, detector): rel det residual 1.423e-02, rel int error 7.116e-03, rel data residual 2.216e-01, c = [+0.907+0.004j +0.896-0.454j +2.166-0.521j +2.381+1.771j -0.349+2.138j -0.692+0.143j] (2.18 s)
+2026-10-10 13:10:59,881 - Iter: 11, Total Loss: 0.3011, loss_single: 0.2938, loss_poissn: 0.0000, loss_pacbed: 0.0000, loss_sparse: 0.0073, loss_simlar: 0.0000, in 2 min 32.649 sec
+2026-10-10 13:10:59,899 -  
+2026-10-10 13:10:59,900 - Iter: 12, obja.requires_grad = True
+2026-10-10 13:10:59,900 - Iter: 12, objp.requires_grad = True
+2026-10-10 13:10:59,900 - Iter: 12, obj_tilts.requires_grad = False
+2026-10-10 13:10:59,900 - Iter: 12, slice_thickness.requires_grad = False
+2026-10-10 13:10:59,900 - Iter: 12, probe.requires_grad = True
+2026-10-10 13:10:59,900 - Iter: 12, probe_pos_shifts.requires_grad = False
+2026-10-10 13:10:59,900 - Iter: 12, born_coeffs.requires_grad = False
+2026-10-10 13:10:59,941 - Done batch 1 with 1 indices ([1196]...) in 0.040 sec
+2026-10-10 13:11:30,139 - Done batch 820 with 1 indices ([3472]...) in 0.036 sec
+2026-10-10 13:12:00,280 - Done batch 1639 with 1 indices ([3187]...) in 0.037 sec
+2026-10-10 13:12:30,409 - Done batch 2458 with 1 indices ([3591]...) in 0.036 sec
+2026-10-10 13:13:00,522 - Done batch 3277 with 1 indices ([645]...) in 0.036 sec
+2026-10-10 13:13:30,617 - Done batch 4096 with 1 indices ([1672]...) in 0.036 sec
+2026-10-10 13:13:30,621 - Apply ortho pmode constraint at iter 12, relative pmode power = [0.512 0.182 0.163 0.143], probe int sum = 2316.1064
+2026-10-10 13:13:30,621 - Apply fix probe int constraint at iter 12, probe int sum = 2319.3132
+2026-10-10 13:13:30,622 - Apply lateral (y,x) Gaussian blur with std = 0.4 px on obja at iter 12
+2026-10-10 13:13:30,622 - Apply lateral (y,x) Gaussian blur with std = 0.4 px on objp at iter 12
+2026-10-10 13:13:30,623 - Apply z-direction Gaussian blur with std = 1.0 px on obja at iter 12
+2026-10-10 13:13:30,624 - Apply z-direction Gaussian blur with std = 1.0 px on objp at iter 12
+2026-10-10 13:13:30,625 - Apply relaxed (0.1*obj + (0.9*obj_new)) mirrored amplitude constraint with scale = 0.03 and power = 4.0 on obja at iter 12. obja range becomes (0.947, 1.015)
+2026-10-10 13:13:30,625 - Apply hard threshold constraint with thresh = [0.96, 1.04] on obja at iter 12
+2026-10-10 13:13:30,625 - Apply hard positivity constraint on objp with 'clip_neg' mode at iter 12. Original min = -0.144. objp range becomes (0.000, 1.087)
+2026-10-10 13:13:32,807 - Refit born_coeffs at iter 12 (32 views, detector): rel det residual 1.776e-02, rel int error 9.041e-03, rel data residual 2.177e-01, c = [+0.888-0.011j +0.950-0.541j +2.374-0.419j +2.264+2.069j -0.598+2.064j -0.672+0.048j] (2.18 s)
+2026-10-10 13:13:32,811 - Iter: 12, Total Loss: 0.2989, loss_single: 0.2914, loss_poissn: 0.0000, loss_pacbed: 0.0000, loss_sparse: 0.0075, loss_simlar: 0.0000, in 2 min 32.907 sec
+2026-10-10 13:13:32,827 -  
+2026-10-10 13:13:32,828 - Iter: 13, obja.requires_grad = True
+2026-10-10 13:13:32,828 - Iter: 13, objp.requires_grad = True
+2026-10-10 13:13:32,828 - Iter: 13, obj_tilts.requires_grad = False
+2026-10-10 13:13:32,828 - Iter: 13, slice_thickness.requires_grad = False
+2026-10-10 13:13:32,828 - Iter: 13, probe.requires_grad = True
+2026-10-10 13:13:32,828 - Iter: 13, probe_pos_shifts.requires_grad = False
+2026-10-10 13:13:32,828 - Iter: 13, born_coeffs.requires_grad = False
+2026-10-10 13:13:32,869 - Done batch 1 with 1 indices ([1196]...) in 0.040 sec
+2026-10-10 13:14:02,957 - Done batch 820 with 1 indices ([3472]...) in 0.037 sec
+2026-10-10 13:14:33,010 - Done batch 1639 with 1 indices ([3187]...) in 0.036 sec
+2026-10-10 13:15:03,026 - Done batch 2458 with 1 indices ([3591]...) in 0.036 sec
+2026-10-10 13:15:33,089 - Done batch 3277 with 1 indices ([645]...) in 0.037 sec
+2026-10-10 13:16:03,118 - Done batch 4096 with 1 indices ([1672]...) in 0.036 sec
+2026-10-10 13:16:03,122 - Apply ortho pmode constraint at iter 13, relative pmode power = [0.51  0.183 0.163 0.144], probe int sum = 2317.5220
+2026-10-10 13:16:03,123 - Apply fix probe int constraint at iter 13, probe int sum = 2319.3130
+2026-10-10 13:16:03,123 - Apply lateral (y,x) Gaussian blur with std = 0.4 px on obja at iter 13
+2026-10-10 13:16:03,124 - Apply lateral (y,x) Gaussian blur with std = 0.4 px on objp at iter 13
+2026-10-10 13:16:03,125 - Apply z-direction Gaussian blur with std = 1.0 px on obja at iter 13
+2026-10-10 13:16:03,126 - Apply z-direction Gaussian blur with std = 1.0 px on objp at iter 13
+2026-10-10 13:16:03,127 - Apply relaxed (0.1*obj + (0.9*obj_new)) mirrored amplitude constraint with scale = 0.03 and power = 4.0 on obja at iter 13. obja range becomes (0.940, 1.014)
+2026-10-10 13:16:03,127 - Apply hard threshold constraint with thresh = [0.96, 1.04] on obja at iter 13
+2026-10-10 13:16:03,127 - Apply hard positivity constraint on objp with 'clip_neg' mode at iter 13. Original min = -0.142. objp range becomes (0.000, 1.132)
+2026-10-10 13:16:05,368 - Refit born_coeffs at iter 13 (32 views, detector): rel det residual 2.122e-02, rel int error 1.108e-02, rel data residual 2.148e-01, c = [+0.873-0.027j +1.011-0.613j +2.545-0.299j +2.126+2.312j -0.797+1.973j -0.646-0.026j] (2.24 s)
+2026-10-10 13:16:05,372 - Iter: 13, Total Loss: 0.2969, loss_single: 0.2893, loss_poissn: 0.0000, loss_pacbed: 0.0000, loss_sparse: 0.0076, loss_simlar: 0.0000, in 2 min 32.540 sec
+2026-10-10 13:16:05,388 -  
+2026-10-10 13:16:05,389 - Iter: 14, obja.requires_grad = True
+2026-10-10 13:16:05,389 - Iter: 14, objp.requires_grad = True
+2026-10-10 13:16:05,389 - Iter: 14, obj_tilts.requires_grad = False
+2026-10-10 13:16:05,389 - Iter: 14, slice_thickness.requires_grad = False
+2026-10-10 13:16:05,389 - Iter: 14, probe.requires_grad = True
+2026-10-10 13:16:05,389 - Iter: 14, probe_pos_shifts.requires_grad = False
+2026-10-10 13:16:05,389 - Iter: 14, born_coeffs.requires_grad = False
+2026-10-10 13:16:05,429 - Done batch 1 with 1 indices ([1196]...) in 0.039 sec
+2026-10-10 13:16:35,562 - Done batch 820 with 1 indices ([3472]...) in 0.037 sec
+2026-10-10 13:17:05,630 - Done batch 1639 with 1 indices ([3187]...) in 0.036 sec
+2026-10-10 13:17:35,742 - Done batch 2458 with 1 indices ([3591]...) in 0.036 sec
+2026-10-10 13:18:05,827 - Done batch 3277 with 1 indices ([645]...) in 0.036 sec
+2026-10-10 13:18:35,940 - Done batch 4096 with 1 indices ([1672]...) in 0.036 sec
+2026-10-10 13:18:35,944 - Apply ortho pmode constraint at iter 14, relative pmode power = [0.508 0.184 0.163 0.144], probe int sum = 2318.7632
+2026-10-10 13:18:35,944 - Apply fix probe int constraint at iter 14, probe int sum = 2319.3130
+2026-10-10 13:18:35,945 - Apply lateral (y,x) Gaussian blur with std = 0.4 px on obja at iter 14
+2026-10-10 13:18:35,945 - Apply lateral (y,x) Gaussian blur with std = 0.4 px on objp at iter 14
+2026-10-10 13:18:35,946 - Apply z-direction Gaussian blur with std = 1.0 px on obja at iter 14
+2026-10-10 13:18:35,947 - Apply z-direction Gaussian blur with std = 1.0 px on objp at iter 14
+2026-10-10 13:18:35,948 - Apply relaxed (0.1*obj + (0.9*obj_new)) mirrored amplitude constraint with scale = 0.03 and power = 4.0 on obja at iter 14. obja range becomes (0.933, 1.014)
+2026-10-10 13:18:35,948 - Apply hard threshold constraint with thresh = [0.96, 1.04] on obja at iter 14
+2026-10-10 13:18:35,949 - Apply hard positivity constraint on objp with 'clip_neg' mode at iter 14. Original min = -0.137. objp range becomes (0.000, 1.170)
+2026-10-10 13:18:38,167 - Refit born_coeffs at iter 14 (32 views, detector): rel det residual 2.465e-02, rel int error 1.326e-02, rel data residual 2.125e-01, c = [+0.860-0.045j +1.078-0.673j +2.687-0.169j +1.975+2.512j -0.958+1.873j -0.616-0.085j] (2.22 s)
+2026-10-10 13:18:38,172 - Iter: 14, Total Loss: 0.2952, loss_single: 0.2875, loss_poissn: 0.0000, loss_pacbed: 0.0000, loss_sparse: 0.0077, loss_simlar: 0.0000, in 2 min 32.778 sec
+2026-10-10 13:18:38,188 -  
+2026-10-10 13:18:38,189 - Iter: 15, obja.requires_grad = True
+2026-10-10 13:18:38,189 - Iter: 15, objp.requires_grad = True
+2026-10-10 13:18:38,189 - Iter: 15, obj_tilts.requires_grad = False
+2026-10-10 13:18:38,189 - Iter: 15, slice_thickness.requires_grad = False
+2026-10-10 13:18:38,189 - Iter: 15, probe.requires_grad = True
+2026-10-10 13:18:38,189 - Iter: 15, probe_pos_shifts.requires_grad = False
+2026-10-10 13:18:38,189 - Iter: 15, born_coeffs.requires_grad = False
+2026-10-10 13:18:38,229 - Done batch 1 with 1 indices ([1196]...) in 0.039 sec
+2026-10-10 13:19:08,658 - Done batch 820 with 1 indices ([3472]...) in 0.036 sec
+2026-10-10 13:19:38,837 - Done batch 1639 with 1 indices ([3187]...) in 0.036 sec
+2026-10-10 13:20:09,012 - Done batch 2458 with 1 indices ([3591]...) in 0.037 sec
+2026-10-10 13:20:39,186 - Done batch 3277 with 1 indices ([645]...) in 0.037 sec
+2026-10-10 13:21:09,336 - Done batch 4096 with 1 indices ([1672]...) in 0.038 sec
+2026-10-10 13:21:09,340 - Apply ortho pmode constraint at iter 15, relative pmode power = [0.505 0.186 0.164 0.145], probe int sum = 2319.7827
+2026-10-10 13:21:09,341 - Apply fix probe int constraint at iter 15, probe int sum = 2319.3125
+2026-10-10 13:21:09,342 - Apply lateral (y,x) Gaussian blur with std = 0.4 px on obja at iter 15
+2026-10-10 13:21:09,342 - Apply lateral (y,x) Gaussian blur with std = 0.4 px on objp at iter 15
+2026-10-10 13:21:09,343 - Apply z-direction Gaussian blur with std = 1.0 px on obja at iter 15
+2026-10-10 13:21:09,344 - Apply z-direction Gaussian blur with std = 1.0 px on objp at iter 15
+2026-10-10 13:21:09,345 - Apply relaxed (0.1*obj + (0.9*obj_new)) mirrored amplitude constraint with scale = 0.03 and power = 4.0 on obja at iter 15. obja range becomes (0.928, 1.014)
+2026-10-10 13:21:09,345 - Apply hard threshold constraint with thresh = [0.96, 1.04] on obja at iter 15
+2026-10-10 13:21:09,346 - Apply hard positivity constraint on objp with 'clip_neg' mode at iter 15. Original min = -0.132. objp range becomes (0.000, 1.195)
+2026-10-10 13:21:12,123 - Refit born_coeffs at iter 15 (32 views, detector): rel det residual 2.810e-02, rel int error 1.561e-02, rel data residual 2.105e-01, c = [+0.850-0.064j +1.147-0.722j +2.803-0.035j +1.820+2.675j -1.088+1.770j -0.585-0.132j] (2.78 s)
+2026-10-10 13:21:12,132 - Iter: 15, Total Loss: 0.2936, loss_single: 0.2858, loss_poissn: 0.0000, loss_pacbed: 0.0000, loss_sparse: 0.0078, loss_simlar: 0.0000, in 2 min 33.934 sec
+2026-10-10 13:21:12,432 - Saving summary figures for iter 15
+2026-10-10 13:21:15,113 -  
+2026-10-10 13:21:15,113 - Iter: 16, obja.requires_grad = True
+2026-10-10 13:21:15,113 - Iter: 16, objp.requires_grad = True
+2026-10-10 13:21:15,113 - Iter: 16, obj_tilts.requires_grad = False
+2026-10-10 13:21:15,113 - Iter: 16, slice_thickness.requires_grad = False
+2026-10-10 13:21:15,113 - Iter: 16, probe.requires_grad = True
+2026-10-10 13:21:15,113 - Iter: 16, probe_pos_shifts.requires_grad = False
+2026-10-10 13:21:15,113 - Iter: 16, born_coeffs.requires_grad = False
+2026-10-10 13:21:15,154 - Done batch 1 with 1 indices ([1196]...) in 0.040 sec
+2026-10-10 13:21:45,220 - Done batch 820 with 1 indices ([3472]...) in 0.036 sec
+2026-10-10 13:22:15,660 - Done batch 1639 with 1 indices ([3187]...) in 0.036 sec
+2026-10-10 13:22:45,761 - Done batch 2458 with 1 indices ([3591]...) in 0.037 sec
+2026-10-10 13:23:15,835 - Done batch 3277 with 1 indices ([645]...) in 0.036 sec
