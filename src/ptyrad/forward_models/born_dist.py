@@ -81,7 +81,8 @@ def _pinned_copy(x, dst_dev):
     src_stream = torch.cuda.current_stream(x.device)
     dst_stream = torch.cuda.current_stream(dst_dev)
     if ent is None:
-        ent = dict(pin=torch.empty(x.shape, dtype=x.dtype, pin_memory=True),
+        ent = dict(pin=torch.empty(x.shape, dtype=x.dtype, device="cpu",
+                                   pin_memory=True),
                    ev_d2h=torch.cuda.Event(), ev_h2d=torch.cuda.Event())
         ent["ev_h2d"].record(dst_stream)  # initialize both events
         ent["ev_d2h"].record(src_stream)
