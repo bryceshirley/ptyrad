@@ -42,7 +42,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# synthetic 4D-STEM dataset generation (src/generate_data, `generate-data` CLI)
+# synthetic 4D-STEM dataset generation (generate_data/ at the repo root,
+# not installed; run from the repo root: python -m generate_data.cli)
 datagen = [
   "abtem>=1.0.10",
   "cupy-cuda12x[ctk]>=14.2.0",
@@ -50,7 +51,6 @@ datagen = [
 
 [project.scripts]
 ptyrad = "ptyrad.cli:main"
-generate-data = "generate_data.cli:main"
 
 [project.urls]
 "Homepage" = "https://github.com/chiahao3/ptyrad"
@@ -95,13 +95,6 @@ ignore = [
 
 [tool.ty.src]
 include = ["src"]
-
-# generate_data leans on untyped optional deps (abtem, cupy, ase)
-[[tool.ty.overrides]]
-include = ["src/generate_data/**"]
-
-[tool.ty.overrides.rules]
-unresolved-import = "ignore"
 
 # Legacy untyped modules: attribute access through torch nn.Module's
 # __getattr__ (registered buffers/params come back as Tensor | Module) and
