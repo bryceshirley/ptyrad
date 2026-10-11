@@ -886,3 +886,124 @@ workload-exact for timing, not physics). Configs `params/nvl42_{m6,m8,ms}.yml`
 kill-switch, incremental sync-back, per-arm timeouts). E2E arms: MS 1-GPU,
 M6 {1g, slice2, slice4, mode4}, M8 {1g, slice4, mode4} — all on the same
 rented A100 SXM box. Results go in section O when the rental runs.
+
+## O. PSO Fig-S5 full workload on 4x A100 SXM NVSwitch (2026-10-11, round 3)
+
+RunPod pod c9b83l3rbqwb3d, 4x A100-SXM4-80GB, $7.16/h, total spend $15.37
+of a $25 top-up (NITER-1 budget variant). Topology: all-pairs **NV12**,
+P2P all-true:
+
+```
+GPU0  X    NV12 NV12 NV12
+GPU1  NV12  X   NV12 NV12
+GPU2  NV12 NV12  X   NV12
+GPU3  NV12 NV12 NV12  X
+```
+
+Workload: 256^2 detector, 16384 DPs (2x2-tiled scan01), 42 slices dz=5A,
+fixed M (grow off), batch 1, seed 42, NITER 1 (16384 Adam steps/iter —
+warmup is noise; the iter1~iter2 self-check was traded for budget).
+torch **2.14.1+cu130** (image's 2.4.1 lacks `torch.compiler.set_stance`
+— every driver crashed on it; upgraded in place, whole campaign rerun on
+one version. The upgrade alone made 1-GPU born f+b ~35% faster than the
+2.4.1 partial run, so DO NOT mix torch versions within a table).
+
+### E2E s/iter, 12 probe modes (the paper's native Fig-S5 workload)
+
+| arm            | s/iter | ms/batch | vs M6 1-GPU | vs MS 1-GPU |
+|----------------|--------|----------|-------------|-------------|
+| MS 1-GPU       | 401.0  | 24.5     | 2.56x       | 1.00        |
+| M6 slice-4     | 452.8  | 27.6     | 2.27x       | **0.89x**   |
+| M6 mode-4      | 551.3  | 33.7     | 1.86x       | 0.73x       |
+| M6 slice-2     | 630.3  | 38.5     | 1.63x       | 0.64x       |
+| M6 1-GPU       | 1026.5 | 62.7     | 1.00        | 0.39x       |
+
+All four M6 arms: identical loss 0.3782 (splits exact in-loop). MS: 0.3770
+(different model). M8 E2E arms NOT run: m8_slice4 was killed mid-arm and
+m8_{1gpu,mode4} skipped — owner redirected the remaining budget to the
+pmode question below (M8 micro numbers are in the tables that follow).
+
+**VERDICT at 12 modes: multislice wins on the same hardware.** Best born
+arm (slice-4) is 0.89x vs MS; even 4 NVSwitch GPUs do not close the 12-mode
+born cost. Everything here crushes the paper's P5000 point (~45 min/iter →
+6.7 min MS, 7.5 min born slice-4). Winning axis at P=4 is **slice, not
+mode** — SSL.7's microbench-based "pure mode > pure slice" inversion does
+NOT survive the real loop (mode-split's per-batch replica traffic again;
+the J-section rule "microbench wins != real-loop wins" holds at 12 modes).
+2->4 GPU slice scaling is sublinear: 630->453 = 1.39x for 2x GPUs.
+
+### E2E s/iter, 4 probe modes (owner decision: born runs at pmode 4)
+
+| arm            | s/iter | ms/batch | vs MS-p4 |
+|----------------|--------|----------|----------|
+| M6 slice-2     | **315.8** | 19.3  | **1.31x** |
+| M6 slice-4     | 340.3  | 20.8     | 1.22x    |
+| MS 1-GPU       | 415.0  | 25.3     | 1.00     |
+| M6 1-GPU       | 474.6  | 29.0     | 0.87x    |
+
+Losses: born arms identical 0.3962, MS 0.3956. MS confirmed
+pmode-insensitive END-TO-END (401 @p12 -> 415 @p4, within 3.5%), born
+pmode-proportional (1-GPU 1026.5 -> 474.6). **This is the first E2E
+born-beats-MS result at the full Fig-S5 geometry**, and the split is what
+delivers it (1-GPU born still loses 0.87x). **At p4 the GPU ranking
+INVERTS: slice-2 beats slice-4** (315.8 vs 340.3) — with 3x less per-mode
+work, P=4's extra hop/launch latency costs more than the compute it saves.
+RECOMMENDED operating point: **pmode 4 + M6 + slice-2 (2 GPUs)** = 1.31x
+vs MS. Caveat for the paper: the SM reconstruction used 12 modes; p4
+trades mode-basis richness for speed — quality (contrast at equal iters)
+still needs a local p4-vs-p12 check. If p4 had lost, next lever was the
+grow recipe (SSK.4) — not needed for speed, untested here.
+
+### Carry schedule on NVSwitch: chain vs direct (SSM rerun, campaign 1a)
+
+f+b ms (1-GPU | chain | direct), pmode 12, batch 1 — NVSwitch mirror of
+SSM's PCIe table:
+
+| Nz  | M=6 1G | chain | direct | M=8 1G | chain | direct |
+|-----|--------|-------|--------|--------|-------|--------|
+| 42  | 51.7   | **17.3** | 18.2 | 67.9   | **22.9** | 25.1 |
+| 64  | 79.6   | **25.7** | 26.1 | 105.9  | 34.9  | **34.6** |
+| 128 | 161.1  | **48.0** | 52.0 | 216.1  | 69.5  | **66.4** |
+| 512 | 652.7  | **180.0**| 192.2| 880.0  | 261.3 | **258.8** |
+
+(P=2: chain==direct within +-0.3% everywhere, as expected.) **Chain stays
+the default**: it wins the Fig-S5 point (Nz=42) at both M (9% at M=8) and
+everything at M=6; direct noses ahead only 1-4% at M=8 Nz>=64 (and the
+`direct` impl issues all copies from one stream, so this may understate
+it — still nothing worth switching for). NOTE vs SSL.6's hyp-4 refutation:
+P2P is NOT free here — P=4 chain f+b at Nz=42 M=6 is 2.98x on NVSwitch vs
+1.95x on PCIe (SSM), so the interconnect DOES buy ~50% more realized
+speedup at the full 12-mode workload even though the Nz=512 cheap-M
+picture (launch-latency-bound) was correctly refuted.
+
+### Micro odds and ends (12 modes)
+
+- MS-vs-born head-to-head @Nz=42: MS f+b eager 14.05 ms vs born6 4-GPU
+  floor f+b 14.98 (born6 floor ~= MS even at 42; E2E dilutes this to
+  0.89x). MS fwd compiled 2.61 ms vs born6 1G 19.58.
+- bench failures, honest: `bench_slice_nzsweep.py` M=8/P=4 dies with cuFFT
+  CUFFT_INVALID_SIZE in forward_pway on BOTH torch 2.4.1 and 2.14.1
+  (deterministic script bug, other combos complete);
+  `bench_ms_vs_born_b1.py` Nz=512 compiled-MS hits an Inductor
+  RecursionError on 2.14.1 (512-row head-to-head stands from SSL round 2).
+
+Figures: `nvlink/figs_redo/fig_redo_e2e.png` (E2E bars, both mode counts),
+`nvlink/figs_redo/fig_redo_nz_scaling.png` (slice-split speedup vs Nz);
+source `nvlink/redo/make_figs_redo.py`. Raw logs in
+`nvlink/runpod_results/redo/` (gitignored).
+
+### Round-3 ops post-mortem (all recovered, $0 lost to idling)
+
+1. RunPod account had NO SSH key registered (`pubKey: null`) — an
+   owner-deployed pod was unreachable and had to be terminated; a
+   script-deployed duplicate cost ~5 min double-billing. Fix in repo:
+   deploy_redo.sh now injects `PUBLIC_KEY` into the pod env + key
+   registered account-side.
+2. runpod/pytorch:2.4.0 image ships WITHOUT rsync (upload + sync-back both
+   need it) — push_and_run.sh now apt-installs it.
+3. torch 2.4.1 lacks set_stance (drivers crashed; see header). Prior
+   rounds evidently ran a newer torch.
+4. `pkill -f <script>` over ssh matches the ssh session's own command
+   line — use `pkill -f "name.s[h]"` bracket patterns.
+5. Pod uplink was ~8 MB/s (not the 0.5 MB/s planned): the 287 MB upload
+   took 35 s. Don't budget 10 min for it on SECURE-cloud pods.
