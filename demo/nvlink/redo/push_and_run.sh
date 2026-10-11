@@ -16,6 +16,7 @@ echo "== 1. clone + install =="
 "${SSH[@]}" bash -s <<'EOF'
 set -e
 cd /workspace
+command -v rsync >/dev/null || { apt-get update -qq >/dev/null; apt-get install -y -qq rsync >/dev/null; }
 [ -d ptyrad ] || git clone -b nvlink-bench --depth 1 https://github.com/bryceshirley/ptyrad
 cd ptyrad
 pip install --break-system-packages -q -e . h5py torchvision 2>&1 | tail -2
