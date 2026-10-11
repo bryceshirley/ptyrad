@@ -43,7 +43,8 @@ carries the orientation facts that don't fit there.
 
 ## Open items for the rental session
 
-1. Top up RunPod (deploy gate wants ≥ $35; est. spend $26–32).
+1. Top up RunPod $25 (budget variant: deploy gate `--budget 20`, NITER 1
+   arms, est. spend $18–19 at $7.16/h).
 2. Run the sequence in NVLINK_PROMPT.md; babysit via sync_back +
    campaign.log; the watchdog owns termination.
 3. Write up §O in bench_results.md (spec in the prompt), commit on

@@ -63,7 +63,7 @@ if [ "${1:-}" != "--skip-micro" ]; then
 fi
 [ "${1:-}" = "--skip-e2e" ] && exit 0
 
-# ---- 2. end-to-end s/iter arms (NITER=2 each; cheap first) -----------------
+# ---- 2. end-to-end s/iter arms (NITER=1 each, $20-budget variant; cheap first)
 # per-arm param copies: distinct prefix => distinct output folder (overwrite gotcha)
 arm_yml() { # arm_yml BASE ARM -> params/redo_<ARM>.yml
   sed "s/'prefix'            : '[^']*',/'prefix'            : 'redo_$2',/" \
@@ -83,13 +83,13 @@ run_arm() { # run_arm ARM ROLE BASE_YML TIMEOUT_S [ENV...]
     | tee -a "$RES/summary.log"
 }
 
-run_arm ms_1gpu    baseline  nvl42_ms 5400 CUDA_VISIBLE_DEVICES=0
-run_arm m6_slice4  slicedist nvl42_m6 7200 SLICE_P=4
-run_arm m6_mode4   modesplit nvl42_m6 7200 MODE_P=4
-run_arm m6_1gpu    baseline  nvl42_m6 9000 CUDA_VISIBLE_DEVICES=0
-run_arm m6_slice2  slicedist nvl42_m6 7200 SLICE_P=2
-run_arm m8_slice4  slicedist nvl42_m8 7200 SLICE_P=4
-run_arm m8_1gpu    baseline  nvl42_m8 9000 CUDA_VISIBLE_DEVICES=0
-run_arm m8_mode4   modesplit nvl42_m8 7200 MODE_P=4
+run_arm ms_1gpu    baseline  nvl42_ms 2700 CUDA_VISIBLE_DEVICES=0
+run_arm m6_slice4  slicedist nvl42_m6 3600 SLICE_P=4
+run_arm m6_mode4   modesplit nvl42_m6 3600 MODE_P=4
+run_arm m6_1gpu    baseline  nvl42_m6 4800 CUDA_VISIBLE_DEVICES=0
+run_arm m6_slice2  slicedist nvl42_m6 3600 SLICE_P=2
+run_arm m8_slice4  slicedist nvl42_m8 3600 SLICE_P=4
+run_arm m8_1gpu    baseline  nvl42_m8 4800 CUDA_VISIBLE_DEVICES=0
+run_arm m8_mode4   modesplit nvl42_m8 3600 MODE_P=4
 
 log "DONE — results in $RES (synced home incrementally)"

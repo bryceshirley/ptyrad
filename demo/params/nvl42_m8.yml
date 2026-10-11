@@ -124,7 +124,7 @@ constraint_params : {
 }
 
 recon_params : {
-    'NITER'             : 2,
+    'NITER'             : 1,
     'INDICES_MODE'      : {'mode': 'full', 'subscan_slow': null, 'subscan_fast': null},
     'BATCH_SIZE'        : {'size': 1, 'grad_accumulation': 1},
     'GROUP_MODE'        : 'random',

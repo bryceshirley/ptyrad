@@ -16,15 +16,19 @@ epoch imprints weak contrast).
 
 ## State: PREP COMPLETE — blocked ONLY on RunPod balance
 
-Everything is committed and pushed on branch `nvlink-bench` (through
-`adbf1fb`). The RunPod account balance was **−$0.03** on 2026-10-11; the
-deploy script refuses to launch below budget (default $35). Once the
-account is topped up, the whole campaign is turnkey.
+Everything is committed and pushed on branch `nvlink-bench`. The RunPod
+account balance was **−$0.03** on 2026-10-11; the deploy script refuses to
+launch below budget. **2026-10-11 BUDGET VARIANT: the campaign was cut to
+NITER 1 per arm (steady-state s/iter still sound — each iter is 16384
+batches, warmup negligible; lost: the iter1≈iter2 self-check) with halved
+per-arm timeouts, deploy gate `--budget 20`, watchdog deadline 4 h; top-up
+$25, expected spend ~2.5 h ≈ $18–19 at $7.16/h.** Once the account is
+topped up, the whole campaign is turnkey.
 
 Already done (do NOT redo):
-- Configs `demo/params/nvl42_{m6,m8,ms}.yml` — full workload, NITER 2,
-  validated via load_params. `redo_smoke_m6.yml` = 1-iter 256-position
-  smoke.
+- Configs `demo/params/nvl42_{m6,m8,ms}.yml` — full workload, NITER 1
+  (budget variant; was 2), validated via load_params. `redo_smoke_m6.yml`
+  = 1-iter 256-position smoke.
 - The 16384-DP dataset: the distributed .mat holds only the 64×64 scan01
   subset (4096 DPs); the full-geometry file is built by 2×2 raster tiling
   (`python -m ptyrad.utils.tile_scan`, tested in `test/test_tile_scan.py`).
@@ -45,8 +49,8 @@ Already done (do NOT redo):
 
 ```bash
 cd ~/ptyrad-nvlink/demo/nvlink/redo
-bash deploy_redo.sh                # 4x A100 SXM; ABORTS if balance < $35
-bash watchdog_redo.sh 2 6 &        # kill-switch FIRST: min $2 bal, 6 h deadline
+bash deploy_redo.sh --budget 20    # 4x A100 SXM; ABORTS if balance < $20
+bash watchdog_redo.sh 2 4 &        # kill-switch FIRST: min $2 bal, 4 h deadline
 bash sync_back.sh &                # incremental copy-back every 120 s
 bash push_and_run.sh               # clone+install on pod, upload .mat (287 MB
                                    # @ ~0.5 MB/s ≈ 10 min), build tiled file,
@@ -64,12 +68,13 @@ runs, cheap-first, each arm under `timeout`:
 1. Micro benches at the Fig-S5 shape (PMODE=12): `bench_carry_direct.py`
    (chain-vs-direct ON NVSwitch, M=6/8 × P=2/4), `bench_slice_nzsweep.py`,
    `bench_ms_vs_born_b1.py`.
-2. E2E s/iter arms (NITER 2, per-arm param copies with distinct prefixes):
+2. E2E s/iter arms (NITER 1, per-arm param copies with distinct prefixes):
    ms_1gpu, m6_slice4, m6_mode4, m6_1gpu, m6_slice2, m8_slice4, m8_1gpu,
    m8_mode4.
 
-Budget: one 4×A100 SXM pod (~$6.4/h) covers 1/2/4-GPU scaling; expect
-~4–5 h ≈ $26–32 total. Rough per-iter forecasts from local A100 per-batch
+Budget: one 4×A100 SXM pod ($7.16/h) covers 1/2/4-GPU scaling; NITER-1
+variant expects ~2.5 h ≈ $18–19 total (skip the optional direct-carry
+rerun regardless of outcome). Rough per-iter forecasts from local A100 per-batch
 timings (53.9/71.0 ms f+b per batch at M=6/M=8, 12 modes, Nz=42; MS ~23 ms
 pmode-insensitive): born 1-GPU ~16/20 min/iter, MS ~6 min/iter — so MS
 beats 1-GPU born at 12 modes and the multi-GPU split IS the story.
