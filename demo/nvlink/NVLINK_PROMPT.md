@@ -1,5 +1,26 @@
 # NVLink validation of the multi-GPU Born benchmarks (agent/operator prompt)
 
+> **2026-10-11 REDO (owner request):** rerun the PSO benchmark on NVLink at
+> **2 and 4 GPUs** at the TRUE Fig-S5 workload. Verified against the paper SM
+> (`demo/data/PSO/abg2533_chen_sm.pdf`, p.~230): 256×256 detector pixels,
+> 128×128 = 16384 DPs, **12 probe modes, 42 slices**, ~45 min/iter on a Quadro
+> P5000. NOTE a correction to the correction: the sample is **~21 nm = 210 Å**
+> (`thickness` in the .mat; SM "thickness ~21 nm"), so 42 slices → **dz = 5 Å**
+> (not 10 — 42 × 10 Å would be a 42 nm sample). `pso_born_grow.yml` /
+> `pso_ms_b1_n100.yml` are fixed (42 / 5.0 / 12 modes); the campaign configs
+> are `params/nvl42_{m6,m8,ms}.yml` (fixed Born order, grow OFF, NITER 2).
+> The distributed file only holds the 64×64 scan01 subset (4096 DPs) — the
+> 128×128 workload file is built by 2×2 raster tiling
+> (`python -m ptyrad.utils.tile_scan`, on the pod): workload-exact for
+> timing, not for physics. **Runbook: `redo/` —** `deploy_redo.sh` (refuses
+> to deploy under budget), then `watchdog_redo.sh &` (balance+deadline
+> kill-switch) and `sync_back.sh &` (incremental copy-back) BEFORE
+> `push_and_run.sh` (data up + detached campaign `redo/run_redo_bench.sh`).
+> Prior lessons encoded: the 30-iter artifacts were lost last round to a hung
+> arm + credit-exhaustion auto-terminate; a stalled "initializing" pod gets
+> terminated after 12 min, not waited on.
+
+
 You are on a rented NVLink GPU box (target: **8x A100 SXM4** (NVSwitch,
 all-to-all 600 GB/s; RunPod ~$11-14/hr) or 4x A100 SXM ~$6.4/hr; H100 ~2x
 faster, ~2x price). Your job: re-run the multi-GPU Born-series

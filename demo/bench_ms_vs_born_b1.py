@@ -12,17 +12,32 @@ Measures on this box:
 Multislice CANNOT slice-split (sequential slices), so its 1-GPU number is its
 batch-1 number, while born's floor is reachable with NVLink.
 """
-import os, sys, time
+import os
+import sys
+
 import torch
+
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(REPO, "src"))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from bench_slice_nzsweep import (make_inputs, distribute, forward_pway, tmed,
-                                 bounds, M, Ny, Nx, PMODE, OMODE, N)
+from bench_slice_nzsweep import (  # noqa: F401
+    OMODE,
+    PMODE,
+    SWEEP,
+    M,
+    N,
+    Nx,
+    Ny,
+    bounds,
+    distribute,
+    forward_pway,
+    make_inputs,
+    tmed,
+)
+
 from ptyrad.forward_models import multislice_forward
 
 torch.manual_seed(0)
-SWEEP = (21, 32, 64, 128, 256, 512)
 
 
 def ms_inputs(Nz, dev="cuda:0"):
@@ -51,8 +66,11 @@ if __name__ == "__main__":
         t_ms_c = tmed(lambda: multislice_forward(obj, probe, H2, occu), 1)
         # ---- born(M), 1 GPU eager ----
         bobj, bprobe, bH, boccu = make_inputs(Nz)
-        O = torch.polar(bobj[..., 0], bobj[..., 1]); objc = (O - 1).unsqueeze(1)
-        oc = objc.to("cuda:0"); Hd = bH.to("cuda:0"); pr = bprobe.to("cuda:0")
+        O = torch.polar(bobj[..., 0], bobj[..., 1])
+        objc = (O - 1).unsqueeze(1)
+        oc = objc.to("cuda:0")
+        Hd = bH.to("cuda:0")
+        pr = bprobe.to("cuda:0")
         blk1 = [dict(objc=oc.detach(), H=Hd, Hc=Hd.conj(), probe=pr, dev="cuda:0")]
         t_b1 = tmed(lambda: forward_pway(blk1, boccu, 1), 1)
         def b_fb():
@@ -60,19 +78,22 @@ if __name__ == "__main__":
             forward_pway([dict(objc=o, H=Hd, Hc=Hd.conj(), probe=pr, dev="cuda:0")],
                          boccu, 1).sum().backward()
         t_b1fb = tmed(b_fb, 1)
-        # ---- born(M), 4-GPU NOTRANSFER floor (NVLink-attainable), pre-placed ----
-        b = bounds(Nz, 4); blk = []
-        for i in range(4):
-            lo, hi = b[i], b[i + 1]; d = f"cuda:{i}"
+        # ---- born(M), NGPU NOTRANSFER floor (NVLink-attainable), pre-placed ----
+        NG = int(os.environ.get("NGPU", "4"))
+        b = bounds(Nz, NG)
+        blk = []
+        for i in range(NG):
+            lo, hi = b[i], b[i + 1]
+            d = f"cuda:{i}"
             Hb = bH[..., lo:hi, :, :].to(d).contiguous()
             blk.append(dict(objc=objc[..., lo:hi, :, :].to(d).contiguous().requires_grad_(True),
                             H=Hb, Hc=Hb.conj().contiguous(), probe=bprobe.to(d), dev=d))
-        t_f4 = tmed(lambda: forward_pway(blk, boccu, 4, notransfer=True), 4)
+        t_f4 = tmed(lambda: forward_pway(blk, boccu, NG, notransfer=True), NG)
         def f4_fb():
             for s in blk:
                 s["objc"].grad = None
-            forward_pway(blk, boccu, 4, notransfer=True).sum().backward()
-        t_f4fb = tmed(f4_fb, 4)
+            forward_pway(blk, boccu, NG, notransfer=True).sum().backward()
+        t_f4fb = tmed(f4_fb, NG)
         print(f"{Nz:>5} | {t_ms_e*1e3:10.2f} | {t_ms_c*1e3:10.2f} | {t_ms_fbe*1e3:10.2f} "
               f"| {t_b1*1e3:10.2f} | {t_b1fb*1e3:10.2f} | {t_f4*1e3:11.2f} | {t_f4fb*1e3:11.2f}")
         del obj, probe, H2, bobj, bprobe, bH, oc, Hd, blk

@@ -13,18 +13,25 @@ PSO-like config (256^2, 4 pmodes, M=6), synthetic volumes of Nz slices:
   * 4-GPU slice-split real transfer on this PHB box (sync + pinned-half)
 Crossover Nz = where the 4-GPU floor beats 1 GPU at batch 1.
 """
-import os, sys, time
+import os
+import sys
+import time
+
 import torch
 from torch.fft import fft2, ifft2
+
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(REPO, "src"))
 from ptyrad.utils import fftshift2
 
 torch.manual_seed(0)
-Ny, Nx, PMODE, OMODE = 256, 256, 4, 1
+Ny, Nx = 256, 256
+PMODE = int(os.environ.get("PMODE", "4"))  # 12 = the PSO Fig-S5 workload
+OMODE = int(os.environ.get("OMODE", "1"))
 M = int(os.environ.get("BORN_M", "6"))  # scattering order: 6=born6, 2=double, 1=ISS
 EPS = 1e-10
-N = 1  # batch 1: the ONLY regime where Born beats multislice on one GPU
+N = int(os.environ.get("N", "1"))  # batch 1: the regime where Born beats multislice
+SWEEP = tuple(int(z) for z in os.environ.get("NZ_LIST", "21,32,64,128,256,512").split(","))
 _ZERO = {}
 
 
@@ -75,7 +82,8 @@ def forward_pway(blk, occu, P, notransfer=False, codec="c64"):
             key = (c.shape, dev)
             z = _ZERO.get(key)
             if z is None:
-                z = torch.zeros(c.shape, dtype=c.dtype, device=dev); _ZERO[key] = z
+                z = torch.zeros(c.shape, dtype=c.dtype, device=dev)
+                _ZERO[key] = z
             return z
         if codec == "half":
             return c.to(torch.complex32).to(dev, non_blocking=True).to(torch.complex64)
@@ -117,9 +125,13 @@ def tmed(fn, P, warmup=3, reps=15):
     sync_all(P)
     ts = []
     for _ in range(reps):
-        sync_all(P); t0 = time.perf_counter(); fn(); sync_all(P)
+        sync_all(P)
+        t0 = time.perf_counter()
+        fn()
+        sync_all(P)
         ts.append(time.perf_counter() - t0)
-    ts.sort(); return ts[len(ts) // 2]
+    ts.sort()
+    return ts[len(ts) // 2]
 
 
 if __name__ == "__main__":
@@ -127,14 +139,15 @@ if __name__ == "__main__":
     print(f"P={P_GPU} slice GPUs | batch={N}, {Ny}x{Nx}, pmode={PMODE}, M={M} (BORN_M env); times in ms")
     print(f"{'Nz':>5} | {'1-GPU fwd':>10} | {'1-GPU f+b':>10} | {'4G floor':>9} "
           f"| {'floor x':>7} | {'4G sync':>8} | {'4G half':>8}")
-    for Nz in (21, 32, 64, 128, 256, 512):
+    for Nz in SWEEP:
         obj, probe, H, occu = make_inputs(Nz)
         blk1 = distribute(obj, probe, H, 1)
         t1 = tmed(lambda: forward_pway(blk1, occu, 1), 1)
         # fwd+bw on 1 GPU (object gradient, the recon cost)
         O = torch.polar(obj[..., 0], obj[..., 1])
         oc = (O - 1.0).unsqueeze(1).to("cuda:0")
-        Hd = H.to("cuda:0"); pr = probe.to("cuda:0")
+        Hd = H.to("cuda:0")
+        pr = probe.to("cuda:0")
         def fb():
             o = oc.detach().requires_grad_(True)
             b = [dict(objc=o, H=Hd, Hc=Hd.conj(), probe=pr, dev="cuda:0")]

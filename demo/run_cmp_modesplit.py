@@ -38,6 +38,7 @@ if ROLE in ("slicedist", "distsmoke"):
     # constraint pass (and so stays current for refit/canvas/saving), then
     # scattered back to the leaves.
     import numpy as np
+
     import ptyrad.models as pmodels
     from ptyrad.forward_models import born_forward_dist
     try:
@@ -106,7 +107,6 @@ if ROLE in ("slicedist", "distsmoke"):
                 d["Hb"].append((Hd, Hd.conj().contiguous()))
             d["Hkey"] = H3.data_ptr()
         idx = indices if isinstance(indices, torch.Tensor) else torch.as_tensor(np.asarray(indices))
-        pmode = probes.shape[1]
         Ny_, Nx_ = probes.shape[-2:]
         blk, patch_blocks = [], []
         for k in range(_P):
@@ -185,8 +185,10 @@ if ROLE in ("slicesplit", "slicesmoke"):
     # the recursion validated against the real checkpoint in bench_results SSD
     # (fwd rel err 1.8e-6, object-grad 1.9e-4). Static H blocks cached; object
     # slices/probe move per call with autograd intact (the known PCIe tax).
+    from torch.fft import fft2, ifft2
+
     import ptyrad.forward_models as fm
-    from ptyrad.forward_models import born_forward_dist
+    from ptyrad.utils import fftshift2
 
     _orig_born = fm.born_forward
     _P = 4
@@ -264,35 +266,17 @@ if ROLE in ("slicesplit", "slicesmoke"):
     print("[cmp] born_forward patched: 4-GPU slice (depth) split, carry chain")
 
 if ROLE in ("modesplit", "smoke"):
+    # P-way probe-mode split (incoherent detector sum, exact): logic lives in
+    # ptyrad source (born_dist.make_modesplit_forward); MODE_P env = #GPUs.
+    import os
+
     import ptyrad.forward_models as fm
+    from ptyrad.forward_models import make_modesplit_forward
 
-    _orig_born = fm.born_forward
-    _DEV1 = "cuda:1"
-    _H_CACHE = {}
-
-    def born_forward_modesplit(object_patches, probe, H, omode_occu,
-                               eps=1e-10, n_max=1, coeffs=None):
-        pmode = probe.shape[1]
-        if pmode < 2 or not probe.is_cuda:
-            return _orig_born(object_patches, probe, H, omode_occu,
-                              eps=eps, n_max=n_max, coeffs=coeffs)
-        g = pmode // 2
-        key = H.data_ptr()
-        H1 = _H_CACHE.get(key)
-        if H1 is None:
-            H1 = H.detach().to(_DEV1)
-            _H_CACHE.clear()
-            _H_CACHE[key] = H1
-        occu1 = omode_occu.to(_DEV1) if omode_occu is not None else None
-        c1 = coeffs.to(_DEV1) if coeffs is not None else None
-        out1 = _orig_born(object_patches.to(_DEV1), probe[:, g:].to(_DEV1), H1,
-                          occu1, eps=eps, n_max=n_max, coeffs=c1)
-        out0 = _orig_born(object_patches, probe[:, :g], H, omode_occu,
-                          eps=eps, n_max=n_max, coeffs=coeffs)
-        return out0 + out1.to(out0.device) - eps  # eps was added once per group
-
-    fm.born_forward = born_forward_modesplit
-    print("[cmp] born_forward patched: probe-mode split across cuda:0/cuda:1")
+    _MP = int(os.environ.get("MODE_P", "2"))
+    fm.born_forward = make_modesplit_forward(
+        [f"cuda:{k}" for k in range(_MP)], base_forward=fm.born_forward)
+    print(f"[cmp] born_forward patched: probe-mode split across {_MP} GPUs (MODE_P)")
 
 from ptyrad.load import load_params
 from ptyrad.reconstruction import PtyRADSolver

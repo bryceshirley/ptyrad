@@ -641,3 +641,248 @@ identical M=6 from iter 4 so expected to converge) for keeping every
 iteration faster than multislice — uncapped drifted to M=9 (est. 119 s/iter,
 slower than MS). FINAL RECIPE: born_iterations 3, grow_tol 1e-2, n_limit 6,
 (grow_fast optional), SLICE_P=2.
+
+## L. NVLink box validation — RunPod 2x A100 SXM4, NV12 (2026-10-09)
+Rental pilot per `nvlink/CONTEXT.md`: RunPod secure cloud US-WA-1,
+2x A100-SXM4-80GB, **NV12** (12 bonded NVLinks), P2P True both ways,
+torch 2.8.0+cu128, $3.58/h — total spend **$3.17** (~55 min pod time incl.
+setup). Branch `nvlink-bench` @ d5aa713; `bench_ms_vs_born_b1.py` needed an
+NGPU patch (floor columns hardcoded 4 GPUs; patch applied here too). All raw
+logs, bench tables, topology, and the two iter-10 checkpoints:
+`demo/nvlink/runpod_results/`.
+
+### L.1 Carry transport on NVLink: sync == half == near-floor (hyp 1 CONFIRMED)
+`bench_slice_nzsweep.py` NGPU=2, batch 1, 256², p4, fwd @ Nz=512 (ms):
+
+| M | 1G fwd | 2G floor | 2G sync (.to) | 2G half | sync eff. of floor | PCIe 4G eff. (§G.2) |
+|---|--------|----------------|----------------|---------|-----|-----|
+| 6 | 83.7 | 49.4 (1.69×) | 56.7 (**1.48×**) | 56.7 | 87% | 64% |
+| 2 | 27.8 | 16.2 (1.72×) | 23.1 (1.20×) | 23.2 | 70% | 40% |
+| 1 (ISS) | 13.7 | 7.8 (1.76×) | 11.8 (1.16×) | 11.8 | 66% | 37% |
+
+- **sync `.to()` == pinned-half to 0.1% at every (M, Nz): carry codecs are
+  DEAD on NVLink** — no host staging, no compression needed.
+- The hop tax roughly HALVES vs PCIe (gap to floor: 13% vs 36% at M=6) but
+  does NOT vanish, and still grows as M shrinks: the serial chain latency
+  with no cross-order overlap remains at M=1.
+- **Hyp 4 (cheap-M unlock) verdict at P=2: PARTIAL.** Efficiency jumps
+  (37→66% at M=1) but realized ×(1.16 at M=1) is bounded by the 2-GPU floor
+  (1.76×). The "ISS ~1×→~3×" claim needs a 4-GPU NVLink box; at P=2 NVLink
+  delivers ~2/3..9/10 of the attainable window, up from ~1/3..2/3 on PCIe.
+
+### L.2 Real 2-GPU slice-split f+b (combo PM=1 PZ=2, M=6) — crossover ≈ Nz 25–30
+`bench_combo_modeslice.py`, correctness 6.4e-08 (exact):
+
+| Nz | 1G f+b | 2G f+b (incl. carries+grads) | × |
+|----|--------|------------------------------|---|
+| 21 | 10.9 | 11.0 | 1.00× |
+| 32 | 16.1 | 10.8 | **1.49×** |
+| 42 | 21.1 | 14.2 | 1.49× |
+| 64 | 32.0 | 20.8 | 1.54× |
+
+- Pilot target was "approach 8.86 ms f+b @32": measured 10.8 — 22% above
+  the projected floor. The residual is serial-chain latency + per-hop sync,
+  NOT PCIe bandwidth (which is gone). Shallow granularity wall intact:
+  parity at Nz=21 (hyp 2 CONFIRMED).
+- Microbench f+b crossover vs 1 GPU moves from ~Nz 35–40 (PCIe, §K.2
+  end-to-end) to **~Nz 25–30** on NVLink.
+
+### L.3 Multislice head-to-head (hyp 5 CONFIRMED, with a host caveat)
+`bench_ms_vs_born_b1.py` NGPU=2, f+b ms:
+
+| Nz | MS f+b eager | born6 1G f+b | born6 2G floor f+b | floor vs MS |
+|----|--------------|--------------|--------------------|-------------|
+| 21 | 12.1 | 10.8 | 8.0 | 1.5× |
+| 32 | 20.3 | 16.0 | 10.6 | 1.9× |
+| 64 | 35.4 | 32.0 | 18.6 | 1.9× |
+| 128 | 79.5 | 63.4 | 35.1 | 2.3× |
+| 256 | 253.5 | 125.7 | 68.1 | 3.7× |
+| 512 | 887.5 | 250.3 | 133.9 | **6.6×** |
+
+- born numbers track the home box within ~5% (GPU-bound). **MS is 1.6–2.1×
+  SLOWER on this host** (887 vs 414 ms @512) — its sequential launch-bound
+  loop is CPU-single-thread-sensitive; Born is not. Portability point for
+  Born, but credit the host, not NVLink.
+- With that caveat, 2-GPU floor beats as-implemented MS from Nz≤21 here and
+  reaches 6.6× @512 — on HALF the GPUs of §H's 6.4× (the MS slowdown and the
+  2-GPU floor roughly cancel).
+
+### L.4 End-to-end Nz=42, 10 iters: THE RECIPE vs multislice
+Same protocol as §K.5, arms SOLO, seed 42:
+
+| arm | s/iter | loss@10 | contrast@10 (recomputed) | home box |
+|---|---|---|---|---|
+| RECIPE (grow3 cap6, 2-GPU slicedist) | **81.3** | 0.2933 | 1.2705 | 80.8 / 0.2934 / 1.2594 |
+| multislice 1-GPU | 126.3 | 0.2911 | 1.3547 | 92.9 / — |
+
+- **The born arm REPRODUCES the home box essentially exactly**: trajectory
+  3→4→5→6-pinned-from-iter-4, loss to 4th digit, contrast +0.9% (both
+  contrasts recomputed from the 8-bit z-sum tifs the same way — K.5's 1.2369
+  used a different pipeline).
+- **NVLink adds ~nothing end-to-end at Nz=42** (81.3 vs 80.8): at 4096
+  batch-1 updates/iter the carry cost is already a negligible slice of the
+  81 s budget on PCIe. The headline 1.55× vs MS here is MS being 36% slower
+  on this host (see L.3), not an NVLink win. Honest crossover: Nz~35–40 on
+  PCIe end-to-end; NVLink moves the f+b crossover to ~25–30 (L.2) and will
+  show end-to-end once Nz grows past ~64.
+
+### L.5 Verdict summary (NVLINK_PROMPT hypotheses)
+1. sync path beats codecs / nears floor: **CONFIRMED** (L.1).
+2. batch-1 Nz=21 stays lost: **CONFIRMED** (1.00× @21, L.2).
+3. all-reduce collapse (batch-split): NOT RUN (2-GPU pilot, no §E rerun).
+4. cheap-M (ISS/double) unlock: **PARTIAL at P=2** — efficiency ~doubles,
+   full ~3× claim still needs a 4-GPU NVLink box (L.1).
+5. MS head-to-head 6.4×@512: **CONFIRMED (6.6× on 2 GPUs)**, MS wall time
+   is host-CPU-dependent (L.3).
+6. mode-split end-to-end: NOT RUN (pilot scope).
+
+## L.6 Second rental: 4x A100 SXM4 NVSwitch (2026-10-10) — the P=4 verdicts
+Same provider/DC, 4x A100-SXM4-80GB, **NV12 all-to-all** (NVSwitch), full P2P
+matrix, $7.16/h — suite ran in 14 min ($1.7). Correctness reproduced on the
+real ckpt (fwd 1.77e-6 sync/c64, object-grad 2.23e-4). Raw logs:
+`demo/nvlink/runpod_results/phase_b_4gpu/`. These results SUPERSEDE the
+"NOT RUN" rows in L.5.
+
+### L.6.1 Hypothesis 4 (cheap-M deep-stack unlock) — **REFUTED**
+`bench_slice_nzsweep.py` NGPU=4, fwd @ Nz=512 (ms), + same-box NGPU=2 ref:
+
+| M | 1G | 4G floor | 4G sync | realized × | eff. | PCIe 4G real × (§G.2) |
+|---|----|----------|---------|-----------|------|------------------------|
+| 6 | 83.7 | 25.3 (3.31×) | 37.6 | **2.23×** | 67% | 2.10× |
+| 2 | 27.8 | 8.4 (3.29×) | 20.4 | **1.37×** | 41% | 1.32× |
+| 1 | 13.7 | 4.2 (3.26×) | 11.2 | **1.23×** | 38% | 1.20× |
+
+- **NVSwitch barely moves the realized P=4 numbers (2.23/1.37/1.23 vs PCIe
+  2.10/1.32/1.20).** The predicted "ISS ~1×→~3×" jump DOES NOT HAPPEN: the
+  exposed per-hop cost is kernel-launch/sync LATENCY in the serial chain,
+  not interconnect bandwidth or host staging — NVLink removes the latter,
+  not the former. The M-independent 3.3× floor stands but is unreachable at
+  batch 1 for cheap M on any interconnect with this chain design.
+- P-scaling at M=6 @512 (same box): 2-GPU sync 56.8 (1.48×, 87% eff) →
+  4-GPU 37.6 (2.23×, 67% eff) — absolute time still improves with P, but
+  each added hop costs ~2–3 ms of unhidden latency.
+- sync == half codec at P=4 too (37.59 vs 37.57) — codecs stay dead.
+- Implication for the P-GPU flat-curve-extension claim: it holds for born6
+  (2.2× real, floor 3.3×), remains NVLink-conditional-AND-latency-blocked
+  for ISS/double. Closing the gap needs fewer/cheaper hops (fused carry
+  kernels, CUDA graphs over the chain), not faster links.
+
+### L.6.2 Real-checkpoint slice bench (hyp 1 + a new Nz=21 result)
+`bench_slice_real.py`, Nz=21 real born6 ckpt, P=4:
+
+| N | 1G fwd | 4G sync fwd | 4G pinned-half fwd | 1G f+b | 4G f+b | floor f+b |
+|---|--------|-------------|---------------------|--------|--------|-----------|
+| 1 | 3.6 | 6.4 (0.56×) | 15.5 (0.23×) | 10.3 | 20.8 (0.49×) | 22.4 (0.44×) |
+| 8 | 22.3 | 26.8 (0.83×) | 52.3 (0.43×) | 70.4 | **50.5 (1.39×)** | 50.0 (1.41×) |
+| 32 | 87.4 | 98.6 (0.89×) | 175.8 (0.50×) | 277.5 | **188.3 (1.47×)** | 187.9 (1.48×) |
+
+- **Hyp 1 CONFIRMED, inverted ranking: sync .to() is now 2.4× faster than
+  pinned-half** (host-staged pinned path = pure overhead on NVLink).
+- **NEW: at Nz=21, N≥8, slice-4 f+b runs AT its floor (1.39×/1.47× vs floor
+  1.41×/1.48×) and WINS** — on PCIe it lost (0.80–0.82×). Softens §D/§J's
+  "no multi-GPU win at Nz=21" to batch-1 only on NVLink. (Batch-split still
+  matches it there: batch4 f+b 2.78× — slice-split is only mandatory where
+  batch/mode can't go: batch 1, deep stacks.)
+- Batch-1 granularity wall intact at Nz=21 (0.49–0.56×): hyp 2 re-CONFIRMED.
+
+### L.6.3 Three axes on the real ckpt (hyp 3) — all-reduce collapse CONFIRMED
+`bench_axes_real.py`: 68 MB object all-reduce **3.5→0.51 ms (G2), 14→1.34 ms
+(G4)** (~10×, as predicted). Effect on full steps (f+b, N=32): mode4
+1.6×-plateau BROKEN → **2.87×**; batch4 2.67→**2.78×** (all-reduce wasn't
+its limiter); mode2 1.79×, batch2 1.87×. At N=1 mode-split still loses f+b
+(0.69× G2, 0.59× G4) — per-replica probe/patch staging dominates, NVLink
+does not rescue the over-split regime.
+
+### L.6.4 MS head-to-head at P=4 and the combo ranking (hyp 5 / §I)
+- born6 4G floor f+b @Nz=512: 68.5 ms vs this host's MS 892.6 → **13.0×**
+  (6.0× against the PCIe box's faster 414 ms MS — cf. §H's 6.4×). MS again
+  ~2× slower on the rental CPU (launch-bound), born within 5% of home.
+- **§I's NVLink prediction INVERTED at 4 GPUs, Nz=512 (f+b incl comms):
+  pure mode 4m×1z 78.4/82.9 ms (3.19×/3.02× +gradred) > combo 2m×2z 93.1/88.5
+  (2.69×/2.83×) > pure slice 1m×4z 99.8 (2.51×).** Rationale flips with the
+  all-reduce collapse: mode-split's grad-reduce penalty vanished (1.34 ms)
+  while slice's chain-hop latency did not. Revised guidance: on NVLink spend
+  GPUs on MODE groups first (up to pmode), then slices; pure slice remains
+  the only axis for pmode=1 problems and still owns the best theoretical
+  floor if hop latency is ever engineered away.
+
+### L.7 Capped growth at n_limit 8, and the Phase-C post-mortem (2026-10-10)
+10-iter head-to-head on the NVLink 2-GPU box (same protocol as L.4, solo,
+seed 42; outputs in `demo/nvlink/runpod_results/`):
+
+| arm | s/iter | loss@10 | contrast@10 | trajectory |
+|---|---|---|---|---|
+| RECIPE cap-6 | 81.3 | 0.2933 | 1.2705 | 3→4→5→6 pin@4 |
+| **RECIPE cap-8** | 87.1 | **0.2922** | **1.2988** | 3→4→5→6→7→8 pin@8 |
+| multislice 1-GPU | 126.3 | 0.2911 | 1.3547 | — |
+
+- **cap-8 strictly beats cap-6 on quality (loss −0.0011, contrast +2.2%) for
+  +7% wall time**, and matches the home box's UNCAPPED loss (0.2923). The
+  refit kept promoting (residual dropped at every grow). K.5's "cap at 6"
+  was tuned to a host where MS = 92.9 s/iter; the general rule is **cap at
+  the largest M whose iteration stays under the local MS line** — on hosts
+  with slow launch-bound MS (126 s/iter here), that's M=8 (87.1 s/iter,
+  still 1.45× vs MS).
+- A 30-iter cap-8 run COMPLETED (iter-10 loss 0.2922 reproduced exactly;
+  **iter-20 loss 0.2773** — still descending) but its artifacts were LOST:
+  the chained 30-iter cap-6 arm apparently HUNG (no completion marker for
+  >90 min ≈ 2.3× its expected 41 min), the idle pod drained the remaining
+  credit, and RunPod auto-terminated it at $0 — wiping the disk before
+  copy-back. Only the grepped loss lines above survive.
+- OPERATIONAL GOTCHAS for the next rental: (1) copy results back
+  INCREMENTALLY, not at the end; (2) run an independent balance/deadline
+  kill-switch, never just a completion watcher; (3) the distsmoke 2-GPU
+  solver can hang silently — add a per-iteration stall timeout to any
+  chained unattended run.
+
+## M. Carry schedule: chain vs DIRECT combine at P=4 (2026-10-11, local PCIe box)
+
+Question (owner): in the two-level scan, does passing block totals DIRECTLY
+to every downstream GPU (all boundary transfers issued concurrently, local
+prefix reduce — one-hop critical path, P(P-1)/2 messages) beat the CHAIN
+(P-1 sequential hops, P-1 messages)? At P=2 they are identical, which is why
+the slicepar round could not separate them; P=4 is the first real test.
+`born_forward_dist(carry="direct")` added in source (exact: rel err 5e-8 vs
+1-GPU, chain-vs-direct grads allclose); `bench_carry_direct.py`; this
+all-PHB no-P2P box, batch 1, 256^2, **pmode 12** (the Fig-S5 mode count).
+
+f+b ms (1-GPU | chain | direct), median of 15:
+
+| Nz  | M=6 1G | chain | direct | M=8 1G | chain | direct | M=1 1G | chain | direct |
+|-----|--------|-------|--------|--------|-------|--------|--------|-------|--------|
+| 42  | 53.9   | **27.6** | 40.5 | 71.0   | **41.2** | 52.6 | 7.0    | **4.8** | 5.7 |
+| 64  | 83.2   | **35.8** | 47.9 | 110.6  | **54.5** | 63.6 | 10.5   | **5.5** | 6.5 |
+| 128 | 168.5  | **61.9** | 71.2 | 225.9  | **95.9** | 105.7| 20.7   | **8.3** | 9.2 |
+| 256 | 338.7  | **111.9**| 123.9| 456.2  | **175.8**| 177.1| 41.2   | **13.7**| 14.6|
+| 512 | 682.1  | 227.5 | **219.3** | 920.5 | 303.8 | **300.4** | 82.4 | **23.8**| 24.7|
+
+**VERDICT: chain >= direct everywhere that matters on no-P2P PCIe** (direct
+wins only >=Nz 512 f+b by 1-3%). Without P2P every "concurrent" transfer is
+host-staged through the same bridges and the issuing thread, so direct
+parallelizes nothing and ships 2x the bytes (6 vs 3 fields/order; a pmode-12
+field is 6.3 MB). The chain's hops meanwhile already overlap downstream
+compute in the two-level scan. Rerun scheduled on NVSwitch (redo campaign
+section 1a) where true P2P + per-pair engines could flip it; until then
+chain stays the default.
+
+**Side finding that reframes SSG.2: the 12-mode workload rescues slice-split
+on plain PCIe.** At the true Fig-S5 shape (Nz=42, pmode 12) slice-4 f+b is
+**1.96x (M=6) / 1.72x (M=8) / 1.48x (M=1)** vs 1 GPU — the old pmode-4
+benches (1.03x at M=1, crossover Nz~48-64) understated the split because 3x
+more per-slice work hides the per-hop latency. The multi-GPU win regime
+starts AT the paper workload, not beyond it.
+
+## N. PSO Fig-S5 full-workload REDO — prep record (2026-10-11)
+
+True workload confirmed from the paper SM (p. ~230): 256x256 detector,
+128x128 = 16384 DPs, 12 probe modes, 42 slices, ~45 min/iter on a Quadro
+P5000. Sample is ~21 nm => **dz = 5 A** (the "42 x 10 A" note was wrong; the
+.mat says thickness 210 A). The distributed scan01 file only holds 4096 DPs
+(64x64) — the 16384-DP file is produced by 2x2 raster tiling
+(`ptyrad.utils.tile_scan`, tested; object becomes a 2x2-periodic PSO field:
+workload-exact for timing, not physics). Configs `params/nvl42_{m6,m8,ms}.yml`
+(fixed M, grow off, NITER 2, seed 42 via driver). Campaign runbook
+`demo/nvlink/redo/` (deploy gate on balance, independent watchdog
+kill-switch, incremental sync-back, per-arm timeouts). E2E arms: MS 1-GPU,
+M6 {1g, slice2, slice4, mode4}, M8 {1g, slice4, mode4} — all on the same
+rented A100 SXM box. Results go in section O when the rental runs.
