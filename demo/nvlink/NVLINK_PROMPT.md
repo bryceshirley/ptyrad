@@ -1,137 +1,135 @@
-# NVLink validation of the multi-GPU Born benchmarks (agent/operator prompt)
+# PSO Fig-S5 NVLink campaign — operator prompt (current as of 2026-10-11)
 
-> **2026-10-11 REDO (owner request):** rerun the PSO benchmark on NVLink at
-> **2 and 4 GPUs** at the TRUE Fig-S5 workload. Verified against the paper SM
-> (`demo/data/PSO/abg2533_chen_sm.pdf`, p.~230): 256×256 detector pixels,
-> 128×128 = 16384 DPs, **12 probe modes, 42 slices**, ~45 min/iter on a Quadro
-> P5000. NOTE a correction to the correction: the sample is **~21 nm = 210 Å**
-> (`thickness` in the .mat; SM "thickness ~21 nm"), so 42 slices → **dz = 5 Å**
-> (not 10 — 42 × 10 Å would be a 42 nm sample). `pso_born_grow.yml` /
-> `pso_ms_b1_n100.yml` are fixed (42 / 5.0 / 12 modes); the campaign configs
-> are `params/nvl42_{m6,m8,ms}.yml` (fixed Born order, grow OFF, NITER 2).
-> The distributed file only holds the 64×64 scan01 subset (4096 DPs) — the
-> 128×128 workload file is built by 2×2 raster tiling
-> (`python -m ptyrad.utils.tile_scan`, on the pod): workload-exact for
-> timing, not for physics. **Runbook: `redo/` —** `deploy_redo.sh` (refuses
-> to deploy under budget), then `watchdog_redo.sh &` (balance+deadline
-> kill-switch) and `sync_back.sh &` (incremental copy-back) BEFORE
-> `push_and_run.sh` (data up + detached campaign `redo/run_redo_bench.sh`).
-> Prior lessons encoded: the 30-iter artifacts were lost last round to a hung
-> arm + credit-exhaustion auto-terminate; a stalled "initializing" pod gets
-> terminated after 12 min, not waited on.
+**Mission:** benchmark the PSO reconstruction at the paper's TRUE Fig-S5
+workload on rented NVLink A100 SXM GPUs — fixed Born order M=6 and M=8 at
+1 / 2 / 4 GPUs versus multislice on the SAME hardware — and characterise
+2-vs-4 GPU scaling. Paper context (not the comparison): ~45 min/iter on a
+Quadro P5000 (Chen et al. Science 2021 SM, p.~230). The comparison that
+matters is Born-multiGPU vs MS on the same A100s.
 
+The workload (verified against the SM, `demo/data/PSO/abg2533_chen_sm.pdf`):
+256×256 detector, 128×128 = 16384 diffraction patterns, 12 probe modes,
+**42 slices of dz = 5 Å** (sample is ~21 nm / 210 Å; an earlier "dz 10 Å"
+note was arithmetically wrong). Fixed M, grow OFF (constant per-iter cost
+for clean scaling; grow confounds timing and §K.4 showed its M=1 first
+epoch imprints weak contrast).
 
-You are on a rented NVLink GPU box (target: **8x A100 SXM4** (NVSwitch,
-all-to-all 600 GB/s; RunPod ~$11-14/hr) or 4x A100 SXM ~$6.4/hr; H100 ~2x
-faster, ~2x price). Your job: re-run the multi-GPU Born-series
-benchmarks from `demo/bench_results.md` on the real PSO born6 sample and
-measure what NVLink changes versus the original all-PHB PCIe box (KVM guest,
-no P2P, 4x A100 80GB PCIe). Work economically -- the full campaign fits in
-~2 hours of GPU time; do not hypertune or rerun endlessly.
+## State: PREP COMPLETE — blocked ONLY on RunPod balance
 
-## What the PCIe box measured (the numbers to beat)
+Everything is committed and pushed on branch `nvlink-bench` (through
+`adbf1fb`). The RunPod account balance was **−$0.03** on 2026-10-11; the
+deploy script refuses to launch below budget (default $35). Once the
+account is topped up, the whole campaign is turnkey.
 
-Forward speedup vs 1 GPU (real checkpoint, batch N; `bench_results.md` SSD-SSF):
+Already done (do NOT redo):
+- Configs `demo/params/nvl42_{m6,m8,ms}.yml` — full workload, NITER 2,
+  validated via load_params. `redo_smoke_m6.yml` = 1-iter 256-position
+  smoke.
+- The 16384-DP dataset: the distributed .mat holds only the 64×64 scan01
+  subset (4096 DPs); the full-geometry file is built by 2×2 raster tiling
+  (`python -m ptyrad.utils.tile_scan`, tested in `test/test_tile_scan.py`).
+  It is built ON THE POD (4.3 GB, ~20 s); never upload or commit it.
+  Workload-exact for timing, not physics (object = 2×2-periodic PSO).
+- All four E2E arm types smoke-validated locally against the worktree src:
+  baseline / slicedist P=2 / P=4 / modesplit P=4 all produce IDENTICAL
+  loss 0.6232 on the smoke config.
+- src additions (tested, CPU suites green, 149 passed):
+  `born_forward_dist(carry="chain"|"direct")`, `make_modesplit_forward`
+  (P-way, `MODE_P` env in the driver), `depth_bounds`,
+  `ptyrad.utils.tile_scan`.
+- Local PCIe results already recorded in `demo/bench_results.md` §M:
+  chain ≥ direct at P=4 on no-P2P PCIe; 12 probe modes rescue slice-split
+  (slice-4 f+b at Nz=42: 1.96× M=6 / 1.72× M=8 / 1.48× M=1).
 
-| N  | slice4 real | slice4 FLOOR (free carry) | mode2 | mode4 | batch4 |
-|----|-------------|---------------------------|-------|-------|--------|
-| 1  | 0.33-0.35x  | 0.58x                     | 1.78x | 2.08x | N/A    |
-| 8  | 0.56x       | 2.97x                     | 1.86x | 3.10x | 2.93x  |
-| 32 | 0.56x       | 3.29x                     | 1.92x | 3.40x | 3.65x  |
-
-End-to-end 20-iter reconstruction: baseline 64.5 s/iter; mode-split 2-GPU
-67.7 s/iter (0.95x -- SLOWER). Object all-reduce 68 MB: 3.5 ms (2 GPU) /
-14 ms (4 GPU), host-staged.
-
-## Hypotheses to test (in priority order)
-
-1. **Slice-split at N>=8 approaches its compute floor** (0.56x -> ~3x at N=32)
-   because the carry becomes a direct GPU->GPU copy. Read the `4-GPU sync-c64`
-   column of `bench_slice_real.py` -- on NVLink the sync `.to()` path should
-   now BEAT `pinned-half` (no host staging, no codec needed).
-2. **Batch-1 stays lost** (granularity wall): slice4 N=1 should stay near its
-   0.58x free-carry ceiling, NOT reach 1x. If it beats 1x, that is a finding.
-3. **Data-parallel all-reduce cost collapses** (14 ms -> ~1-2 ms on 4 GPUs),
-   pushing batch4 fwd+bw from 2.67x toward ~3.5x (`bench_axes_real.py`).
-4. **Deep stacks (the multislice-comparison regime): batch-1 slice-split wins
-   from Nz~48-64 even on PCIe** (`bench_slice_nzsweep.py`, SSG: f+b 1.59x at
-   Nz=64 -> 2.35x at Nz=512; floor 3.3x). On NVLink the crossover should move
-   down toward Nz~32 and the realized x toward the floor. This is the only
-   multi-GPU axis multislice cannot copy (sequential slices), so it is the
-   headline number for the Born-vs-multislice benchmark. Run the sweep; time
-   4-GPU f+b with PRE-PLACED object blocks only. **Repeat at BORN_M=2 and
-   BORN_M=1 (SSG.2): on PCIe the win shrinks with M (f+b @Nz=512: 2.35x M=6,
-   1.22x M=2, 1.03x M=1 -- hop latency has no cross-order overlap to hide
-   behind at small M), while the floor is M-independent (~3.3x). The NVLink
-   prediction to verify: ISS/double jump from ~1x to ~3x.** That would make
-   the P-GPU flat-curve extension hold for the cheap headline orders too.
-5. **Multislice head-to-head (SSH)**: `bench_ms_vs_born_b1.py` -- verify the
-   NVLink box reproduces: born6 4-GPU f+b beats as-implemented MS from
-   Nz~24-32, 6.4x at Nz=512. Mode-split is a second DIFFERENTIAL axis vs MS
-   at batch 1 (MS is pmode-insensitive/launch-bound, Born pmode-proportional).
-5b. **On 8 GPUs (SSI)**: run `bench_slice_nzsweep.py` with NGPU=8 (P-scaling
-   curve NGPU=2/4/8) and `bench_combo_modeslice.py` with PM=2 PZ=4, PM=1 PZ=8,
-   PM=4 PZ=2. PCIe box ranking to re-test: combo won on PCIe (fewer hops) but
-   pure slice has the best FLOOR (object partitioned -> zero grad comm), so on
-   NVLink expect **1m x 8z to win**: predicted f+b ~34-40 ms at Nz=512 M=6 --
-   beating even an idealized MS adjoint (~46 ms), closing SSH's caveat.
-6. **Mode-split end-to-end** moves from 0.95x toward its 1.13x microbench step
-   gain (per-batch 10.5 MB patch transfers become cheap). Secondary.
-
-## Setup
+## Run sequence (local side: `~/ptyrad-nvlink/demo/nvlink/redo/`)
 
 ```bash
-git clone -b nvlink-bench <REPO_URL> ptyrad && cd ptyrad
-uv venv .venv && uv pip install -e . torchvision h5py   # or pip
+cd ~/ptyrad-nvlink/demo/nvlink/redo
+bash deploy_redo.sh                # 4x A100 SXM; ABORTS if balance < $35
+bash watchdog_redo.sh 2 6 &        # kill-switch FIRST: min $2 bal, 6 h deadline
+bash sync_back.sh &                # incremental copy-back every 120 s
+bash push_and_run.sh               # clone+install on pod, upload .mat (287 MB
+                                   # @ ~0.5 MB/s ≈ 10 min), build tiled file,
+                                   # launch campaign detached
 ```
 
-Copy the two data files from the home box (NOT in git; verify checksums):
+RunPod API key: `~/.runpod_api_key` (REST rest.runpod.io/v1 + GraphQL;
+helpers in `redo/runpod_api.sh`). Pod state lands in `redo/pod_state.env`.
+Tail progress: `ssh -p $POD_PORT root@$POD_IP tail -f
+/workspace/ptyrad/demo/nvlink/campaign.log`, or watch
+`runpod_results/redo/` fill locally.
 
-```
-scp <home>:~/ptyrad/demo/data/PSO/sample_data_PrScO3.mat demo/data/PSO/   # 287 MB
-scp <home>:"~/ptyrad/demo/output/PSO/20260929_pso_born6_qr_msT_noreg_full_N4096_dp256_random1_p4_1obj_21slice_dz10_plr1e-4_oalr5e-4_oplr5e-4_dpblur1.0_orblur0.4_ozblur1.0_mamp0.03_4.0_oathr0.96_oposc_sng1.0_spr0.1/model_iter0100.hdf5" \
-    "demo/output/PSO/<same folder name>/"                                  # 69 MB
-sha256sum:
-  e5c470797e90a21381b9fdb0a353493f3ead96fcafdd4b9a163bb110059e472a  sample_data_PrScO3.mat
-  44e8cd4b9991f43680138ee87ad0eb64c2a96b83bff98ca5f28dca6cc86c235b  model_iter0100.hdf5
-```
+The pod-side campaign (`redo/run_redo_bench.sh`, launched by push_and_run)
+runs, cheap-first, each arm under `timeout`:
+1. Micro benches at the Fig-S5 shape (PMODE=12): `bench_carry_direct.py`
+   (chain-vs-direct ON NVSwitch, M=6/8 × P=2/4), `bench_slice_nzsweep.py`,
+   `bench_ms_vs_born_b1.py`.
+2. E2E s/iter arms (NITER 2, per-arm param copies with distinct prefixes):
+   ms_1gpu, m6_slice4, m6_mode4, m6_1gpu, m6_slice2, m8_slice4, m8_1gpu,
+   m8_mode4.
 
-(`PSO_CKPT=<path>` overrides the checkpoint location for the bench scripts.)
+Budget: one 4×A100 SXM pod (~$6.4/h) covers 1/2/4-GPU scaling; expect
+~4–5 h ≈ $26–32 total. Rough per-iter forecasts from local A100 per-batch
+timings (53.9/71.0 ms f+b per batch at M=6/M=8, 12 modes, Nz=42; MS ~23 ms
+pmode-insensitive): born 1-GPU ~16/20 min/iter, MS ~6 min/iter — so MS
+beats 1-GPU born at 12 modes and the multi-GPU split IS the story.
 
-## Run
+## Deliverable
 
-```bash
-bash demo/nvlink/run_nvlink_bench.sh            # full, ~2 h incl. recons
-bash demo/nvlink/run_nvlink_bench.sh --skip-recon   # benches only, ~20 min
-```
+Append **section O** to `demo/bench_results.md`: 42-slice / 12-mode /
+16384-DP numbers for fixed M=6 and M=8 — forward, fwd+bw (micro) and
+end-to-end s/iter — at 1/2/4 GPUs plus MS on the same hardware; the
+`nvidia-smi topo -m` excerpt; the winning parallel axis; an honest verdict
+on 2-vs-4 scaling vs same-hardware MS; the NVSwitch chain-vs-direct table
+next to §M's PCIe one. Report losses/failures honestly. Commit on
+`nvlink-bench` only — single-line message, no body, no attribution — and
+NEVER commit .mat/.hdf5 data.
 
-The script aborts if `nvidia-smi topo -m` shows no NV* links, if GPUs are
-busy, or if the checkpoint is missing. Results land in
-`demo/nvlink/results_<timestamp>/`.
+## Interpretation notes
 
-## Success criteria / what to record
+- hyp-4 is REFUTED (§L.6): slice-split's exposed cost is per-hop
+  launch/sync latency, not bandwidth — expect diminishing 2→4 slice-split
+  returns; 4-GPU gains should come from mode-split (12-way capable) and
+  §L.7's inverted ranking (pure mode > combo > pure slice at 4-GPU NVLink).
+  Report which axis actually delivers.
+- chain-vs-direct caveat: the `direct` carry issues all copies from a
+  source on ONE stream, so on NVSwitch it may understate direct; note this
+  if direct loses narrowly there.
+- Carry codecs are dead on NVLink (sync `.to()` == pinned-half, §L); do
+  not re-test.
 
-- Correctness FIRST: forward rel err ~1e-6 (sync/c64) and object-grad rel err
-  ~2e-4 must reproduce before any timing is trusted.
-- Append a "SSG. NVLink box" section to `demo/bench_results.md` mirroring the
-  SSD/SSE tables, with the box spec (`nvidia-smi topo -m` excerpt) and the
-  four hypothesis verdicts. Report losses honestly -- if NVLink does NOT
-  rescue a case, that is the result.
-- Commit on this branch only (single-line commit message, no attribution
-  lines, no bodies). Do NOT push to any public remote without the owner's
-  explicit OK, and never commit the .mat/.hdf5 data files.
+## Post-mortem rules (both prior rentals had losses — do not repeat)
 
-## Gotchas (learned on the home box, they still apply)
+- The watchdog is NOT optional: round 2 lost the 30-iter artifacts when a
+  hung arm (silent 2-GPU distsmoke hang) idled the pod to $0 and RunPod's
+  auto-terminate wiped the disk. Independent balance+deadline kill-switch
+  + incremental copy-back, both running BEFORE the campaign starts.
+- A pod stuck "initializing" > ~12 min never recovers: terminate and
+  redeploy (deploy_redo.sh does this itself). Round 1 wasted 32 min.
+- stop/start WIPES the container disk when volumeInGb=0 (re-setup ~15 min
+  incl. the 287 MB upload).
+
+## Gotchas (standing)
 
 - `PTYRAD_DISABLE_ISS_PRECOND=1` is MANDATORY for every batch-1 Born run
-  (the runner exports it).
-- Everything runs eager; do not add torch.compile (compiled backward has a
-  multi-device dynamo bug, and eager==compiled for this born anyway).
-- Reconstructions use seed 42 -- both arms must keep it or the loss-identity
-  check (identical to 4 digits every iter) is meaningless.
-- PtyRAD output folders are named date+config: rerunning an unchanged config
-  SILENTLY OVERWRITES its checkpoints. Give reruns a distinct `prefix`.
-- The `quarter` (fp8) carry codec is KNOWN-BROKEN on the real object (single
-  global scale, rel err up to 1.9). It is in the sweep for completeness; do
-  not "fix" it unless testing per-block scaling explicitly.
+  (runner exports it).
+- Everything eager; no torch.compile (multi-device dynamo backward bug;
+  eager==compiled for this born anyway).
+- Reconstructions seed 42 (the driver sets it) — loss-identity checks
+  across arms are meaningless otherwise.
+- PtyRAD output folders are date+config named: identical configs SILENTLY
+  OVERWRITE. The runner's per-arm `redo_<arm>` prefixes handle this; keep
+  the pattern for any extra arm.
+- RunPod PyTorch image is PEP-668: `pip install --break-system-packages`
+  (push_and_run.sh does).
 - `GROUP_MODE: 'sparse'` crashes at batch 1; keep `'random'`.
+- Local box (4×A100 PCIe, all-PHB, NO P2P) is for smokes only — the user
+  has said benchmarks must NOT run on the local GPUs.
+
+## History
+
+Full record in `demo/bench_results.md`: §L (round 1, 2×SXM NV12),
+§L.6–L.7 (round 2, 4×NVSwitch, post-mortem), §M (local chain-vs-direct +
+12-mode slice-split rescue), §N (this campaign's prep record). Memory:
+`multigpu-born-parallelism-outcome.md`. The pre-redo round-1 prompt this
+file replaced is in git history (nvlink-bench, before adbf1fb).
