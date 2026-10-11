@@ -78,7 +78,8 @@ run_arm() { # run_arm ARM ROLE BASE_YML TIMEOUT_S [ENV...]
     > "$RES/e2e_$arm.log" 2>&1
   local rc=$?
   [ $rc -eq 124 ] && echo "TIMEOUT after ${tmo}s" >> "$RES/e2e_$arm.log"
-  grep -iE "iter.*(time|loss)|s/iter|Iter [0-9]+" "$RES/e2e_$arm.log" | tail -8 \
+  [ $rc -ne 0 ] && echo "ARM $arm exited rc=$rc" | tee -a "$RES/summary.log"
+  grep -E "Total Loss|averaged iter_t|Refit born_coeffs" "$RES/e2e_$arm.log" | tail -6 \
     | tee -a "$RES/summary.log"
 }
 
