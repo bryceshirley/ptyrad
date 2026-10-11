@@ -1,31 +1,67 @@
 """Born-series helpers: the shared recursion primitives, the per-order
-detector fields, and the detector-space coefficient fit.
+detector fields, and the coefficient fits.
 
 The recursion physics (_born_init / _born_scatter / _born_advance) is defined
-once here and consumed by born.born_forward and the fit machinery. THE
-coefficient fit is born_detector_basis + born_multislice_target +
-born_qr_coeffs — there is no other coefficient-fitting code: least squares
-of the truncation tail onto the retained orders, one rank-aware
-torch.linalg.lstsq solve (TSVD at the numerical rank). It never sees
-measured data:
+once here and consumed by born.born_forward and the fit machinery. The
+production coefficient fit is born_detector_basis + born_multislice_target +
+born_qr_coeffs: least squares of the truncation tail onto the retained
+orders, one rank-aware torch.linalg.lstsq solve (TSVD at the numerical
+rank). It never sees measured data:
 coefficients are a deterministic function of the current object operator, so
 they cannot absorb object error (the data-fit gauge leak is closed by
 construction). Removed predecessors (Krylov-Gram/GMRES fit, detector-Gram
 normal equations, sequential-target Gram statistics) live in git history
 (commit 18a2d35) if ever needed.
+
+Alongside it live the target-free residual fits (born_exit_residual_coeffs
+and the born_volume_basis / born_volume_residual_rows / born_tsqr_update /
+born_residual_solve_from_r pipeline): they minimise the residual of the
+multislice fixed-point equation (I - E) Psi = Psi^(0) at the trial field
+sum_m c_m Psi^(m), which needs one Born order beyond those retained and NO
+multislice solution. For a trial with c_0 = 1 the residual is exactly
+
+    r(c) = Psi^(1) - sum_{m=1..M} c_m (Psi^(m) - Psi^(m+1)),
+
+linear in c, so the fit is a direct least squares with columns
+Psi^(m) - Psi^(m+1) and right-hand side Psi^(1); with every c_m = 1 it
+telescopes to Psi^(M+1). These solve for c directly (zero prior), unlike
+born_qr_coeffs which solves for offsets from c = 1 — under rank truncation
+the former shrinks toward c = 0, the latter toward c = 1. Also data-free.
 """
+
+import math
 
 import torch
 from torch.fft import fft2, ifft2
 
+from ptyrad.forward_models.multislice import multislice_exit_wave
 
-def _born_init(object_patches, probe, H):
+
+def _born_init(object_patches, probe, H, obar=None):
     """Shared entry of the Born recursion: the scattering potential (O - 1),
     the k-space probe, and the unscattered per-slice wave v_0 = ifft2(H^j psi_0).
     Used by born_forward and the fit machinery so the recursion physics
-    lives in one place."""
+    lives in one place.
+
+    obar: optional complex centring scalars. When given, the series is
+    expanded about obar instead of vacuum: the potential becomes
+    O / obar - 1. Shapes: (Nz,) one scalar per slice shared by all views;
+    (B, 1) one scalar per view shared by all slices; (B, Nz) one scalar
+    per view per slice. A scalar commutes with propagation, so the
+    multislice wave of O equals prod_over_slices(obar) times that of
+    O / obar; callers must apply that prefactor (per view, when obar is
+    view-dependent) to the assembled detector field themselves. Default
+    None is the existing vacuum expansion, bit-identical."""
     Ny, Nx = object_patches.shape[-3], object_patches.shape[-2]
-    obj = (torch.polar(object_patches[..., 0], object_patches[..., 1]) - 1.0).unsqueeze(1)
+    O = torch.polar(object_patches[..., 0], object_patches[..., 1])
+    if obar is not None:
+        ob = (
+            obar.view(1, 1, -1, 1, 1)
+            if obar.dim() == 1
+            else obar.view(obar.shape[0], 1, obar.shape[1], 1, 1)
+        )
+        O = O / ob
+    obj = (O - 1.0).unsqueeze(1)
     probe_k = fft2(probe).view(-1, probe.shape[1], 1, 1, Ny, Nx)
     return obj, probe_k, ifft2(H * probe_k)
 
@@ -57,6 +93,7 @@ def born_detector_basis(
     probe: torch.Tensor,
     H: torch.Tensor,
     n_max: int,
+    obar: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Truncated per-order detector basis for the coefficient fit.
 
@@ -66,10 +103,16 @@ def born_detector_basis(
     detector field is exactly D0 + sum_k c_k D[k-1] (unshifted k-space).
     Only the truncated recursion runs (~2*n*(Nz - n/2) slice-FFTs per view);
     the last basis order skips its advance (detector entry only, no next
-    state). Dtype-preserving. Eager; call under torch.no_grad()."""
+    state). Dtype-preserving. Eager; call under torch.no_grad().
+
+    obar: optional complex centring scalars — (Nz,), (B, 1) or (B, Nz); see
+    _born_init. The returned orders are then those of the CENTRED series;
+    the physical detector field is prod_over_slices(obar) * (D0 +
+    sum_k c_k D[k-1]), with the product taken per view when obar is
+    view-dependent. Default None reproduces the vacuum expansion exactly."""
     B, omode, Nz, Ny, Nx, _ = object_patches.shape
     n = min(n_max, Nz)
-    obj, probe_k, Psi_state = _born_init(object_patches, probe, H)
+    obj, probe_k, Psi_state = _born_init(object_patches, probe, H, obar=obar)
     D0 = probe_k.squeeze(3).expand(B, -1, omode, -1, -1)
     orders = []
     for k in range(n):
@@ -99,10 +142,9 @@ def born_multislice_target(
     B, omode, Nz, Ny, Nx, _ = object_patches.shape
     O = torch.polar(object_patches[..., 0], object_patches[..., 1])  # (B,omode,Nz,Ny,Nx)
     H1 = H[:, :, :, min(1, Nz - 1)]  # single-step propagator (ones when Nz == 1)
-    psi = probe[:, :, None]  # (B|1, pmode, 1, Ny, Nx) -> broadcast omode
-    for j in range(Nz - 1):
-        psi = ifft2(H1 * fft2(psi * O[:, None, :, j]))
-    F = fft2(psi * O[:, None, :, Nz - 1])
+    # probe[:, :, None]: (B|1, pmode, 1, Ny, Nx) -> broadcast omode
+    psi = multislice_exit_wave(O, probe[:, :, None], H1)
+    F = fft2(psi)
     return (F * H[:, :, :, Nz - 1].conj()).expand(B, -1, omode, -1, -1)
 
 
@@ -181,3 +223,195 @@ def born_qr_coeffs(
     if extra_rhs is None:
         return c.to(torch.complex64), delta
     return c.to(torch.complex64), delta, sol[:, 1].to(torch.complex64)
+
+
+def born_volume_basis(
+    object_patches: torch.Tensor,
+    probe: torch.Tensor,
+    H: torch.Tensor,
+    n_max: int,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Per-order PER-SLICE fields plus the detector entries, for the
+    volume-residual fit and its checks.
+
+    Returns (V, D0, D): V of shape (n+1, B, pmode, omode, Nz, Ny, Nx) with
+    V[m, ..., j, :, :] the order-m real-space field at plane j (zero for
+    j < m: order m needs m prior sites), D0 and D exactly as from
+    born_detector_basis, n = min(n_max, Nz). Unlike born_detector_basis the
+    last order's advance runs too, so V[n] is populated (identically zero
+    when n == Nz — no plane lies at depth >= Nz, only the detector entry
+    D[n-1] survives). Memory is (n+1) full per-slice stacks per view: call
+    on small view chunks. Eager; call under torch.no_grad()."""
+    B, omode, Nz, Ny, Nx, _ = object_patches.shape
+    n = min(n_max, Nz)
+    pmode = probe.shape[1]
+    obj, probe_k, Psi_state = _born_init(object_patches, probe, H)
+    D0 = probe_k.squeeze(3).expand(B, -1, omode, -1, -1)
+    full = (B, pmode, omode, Nz, Ny, Nx)
+    V = [Psi_state.expand(full).clone()]
+    orders = []
+    for k in range(n):
+        scat = _born_scatter(obj, Psi_state, H, k)
+        Vk = torch.zeros(full, dtype=D0.dtype, device=D0.device)
+        if k == Nz - 1:  # order Nz: detector entry only, no plane holds it
+            orders.append(scat.sum(dim=3))
+        else:
+            Psi_state, D_k = _born_advance(scat, H, k)
+            # clone: D_k is a view into the advance's prefix sums
+            orders.append(D_k.clone())
+            Vk[..., k + 1 :, :, :] = Psi_state
+        V.append(Vk)
+    return torch.stack(V), D0, torch.stack(orders)
+
+
+def born_exit_residual_coeffs(
+    D: torch.Tensor,
+    M: int,
+    omode_occu: torch.Tensor | None = None,
+    offset_from_one: bool = False,
+) -> tuple[torch.Tensor, float, int, torch.Tensor]:
+    """Exit-residual fit: least squares on the DETECTOR entries of the
+    multislice fixed-point residual — columns D_m - D_{m+1} (m = 1..M),
+    right-hand side D_1. Needs the detector basis run to order M+1, i.e.
+    D from born_detector_basis(..., n_max=M+1); when M == Nz the basis
+    tops out at order Nz and D_{Nz+1} = 0 is implied (nilpotency). No
+    multislice target is ever formed, and no measured data enters.
+
+    Solved in complex128 by the rank-aware 'gelsd' driver on the CPU, same
+    as born_qr_coeffs, but for c DIRECTLY (zero prior): under rank
+    truncation the solution shrinks toward c = 0, unlike born_qr_coeffs
+    whose offset coordinates shrink toward c = 1. offset_from_one=True
+    solves the same problem in x = c - 1 coordinates instead (rhs becomes
+    D_1 - sum_m (D_m - D_{m+1}) = D_{M+1}) for the rank-deficient
+    comparison.
+
+    Returns (c, rel_res, rank, svals): c complex64 (M,),
+    rel_res = ||A c - D_1|| / ||D_1|| in the (occupancy-weighted) row norm,
+    the numerical rank reported by gelsd, and the singular values of the
+    column matrix. Eager; call under torch.no_grad()."""
+    n_det = D.shape[0]
+    if n_det < M:
+        raise ValueError(f"need detector orders 1..{M}, got {n_det}")
+    Dm = D[:M]
+    if n_det > M:
+        Dnext = D[1 : M + 1]
+    else:  # M == Nz: D_{Nz+1} = 0 by nilpotency
+        Dnext = torch.cat([D[1:M], torch.zeros_like(D[:1])])
+    A = Dm - Dnext
+    b = D[0]
+    if omode_occu is not None:
+        w = omode_occu.to(A.real.dtype).clamp(min=0).sqrt().view(1, 1, -1, 1, 1)
+        A = A * w
+        b = b * w
+    A = A.reshape(M, -1).T.to(torch.complex128)
+    b = b.reshape(-1).to(torch.complex128)
+    rhs = b - A.sum(dim=1) if offset_from_one else b
+    out = torch.linalg.lstsq(A.cpu(), rhs.cpu()[:, None], driver="gelsd")
+    x = out.solution[:, 0].to(A.device)
+    c = 1.0 + x if offset_from_one else x
+    b_norm = torch.linalg.vector_norm(b)
+    rel_res = (torch.linalg.vector_norm(A @ c - b) / b_norm).item() if b_norm > 0 else 0.0
+    return c.to(torch.complex64), rel_res, int(out.rank), out.singular_values
+
+
+def born_volume_residual_rows(
+    V: torch.Tensor,
+    D: torch.Tensor,
+    M: int,
+    omode_occu: torch.Tensor | None = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Stacked rows of the VOLUME-residual least-squares problem for one
+    view chunk: columns Psi^(m) - Psi^(m+1) (m = 1..M) over every plane
+    plus the detector entry, right-hand side Psi^(1).
+
+    Normalisation convention: unitary. The per-slice fields are real-space
+    and kept as-is; the detector entries come from an unnormalised fft2,
+    which inflates their norm by sqrt(Ny*Nx), so the detector block is
+    divided by sqrt(Ny*Nx) before stacking. Object-mode rows are weighted
+    by sqrt(omode_occu), matching born_qr_coeffs. Plane-0 rows are dropped
+    (every order >= 1 and the rhs are zero there). Orders beyond those
+    present in V / D are treated as zero (nilpotency at M = Nz).
+
+    V, D from born_volume_basis(..., n_max=M+1) (n_max capped at Nz).
+    Returns (A, b): A (rows, M) and b (rows,) in V's dtype — cast to
+    complex128 downstream (born_tsqr_update does). Eager; call under
+    torch.no_grad()."""
+    n_vol = V.shape[0] - 1  # highest per-slice order present
+    n_det = D.shape[0]
+    Ny, Nx = V.shape[-2], V.shape[-1]
+    det_scale = 1.0 / math.sqrt(Ny * Nx)
+    if omode_occu is not None:
+        w = omode_occu.to(V.real.dtype).clamp(min=0).sqrt()
+        wv = w.view(1, 1, -1, 1, 1, 1)
+        wd = w.view(1, 1, -1, 1, 1)
+    else:
+        wv = wd = None
+
+    def _vol(m):
+        return V[m] if m <= n_vol else torch.zeros_like(V[0])
+
+    def _det(m):  # D[m-1] is order m; orders past the stack are zero
+        return D[m - 1] if 1 <= m <= n_det else torch.zeros_like(D[0])
+
+    def _rows(vol_block, det_block):
+        if wv is not None:
+            vol_block = vol_block * wv
+            det_block = det_block * wd
+        return torch.cat(
+            [vol_block[..., 1:, :, :].reshape(-1), (det_block * det_scale).reshape(-1)]
+        )
+
+    cols = [_rows(_vol(m) - _vol(m + 1), _det(m) - _det(m + 1)) for m in range(1, M + 1)]
+    b = _rows(_vol(1), _det(1))
+    return torch.stack(cols, dim=1), b
+
+
+def born_tsqr_update(R: torch.Tensor | None, block: torch.Tensor) -> torch.Tensor:
+    """One accumulation step of the chunked (tall-skinny) QR: returns the
+    R factor of [R_prev; block] in complex128. Feed row blocks of the
+    least-squares matrix WITH the right-hand side appended as the last
+    column; after the last block, R holds everything the solve needs
+    (born_residual_solve_from_r). No Gram matrix is ever formed, and the
+    accumulation is exact in the usual QR backward-stable sense."""
+    block = block.to(torch.complex128)
+    stacked = block if R is None else torch.cat([R, block])
+    return torch.linalg.qr(stacked, mode="r").R
+
+
+def born_residual_solve_from_r(
+    R: torch.Tensor,
+    M: int,
+    n_rows: int,
+    offset_from_one: bool = False,
+) -> tuple[torch.Tensor, float, int, torch.Tensor, float]:
+    """Solve the residual least squares from the accumulated R factor of
+    [A_1 .. A_K, b] (born_tsqr_update), for the leading M <= K columns.
+
+    Columns are scaled to unit norm (column norms are preserved by QR, so
+    they are read off R itself — identical to scaling the full columns
+    first, since diagonal scaling commutes with QR), then a truncated SVD
+    at the gelsd-style numerical rank: s > s_max * eps64 * max(n_rows, M),
+    with n_rows the TOTAL row count that went through the accumulation.
+    Solves for c directly (zero prior; truncation shrinks toward c = 0) or,
+    with offset_from_one=True, for x = c - 1 (truncation shrinks toward
+    c = 1).
+
+    Returns (c, rel_res, rank, svals, cond): c complex64 (M,),
+    rel_res = ||A c - b|| / ||b|| (exact — both live in the accumulated Q
+    basis), the truncation rank, the singular values of the unit-column
+    matrix, and their condition number."""
+    RA = R[:, :M]
+    rb = R[:, -1]
+    s_col = torch.linalg.vector_norm(RA, dim=0)
+    s_safe = torch.where(s_col > 0, s_col, torch.ones_like(s_col))
+    U, S, Vh = torch.linalg.svd(RA / s_safe, full_matrices=False)
+    cutoff = S.max() * torch.finfo(torch.float64).eps * max(n_rows, M)
+    rank = int((S > cutoff).sum())
+    rhs = rb - RA.sum(dim=1) if offset_from_one else rb
+    y = Vh[:rank].mH @ ((U[:, :rank].mH @ rhs) / S[:rank])
+    x = y / s_safe
+    c = 1.0 + x if offset_from_one else x
+    b_norm = torch.linalg.vector_norm(rb)
+    rel_res = (torch.linalg.vector_norm(RA @ c - rb) / b_norm).item() if b_norm > 0 else 0.0
+    cond = (S.max() / S.min()).item() if S.min() > 0 else float("inf")
+    return c.to(torch.complex64), rel_res, rank, S, cond

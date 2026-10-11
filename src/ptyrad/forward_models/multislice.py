@@ -18,6 +18,27 @@ from ptyrad.utils import fftshift2
 # So new tensor is being created and referenced to the old graph to keep the gradient flowing
 
 
+def multislice_exit_wave(object_cplx, psi, H1):
+    """
+    The rolling Lie-Trotter sweep shared by the forward models and the Born
+    coefficient-fit target: transmit each slice and propagate one step, with
+    no propagation after the last slice.
+
+    Args:
+        object_cplx (torch.Tensor): (N, omode, Nz, Ny, Nx) complex object slices.
+        psi (torch.Tensor): (N|1, pmode, omode|1, Ny, Nx) wave at the entrance plane.
+        H1 (torch.Tensor): single-step propagator, broadcastable against fft2(psi),
+            e.g. H[:, None, None] for the (N, Ky, Kx) propagator of multislice_forward.
+
+    Returns:
+        torch.Tensor: (N, pmode, omode, Ny, Nx) complex exit wave (unshifted real space).
+    """
+    n_slices = object_cplx.shape[2]
+    for n in range(n_slices - 1):
+        psi = ifft2(H1 * fft2(psi * object_cplx[:, None, :, n]))
+    return psi * object_cplx[:, None, :, n_slices - 1]
+
+
 @torch.compile(mode="max-autotune")
 def multislice_forward(object_patches, probe, H, omode_occu=None, eps=1e-10):
     """
@@ -60,24 +81,13 @@ def multislice_forward(object_patches, probe, H, omode_occu=None, eps=1e-10):
     object_cplx = torch.polar(
         object_patches[..., 0], object_patches[..., 1]
     ).contiguous()  # (N, omode, Nz, Ny, Nx)
-    n_slices = object_cplx.shape[2]
 
     # Expand psi to include omode dimension
     psi = probe[:, :, None, :, :].contiguous()  # (N, pmode, Ny, Nx) -> (N, pmode, omode, Ny, Nx)
 
-    # Propagating each object layer using broadcasting
-    for n in range(n_slices - 1):
-        object_slice = object_cplx[:, :, n, :, :]  # object_slice -> (N, omode, Ny, Nx)
-        psi = (
-            psi * object_slice[:, None, :, :, :]
-        )  # psi -> (N, pmode, omode, Ny, Nx). Note that psi is always centered in real space
-        psi = ifft2(
-            H[:, None, None] * fft2(psi)
-        )  # Note that fft2 and ifft2 are applying to the last 2 axes. Although preshift psi before fft2 would seem more natural, it's nearly 50% slower to do it as fftshift2(ifft2(fft2(ifftshift2(psi))))
-
-    # Interacting with the last layer, and no propagation is needed afterward
-    object_slice = object_cplx[:, :, n_slices - 1, :, :]
-    psi = psi * object_slice[:, None, :, :, :]
+    # Transmit and propagate through every layer; psi is always centered in real space.
+    # Note that fft2 and ifft2 are applying to the last 2 axes. Although preshift psi before fft2 would seem more natural, it's nearly 50% slower to do it as fftshift2(ifft2(fft2(ifftshift2(psi))))
+    psi = multislice_exit_wave(object_cplx, psi, H[:, None, None])
 
     # Propagate the object-modified exit wave psi(r) to detector plane into psi(k)
     # The contribution from probe / object modes are incoherently summed together
@@ -207,7 +217,6 @@ def strang_forward(object_patches, probe, H_tuple, omode_occu=None, eps=1e-10):
         omode_occu = torch.ones(omode, dtype=dtype, device=device) / omode
 
     object_cplx = torch.polar(object_patches[..., 0], object_patches[..., 1]).contiguous()
-    n_slices = object_cplx.shape[2]
 
     psi = probe[:, :, None, :, :].contiguous()
 
@@ -225,17 +234,9 @@ def strang_forward(object_patches, probe, H_tuple, omode_occu=None, eps=1e-10):
 
     # Is the detector wave error second order?
 
-    # Initial half-drift into the first slice
+    # Initial half-drift into the first slice, then the plain Lie-Trotter sweep
     psi = ifft2(H_half[:, None, None] * fft2(psi))
-
-    for n in range(n_slices - 1):
-        object_slice = object_cplx[:, :, n, :, :]
-        psi = psi * object_slice[:, None, :, :, :]
-        psi = ifft2(H[:, None, None] * fft2(psi))
-
-    # Interacting with the last layer
-    object_slice = object_cplx[:, :, n_slices - 1, :, :]
-    psi = psi * object_slice[:, None, :, :, :]
+    psi = multislice_exit_wave(object_cplx, psi, H[:, None, None])
 
     # Final conjugate half-drift out of the last slice is cancelled out by the final FFT and modulus.
 
