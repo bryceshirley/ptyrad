@@ -2,7 +2,8 @@
 reproduce abtem's noise-free patterns from the exported ground truth.
 
 Run (ptyrad venv, from the repo root):
-  .venv/bin/python -m generate_data.check_ptyrad_forward demo/data/generated/smoke_2slab.h5
+  .venv/bin/python test/generate_data/check_ptyrad_forward.py demo/data/generated/smoke_2slab.h5
+or via pytest (skips when the smoke file is absent): test_checks.py.
 
 For each test position: object patch from gt_phase (amplitude 1), exported
 probe, PtyRAD Fresnel propagator (near_field_evolution) for dz at dx,
@@ -19,16 +20,10 @@ import numpy as np
 import torch  # ty: ignore[unresolved-import]
 
 from ptyrad.forward_models import multislice_forward
-from ptyrad.utils.physics import near_field_evolution
+from ptyrad.utils.physics import get_EM_constants, near_field_evolution
 
 
-def electron_wavelength_A(kv: float) -> float:
-    return 12.3984244 / np.sqrt(kv * (2 * 510.99895 + kv))
-
-
-def asm_propagator(
-    npix: int, dx: float, dz: float, lam: float, half_offset: bool
-) -> np.ndarray:
+def asm_propagator(npix: int, dx: float, dz: float, lam: float, half_offset: bool) -> np.ndarray:
     """Angular-spectrum propagator.  half_offset=True reproduces PtyRAD's
     near_field_evolution (k-grid at (m+0.5)/N - fold_slice heritage);
     False is the standard fftfreq grid (abtem's convention)."""
@@ -63,9 +58,10 @@ def pearson(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.corrcoef(a, b)[0, 1])
 
 
-def main():
-    args = [a for a in sys.argv[1:] if not a.startswith("--")]
-    flags = [a for a in sys.argv[1:] if a.startswith("--")]
+def main(argv: list[str] | None = None):
+    argv = sys.argv[1:] if argv is None else argv
+    args = [a for a in argv if not a.startswith("--")]
+    flags = [a for a in argv if a.startswith("--")]
     path = Path(args[0] if args else "out/smoke_2slab.h5")
     n_test = int(args[1]) if len(args) > 1 else 5
     use_fine = "--fine" in flags
@@ -89,7 +85,7 @@ def main():
     npix = probe.shape[-1]  # model window (128, or 256 with --window256)
     det_npix = dp.shape[-1]
     nz = gt.shape[0]
-    lam = electron_wavelength_A(kv)
+    lam = get_EM_constants(kv, "wavelength")
     print(
         f"{path.name}: {n_scans} patterns, {nz} gt slices, dx={dx:.5f} A, dz={dz:.3f} A, "
         f"lambda={lam:.6f} A"
@@ -168,11 +164,9 @@ def main():
     ok = mean_r >= 0.99 and mean_l2 <= 0.10
     print(f"GATE (Pearson >= 0.99, relL2 <= ~0.1): {'PASS' if ok else 'FAIL'}")
     if best != (0, 0, 0):
-        print(
-            "NOTE: non-identity orientation needed -> set meas_flipT accordingly in configs"
-        )
-    return 0 if ok else 1
+        print("NOTE: non-identity orientation needed -> set meas_flipT accordingly in configs")
+    return {"ok": ok, "best": best, "mean_pearson": mean_r, "mean_rel_l2": mean_l2}
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(0 if main()["ok"] else 1)

@@ -19,10 +19,6 @@ def main(argv: list[str] | None = None) -> None:
     pp.add_argument("name", choices=sorted(list_datasets()))
     pp.add_argument("--device", choices=("cpu", "gpu"), default="gpu")
 
-    pc = sub.add_parser("cbed", help="single-position CBED pre-scan check")
-    pc.add_argument("sample", nargs="?", choices=("smoke", "a"), default="smoke")
-    pc.add_argument("--device", choices=("cpu", "gpu"), default="cpu")
-
     pg = sub.add_parser("gate", help="export a GT-only gate file for design iteration")
     pg.add_argument("name")
     pg.add_argument("slab_cells", nargs="?", type=int, default=2)
@@ -37,10 +33,6 @@ def main(argv: list[str] | None = None) -> None:
         attrs = produce_named(args.name, device=args.device)
         for k, v in attrs.items():
             print(f"  {k} = {v}")
-    elif args.cmd == "cbed":
-        from generate_data.check_cbed import run_check
-
-        run_check(args.sample, device=args.device)
     elif args.cmd == "gate":
         export_gate(
             args.name,

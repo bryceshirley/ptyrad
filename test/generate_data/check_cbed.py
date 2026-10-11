@@ -5,7 +5,8 @@ detector recipe, saves a PNG, and asserts the BF-disk radius matches
 semiangle/da within 1 px and that the pattern is centered. Run this before
 committing GPU-hours to a full scan:
 
-    uv run generate-data cbed [smoke|a] [--device cpu|gpu]
+    .venv/bin/python -c "from check_cbed import run_check; run_check('smoke')"  # from test/generate_data
+or via pytest (opt-in, it simulates): GENDATA_SLOW=1 pytest test/generate_data/test_checks.py
 """
 
 import time
@@ -71,14 +72,11 @@ def run_check(sample: str = "smoke", device: str = "cpu") -> None:
     # thick crystal, dynamical scattering destroys the flat-disk plateau the
     # threshold recipe needs, but the calibration (da) is a vacuum property.
     probe = make_probe(plan, device=device)
-    vac = probe.build(scan=[center], lazy=False).diffraction_patterns(
-        max_angle="cutoff"
-    )
+    vac = probe.build(scan=[center], lazy=False).diffraction_patterns(max_angle="cutoff")
     vac_pattern = crop_and_bin(vac, plan).reshape(plan.det_npix, plan.det_npix)
     vac_radius, vac_com = measure_bf_disk(vac_pattern)
     print(
-        f"vacuum BF radius {vac_radius:.2f} px (target {plan.bf_radius_px:.2f} +- 1), "
-        f"COM {vac_com}"
+        f"vacuum BF radius {vac_radius:.2f} px (target {plan.bf_radius_px:.2f} +- 1), COM {vac_com}"
     )
 
     assert abs(vac_radius - plan.bf_radius_px) <= 1.0, "BF radius out of tolerance"

@@ -41,7 +41,7 @@ delta-layers), `multi5` (C/Si/SrTiO3/Ge/Au), `planes128` (16 atomic planes /
 Pre-flight checks:
 
 ```bash
-.venv/bin/generate-data cbed smoke     # BF-disk radius/centering vs plan (cheap)
+.venv/bin/python -c "import sys; sys.path.insert(0, 'test/generate_data'); from check_cbed import run_check; run_check('smoke')"  # BF-disk radius/centering vs plan (cheap)
 .venv/bin/generate-data gate d3 2 2 15 115 225   # GT-only export for design iteration
 ```
 
@@ -114,7 +114,7 @@ the abtem patterns from the exported ground truth:
 
 ```bash
 cd ~/ptyrad
-.venv/bin/python -m generate_data.check_ptyrad_forward demo/data/generated/smoke_2slab.h5
+.venv/bin/python test/generate_data/check_ptyrad_forward.py demo/data/generated/smoke_2slab.h5
 ```
 
 It scores all 8 dihedral orientations and reports the residual; identity must

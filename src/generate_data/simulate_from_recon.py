@@ -25,6 +25,8 @@ from abtem import PotentialArray, Waves
 from abtem.core.axes import PositionsAxis
 from abtem.core.energy import energy2sigma, energy2wavelength
 
+from generate_data.simulate import scale_and_poisson
+
 SRC = "/home/dnz75396/ptyrad/demo/data/tBL_WSe2/Panel_g-h_Themis/model_iter0200.hdf5"
 
 
@@ -137,16 +139,6 @@ def crop_bin_center(dp: np.ndarray, det_npix: int) -> np.ndarray:
     arr = dp[..., start : start + b * n, start : start + b * n]
     arr = arr.reshape(*lead, n, b, n, b).sum(axis=(-3, -1))
     return arr
-
-
-def scale_and_poisson(fractional, electrons_per_pattern, seed=0):
-    flat = fractional.reshape(-1, *fractional.shape[-2:])
-    cap = float(flat.sum(axis=(-2, -1)).mean())
-    scale = electrons_per_pattern / cap
-    noiseless = (fractional * scale).astype(np.float64)
-    rng = np.random.default_rng(seed)
-    noisy = rng.poisson(noiseless).astype(np.float64)
-    return noisy, noiseless, cap
 
 
 def produce(

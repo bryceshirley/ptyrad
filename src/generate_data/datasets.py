@@ -161,7 +161,7 @@ def produce_named(name: str, device: str = "gpu") -> dict:
 
 def _produce_smoke(device: str) -> dict:
     """Smoke dataset keeps its bespoke path: it also stores scan positions and
-    a fine-sliced (2 A) ground truth so check_ptyrad_forward.py can separate
+    a fine-sliced (2 A) ground truth so test/generate_data/check_ptyrad_forward.py can separate
     convention errors from coarse-slicing error."""
     from generate_data.h5io import write_dataset
     from generate_data.simulate import (
