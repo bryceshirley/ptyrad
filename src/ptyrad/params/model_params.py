@@ -315,6 +315,7 @@ class ModelParams(BaseModel):
             "pin_first": True,
             "method": "detector",
             "grow_tol": None,
+            "grow_fast": False,
             "n_limit": None,
             "target": "multislice",
         }

@@ -37,30 +37,23 @@ from torch.fft import fft2, ifft2
 from ptyrad.forward_models.multislice import multislice_exit_wave
 
 
-def _born_init(object_patches, probe, H, obar=None):
+def unscattered_illumination(probe, H):
+    """phi_j = ifft2(H^j FFT(P)) — the order-0 per-slice wave of the Born
+    recursion, shape (B|1, pmode, 1, Nz, Ny, Nx). Depends only on the probe;
+    any probe change invalidates it. Also consumed by ptyrad.mliss, whose
+    hot call sites are torch.compile'd regions (this inlines there)."""
+    Ny, Nx = probe.shape[-2:]
+    probe_k = fft2(probe).view(-1, probe.shape[1], 1, 1, Ny, Nx)
+    return ifft2(H * probe_k)
+
+
+def _born_init(object_patches, probe, H):
     """Shared entry of the Born recursion: the scattering potential (O - 1),
     the k-space probe, and the unscattered per-slice wave v_0 = ifft2(H^j psi_0).
     Used by born_forward and the fit machinery so the recursion physics
-    lives in one place.
-
-    obar: optional complex centring scalars. When given, the series is
-    expanded about obar instead of vacuum: the potential becomes
-    O / obar - 1. Shapes: (Nz,) one scalar per slice shared by all views;
-    (B, 1) one scalar per view shared by all slices; (B, Nz) one scalar
-    per view per slice. A scalar commutes with propagation, so the
-    multislice wave of O equals prod_over_slices(obar) times that of
-    O / obar; callers must apply that prefactor (per view, when obar is
-    view-dependent) to the assembled detector field themselves. Default
-    None is the existing vacuum expansion, bit-identical."""
+    lives in one place."""
     Ny, Nx = object_patches.shape[-3], object_patches.shape[-2]
     O = torch.polar(object_patches[..., 0], object_patches[..., 1])
-    if obar is not None:
-        ob = (
-            obar.view(1, 1, -1, 1, 1)
-            if obar.dim() == 1
-            else obar.view(obar.shape[0], 1, obar.shape[1], 1, 1)
-        )
-        O = O / ob
     obj = (O - 1.0).unsqueeze(1)
     probe_k = fft2(probe).view(-1, probe.shape[1], 1, 1, Ny, Nx)
     return obj, probe_k, ifft2(H * probe_k)
@@ -93,7 +86,6 @@ def born_detector_basis(
     probe: torch.Tensor,
     H: torch.Tensor,
     n_max: int,
-    obar: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Truncated per-order detector basis for the coefficient fit.
 
@@ -103,16 +95,10 @@ def born_detector_basis(
     detector field is exactly D0 + sum_k c_k D[k-1] (unshifted k-space).
     Only the truncated recursion runs (~2*n*(Nz - n/2) slice-FFTs per view);
     the last basis order skips its advance (detector entry only, no next
-    state). Dtype-preserving. Eager; call under torch.no_grad().
-
-    obar: optional complex centring scalars — (Nz,), (B, 1) or (B, Nz); see
-    _born_init. The returned orders are then those of the CENTRED series;
-    the physical detector field is prod_over_slices(obar) * (D0 +
-    sum_k c_k D[k-1]), with the product taken per view when obar is
-    view-dependent. Default None reproduces the vacuum expansion exactly."""
+    state). Dtype-preserving. Eager; call under torch.no_grad()."""
     B, omode, Nz, Ny, Nx, _ = object_patches.shape
     n = min(n_max, Nz)
-    obj, probe_k, Psi_state = _born_init(object_patches, probe, H, obar=obar)
+    obj, probe_k, Psi_state = _born_init(object_patches, probe, H)
     D0 = probe_k.squeeze(3).expand(B, -1, omode, -1, -1)
     orders = []
     for k in range(n):

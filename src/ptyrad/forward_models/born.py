@@ -1,4 +1,4 @@
-"""Parallel Born-series forward model for multislice ptychography.
+"""Parallel Inter Slice Born-series forward model for multislice ptychography.
 
 The Born series is a combinatorial expansion of the multislice operator, and
 the parallel formulation replaces the sequential propagation loop with a
@@ -61,8 +61,8 @@ def born_forward(
             representing the probe(s). N is the number of samples in the batch, pmode is the
             number of probe modes. By default, N is 1, assuming the same probe for all samples.
         H (torch.Tensor): Tensor of shape (N|1, 1, 1, Nz, Ny, Nx) with complex64 values —
-            the stack of Fresnel propagator powers H^j (entrance to slice j), identical to
-            the H accepted by iss_forward. The detector-path kernel is derived internally
+            the stack of Fresnel propagator powers H^j (entrance to slice j), as built by
+            PtychoAD.get_H_3d. The detector-path kernel is derived internally
             as its conjugate (the vacuum propagator is unimodular).
         omode_occu (torch.Tensor): Tensor of shape (omode,) with float32 values.
         eps (float, optional): A small value added for numerical stability. Defaults to 1e-10.

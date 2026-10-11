@@ -24,20 +24,18 @@ import os
 
 os.environ.setdefault("TORCHDYNAMO_DISABLE", "1")
 
-import numpy as np
 import pytest
 import torch
 
 torch._dynamo.config.disable = True
 
-from torch.fft import fft2, fftshift, ifft2, ifftshift
+from torch.fft import fft2, ifft2, ifftshift
 
 import ptyrad.mliss as ml
 from ptyrad.mliss import (
     _fields_from_complex,
     direction_response,
     dp_from_fields,
-    iss_fields,
     object_denominator,
     unscattered_illumination,
 )
@@ -46,6 +44,16 @@ torch.manual_seed(0)
 
 B, PMODE, OMODE, NZ, NY, NX = 3, 2, 1, 3, 16, 16
 C_PER_UNIT = 5.0e3  # counts per normalised unit for these tests
+
+
+def _direction(obj_complex, probe, H, I_dat, mask, sigma2, occu):
+    """Unpreconditioned L_G descent directions (-O.grad, -P.grad), the same
+    forward/backward the engine runs (torch Wirtinger convention)."""
+    O = obj_complex.detach().clone().requires_grad_(True)
+    P = probe.detach().clone().requires_grad_(True)
+    L = ml.mliss_loss(dp_from_fields(_fields_from_complex(O, P, H), occu), I_dat, mask, sigma2)
+    L.backward()
+    return -O.grad, -P.grad
 
 
 def _mk(dtype=torch.complex128, seed=3):
@@ -79,7 +87,7 @@ def test_gradient_matches_analytic_residual():
     O, P, H, occu, I_dat, mask = _mk()
     sigma2 = ml.mliss_sigma2(I_dat, C_PER_UNIT)
 
-    d_eng, q_eng = ml.mliss_direction(O, P, H, I_dat, mask, sigma2, occu)
+    d_eng, q_eng = _direction(O, P, H, I_dat, mask, sigma2, occu)
 
     F = _fields_from_complex(O, P, H)
     u = dp_from_fields(F, occu)
@@ -101,10 +109,10 @@ def test_gradient_matches_analytic_residual():
 
     # probe residual: F is linear in P -> descent is the adjoint of
     # P -> F(P; g) applied to the residual; verify with autograd of an
-    # INDEPENDENT forward (production iss path via iss_fields).
+    # INDEPENDENT forward through the (amp, phase) storage round trip.
     P2 = P.detach().clone().requires_grad_(True)
-    patches = torch.stack([O.abs(), O.angle()], dim=-1)
-    F2 = iss_fields(patches, P2, H)
+    patches = torch.stack([O.abs(), O.angle()], dim=-1)  # (amp, phase) storage round trip
+    F2 = _fields_from_complex(torch.polar(patches[..., 0], patches[..., 1]), P2, H)
     L2 = ml.mliss_loss(dp_from_fields(F2, occu), I_dat, mask, sigma2)
     L2.backward()
     assert torch.allclose(q_eng, -P2.grad, rtol=1e-10, atol=1e-12)
@@ -144,7 +152,7 @@ def test_object_line_search_matches_explicit_forwards():
             f"gamma={gam}: forward {L_fwd} vs quartic {L_quart}"
         )
 
-    a, fb = ml.ml_line_search(e, v, w, omega, fallback=1.0 / NZ, damp=1.0)
+    a, fb = ml.ml_line_search(e, v, w, omega, fallback=1.0 / NZ)
     assert not fb
     # chosen gamma is the dense-grid minimiser of the quartic
     dense = torch.linspace(a - 1.0, a + 1.0, 20001, dtype=torch.float64)
@@ -205,7 +213,7 @@ def test_probe_line_search_uses_updated_slices():
         L_quart = 0.5 * (omega * (e2 + 2 * gam * v_p + gam * gam * w_p) ** 2).sum()
         assert torch.allclose(L_fwd, L_quart, rtol=1e-11, atol=1e-14)
 
-    b, fb = ml.ml_line_search(e2, v_p, w_p, omega, fallback=1.0 / NZ, damp=1.0)
+    b, fb = ml.ml_line_search(e2, v_p, w_p, omega, fallback=1.0 / NZ)
     assert not fb
     r = e2 + 2 * b * v_p + b * b * w_p
     dL = (omega * r * (2 * v_p + 2 * b * w_p)).sum()
@@ -242,7 +250,7 @@ def test_thin_sample_reduction_N1():
     )
     sigma2 = ml.mliss_sigma2(I_dat, C_PER_UNIT)
     omega = 1.0 / sigma2
-    d_eng, _ = ml.mliss_direction(O, P, H, I_dat, None, sigma2, occu)
+    d_eng, _ = _direction(O, P, H, I_dat, None, sigma2, occu)
     phi = unscattered_illumination(P, H)
     dn = object_denominator(phi)
     d = d_eng / dn
@@ -251,7 +259,7 @@ def test_thin_sample_reduction_N1():
 
     u = dp_from_fields(F, occu)
     v, w = response_terms(F, D, occu)
-    a, fb = ml.ml_line_search(u - I_dat, v, w, omega, fallback=1.0, damp=1.0)
+    a, fb = ml.ml_line_search(u - I_dat, v, w, omega, fallback=1.0)
     assert not fb
     L0 = ml.mliss_loss(u, I_dat, None, sigma2)
     La = ml.mliss_loss(
@@ -280,8 +288,7 @@ def test_batch_update_monotone_and_consistent():
     sigma2 = ml.mliss_sigma2(I1, cfg.counts_per_unit)
 
     def LG():
-        pat = torch.stack([obja, objp], dim=-1).unsqueeze(0)
-        u = dp_from_fields(iss_fields(pat, P32, H32), occ32)
+        u = dp_from_fields(_fields_from_complex(torch.polar(obja, objp).unsqueeze(0), P32, H32), occ32)
         return float(ml.mliss_loss(u, I1, None, sigma2))
 
     probe = P32.clone()
@@ -289,7 +296,7 @@ def test_batch_update_monotone_and_consistent():
     for it in range(6):
         # direction/step consistency probe on the first update
         if it == 0:
-            d_pre, _ = ml.mliss_direction(
+            d_pre, _ = _direction(
                 torch.polar(obja, objp).unsqueeze(0), probe, H32, I1, None, sigma2, occ32
             )
             dn = object_denominator(unscattered_illumination(probe, H32))
@@ -316,116 +323,13 @@ def test_sigma2_requires_counts_scale():
     assert torch.allclose(s, torch.full((2,), 0.25))
 
 
-def test_joint_line_search_matches_explicit_forwards():
-    """Task-2 joint step: for random d_j and d_{P,m} (N = 3 slices, 2 probe
-    modes, 3 positions), L_G at ~20 gammas by explicit forward passes at
-    (O + g d, P + g d_P) matches the degree-8 polynomial built from
-    A0..A4 to round-off, and the chosen gamma is its minimiser."""
-    O, P, H, occu, I_dat, mask = _mk(seed=31)
-    sigma2 = ml.mliss_sigma2(I_dat, C_PER_UNIT)
-    omega = mask / sigma2
-
-    g = torch.Generator().manual_seed(77)
-    d = (
-        torch.randn(B, OMODE, NZ, NY, NX, generator=g, dtype=torch.float64)
-        + 1j * torch.randn(B, OMODE, NZ, NY, NX, generator=g, dtype=torch.float64)
-    ) * 0.02
-    q = (
-        torch.randn(1, PMODE, NY, NX, generator=g, dtype=torch.float64)
-        + 1j * torch.randn(1, PMODE, NY, NX, generator=g, dtype=torch.float64)
-    ) * (0.02 / (NY * NX) ** 0.5)
-
-    F = _fields_from_complex(O, P, H)
-    u = dp_from_fields(F, occu)
-    e = u - I_dat
-    from ptyrad.mliss import response_terms
-
-    a_f = _fields_from_complex(O, q, H) + direction_response(None, d, P, H)
-    b_f = direction_response(None, d, q, H)
-    va, wa = response_terms(F, a_f, occu)
-    vb, wb = response_terms(F, b_f, occu)
-    ab = response_terms(a_f, b_f, occu)[0]
-
-    # psi(g) = psi + g a + g^2 b holds exactly: check the field expansion once
-    gam0 = 0.63
-    F_gam = _fields_from_complex(O + gam0 * d, P + gam0 * q, H)
-    assert torch.allclose(F_gam, F + gam0 * a_f + gam0**2 * b_f, rtol=1e-11, atol=1e-12)
-
-    for gam in torch.linspace(-1.5, 1.5, 21, dtype=torch.float64):
-        L_fwd = ml.mliss_loss(
-            dp_from_fields(_fields_from_complex(O + gam * d, P + gam * q, H), occu),
-            I_dat,
-            mask,
-            sigma2,
-        )
-        r = e + 2 * gam * va + gam**2 * (2 * vb + wa) + 2 * gam**3 * ab + gam**4 * wb
-        L_poly = 0.5 * (omega * r * r).sum()
-        assert torch.allclose(L_fwd, L_poly, rtol=1e-11, atol=1e-14), (
-            f"gamma={gam}: forward {L_fwd} vs octic {L_poly}"
-        )
-
-    gsel, fb = ml.ml_joint_line_search(e, va, wa, vb, ab, wb, omega, fallback=1.0 / NZ)
-    assert not fb
-    # stationary and the global dense-grid minimiser
-    dense = torch.linspace(gsel - 1.0, gsel + 1.0, 20001, dtype=torch.float64)
-    rr = (
-        e.unsqueeze(0)
-        + 2 * dense.view(-1, 1, 1, 1) * va.unsqueeze(0)
-        + dense.view(-1, 1, 1, 1) ** 2 * (2 * vb + wa).unsqueeze(0)
-        + 2 * dense.view(-1, 1, 1, 1) ** 3 * ab.unsqueeze(0)
-        + dense.view(-1, 1, 1, 1) ** 4 * wb.unsqueeze(0)
-    )
-    Ld = 0.5 * (omega.unsqueeze(0) * rr * rr).sum(dim=(1, 2, 3))
-    assert gsel == pytest.approx(float(dense[Ld.argmin()]), abs=2e-4)
-    L0 = ml.mliss_loss(u, I_dat, mask, sigma2)
-    Lsel = ml.mliss_loss(
-        dp_from_fields(_fields_from_complex(O + gsel * d, P + gsel * q, H), occu),
-        I_dat, mask, sigma2,
-    )
-    assert float(Lsel) < float(L0)
-
-
-def test_joint_batch_update_descends():
-    """Full joint-mode update on float32 tensors descends L_G (fresh forward)
-    and moves object AND probe with one gamma."""
-    O, P, H, occu, I_dat, mask = _mk(dtype=torch.complex64, seed=17)
-    obja = O[0].abs().clone()
-    objp = O[0].angle().clone()
-    I1 = I_dat[[0]].float()
-    H32, P32, occ32 = H.to(torch.complex64), P.to(torch.complex64), occu.float()
-    cfg = ml.MLISSConfig(counts_per_unit=C_PER_UNIT, step_mode="joint")
-    st = ml.MLISSState()
-    sigma2 = ml.mliss_sigma2(I1, cfg.counts_per_unit)
-
-    def LG(probe):
-        pat = torch.stack([obja, objp], dim=-1).unsqueeze(0)
-        u = dp_from_fields(iss_fields(pat, probe, H32), occ32)
-        return float(ml.mliss_loss(u, I1, None, sigma2))
-
-    probe = P32.clone()
-    prev = LG(probe)
-    p_before = probe.clone()
-    o_before = torch.polar(obja, objp).clone()
-    for _ in range(4):
-        probe, diag = ml.mliss_batch_update(
-            obja, objp, probe, H32, I1, None, occ32, config=cfg, state=st, update_probe=True
-        )
-        assert diag["b"] == diag["a"]  # one gamma moves both
-        cur = LG(probe)
-        if not diag["fb_o"]:
-            assert cur <= prev * (1 + 1e-5), f"L_G rose on joint non-fallback step: {prev} -> {cur}"
-        prev = cur
-    assert not torch.equal(probe, p_before)
-    assert not torch.equal(torch.polar(obja, objp), o_before)
-    assert len(st.steps_o) == 4 and len(st.steps_p) == 0
-
-
 def test_poisson_gradient_and_line_search():
     """objective='poisson': the direction gradient of L_P matches (a) an
-    independent autodiff through the production iss_fields path and (b) the
-    analytic residual backprojection with weight c(I/u - 1); and L_P(gamma)
+    independent autodiff through the (amp, phase) storage round trip and (b)
+    the analytic residual backprojection with weight c(I/u - 1); L_P(gamma)
     from the (u, v, w) response terms matches explicit forward passes to
-    round-off, with the chosen gamma its minimiser."""
+    round-off; and the safeguarded Newton step descends to a near-stationary
+    point."""
     O, P, H, occu, I_dat, mask = _mk(seed=41)
     c = C_PER_UNIT
 
@@ -434,10 +338,10 @@ def test_poisson_gradient_and_line_search():
     F1 = _fields_from_complex(O1, P, H)
     L1 = ml._lp_loss(dp_from_fields(F1, occu), I_dat, mask, c)
     L1.backward()
-    # ... vs independent autodiff through the production iss path
+    # ... vs independent autodiff through the (amp, phase) storage round trip
     O2p = torch.stack([O.abs(), O.angle()], dim=-1)
     P2 = P.detach().clone().requires_grad_(True)
-    F2 = iss_fields(O2p, P2, H)
+    F2 = _fields_from_complex(torch.polar(O2p[..., 0], O2p[..., 1]), P2, H)
     u2 = dp_from_fields(F2, occu)
     L2 = ml._lp_loss(u2, I_dat, mask, c)
     L2.backward()
@@ -482,18 +386,26 @@ def test_poisson_gradient_and_line_search():
         L_uvw = (mask * (cu - c * I_dat.clamp_min(0) * torch.log(cu))).sum()
         assert torch.allclose(L_fwd, L_uvw, rtol=1e-11, atol=1e-11), f"gamma={gam}"
 
-    # minimiser: use the descent direction, then check stationarity on a grid
+    # Newton step on the descent direction: refined iterations descend and
+    # land (near-)stationary on L_P(gamma) (closed-form intensity path)
     d_desc = d_eng / d_eng.abs().max() * 0.05
     D2 = direction_response(None, d_desc, P, H)
     v2, w2 = response_terms(F, D2, occu)
-    a, fb, nev = ml.lp_line_search(u, v2, w2, I_dat, mask, c, fallback=1.0 / NZ)
-    assert not fb and nev < 80
-    dense = np.linspace(a - 0.5, a + 0.5, 4001)
-    vals = []
-    for x in dense:
-        cu = (c * (u + 2 * x * v2 + x * x * w2)).clamp_min(1e-12)
-        vals.append(float((mask * (cu - c * I_dat.clamp_min(0) * torch.log(cu))).sum()))
-    assert a == pytest.approx(float(dense[int(np.argmin(vals))]), abs=5e-4)
+    cfg6 = ml.MLISSConfig(
+        counts_per_unit=c, objective="poisson", newton_iters=6, newton_safeguard=True
+    )
+    a, fb = ml._step_1d(cfg6, u, u - I_dat, v2, w2, I_dat, mask, None, 1.0 / NZ)
+    assert not fb
+    m64 = mask.double()
+    cI = (c * I_dat.clamp_min(0)).double()
+    L0_, L1_0, _ = (
+        float(x) for x in ml._poi_derivs(u.double(), v2.double(), w2.double(), cI, m64, c, 0.01, 0.0)
+    )
+    La_, L1_a, _ = (
+        float(x) for x in ml._poi_derivs(u.double(), v2.double(), w2.double(), cI, m64, c, 0.01, a)
+    )
+    assert La_ < L0_
+    assert abs(L1_a) < 1e-3 * (1.0 + abs(L1_0))
 
 
 def test_poisson_batch_update_descends():
@@ -502,12 +414,11 @@ def test_poisson_batch_update_descends():
     obja, objp = O[0].abs().clone(), O[0].angle().clone()
     I1 = I_dat[[0]].float()
     H32, P32, occ32 = H.to(torch.complex64), P.to(torch.complex64), occu.float()
-    cfg = ml.MLISSConfig(counts_per_unit=C_PER_UNIT, objective="poisson")
+    cfg = ml.MLISSConfig(counts_per_unit=C_PER_UNIT, objective="poisson", newton_safeguard=True)
     st = ml.MLISSState()
 
     def LP():
-        pat = torch.stack([obja, objp], dim=-1).unsqueeze(0)
-        u = dp_from_fields(iss_fields(pat, P32, H32), occ32)
+        u = dp_from_fields(_fields_from_complex(torch.polar(obja, objp).unsqueeze(0), P32, H32), occ32)
         return float(ml._lp_loss(u, I1, None, C_PER_UNIT))
 
     probe = P32.clone()
@@ -518,69 +429,7 @@ def test_poisson_batch_update_descends():
         )
         cur = LP()
         if not diag["fb_o"] and not diag["fb_p"]:
-            assert cur <= prev * (1 + 1e-6), f"L_P rose: {prev} -> {cur}"
+            # sign-safe tolerance: L_P is negative here, so prev*(1+eps) tightens
+            assert cur <= prev + 1e-6 * (1.0 + abs(prev)), f"L_P rose: {prev} -> {cur}"
         prev = cur
-    assert len(st.ls_evals) == 10  # object + probe searches logged
-
-
-def test_vector_slice_step():
-    """N-dimensional per-slice step: the multivariate quartic equals explicit
-    forwards at random gamma vectors (round-off, float64); the Newton solution
-    strictly improves on the scalar step and has ~zero gradient; N=1 reduces
-    to the scalar cubic root."""
-    O, P, H, occu, I_dat, mask = _mk(seed=61)
-    sigma2 = ml.mliss_sigma2(I_dat, C_PER_UNIT)
-    omega = mask / sigma2
-
-    # descent direction (as the engine builds it)
-    d_eng, _ = ml.mliss_direction(O, P, H, I_dat, mask, sigma2, occu)
-    dn = object_denominator(unscattered_illumination(P, H))
-    d = d_eng / dn
-    D_slices = direction_response(None, d, P, H, per_slice=True)
-    F = _fields_from_complex(O, P, H)
-    u = dp_from_fields(F, occu)
-    e = u - I_dat
-
-    gvec, fb, vx = ml.ml_vector_line_search(e, F, D_slices, omega, occu, fallback=1.0 / NZ)
-    assert not fb
-    assert vx["L_vector"] < vx["L_scalar"] < vx["L0"]
-
-    # exactness: quartic residual == explicit forward at arbitrary gamma vecs
-    g = torch.Generator().manual_seed(3)
-    for _ in range(5):
-        gam = 0.5 * torch.randn(NZ, generator=g, dtype=torch.float64)
-        O2 = O + torch.einsum("j,bojyx->bojyx", gam.to(O.real.dtype) * 0 + 1, d * 0)  # placeholder
-        O2 = O + (d * gam.view(1, 1, -1, 1, 1))
-        L_fwd = ml.mliss_loss(
-            dp_from_fields(_fields_from_complex(O2, P, H), occu), I_dat, mask, sigma2
-        )
-        Ffull = F + (D_slices * gam.view(1, 1, 1, -1, 1, 1)).sum(dim=3)
-        r = dp_from_fields(Ffull, occu) - I_dat
-        L_q = 0.5 * (omega * r * r).sum()
-        assert torch.allclose(L_fwd, L_q, rtol=1e-11, atol=1e-13)
-
-    # gradient ~ 0 at the vector solution (finite differences per slice)
-    def LG_at(gam):
-        O2 = O + (d * gam.view(1, 1, -1, 1, 1).to(O.dtype))
-        return float(ml.mliss_loss(
-            dp_from_fields(_fields_from_complex(O2, P, H), occu), I_dat, mask, sigma2))
-    base = LG_at(gvec)
-    for j in range(NZ):
-        eps = 1e-5
-        gp = gvec.clone(); gp[j] += eps
-        gm = gvec.clone(); gm[j] -= eps
-        deriv = (LG_at(gp) - LG_at(gm)) / (2 * eps)
-        assert abs(deriv) < 1e-5 * (1 + abs(base)), f"slice {j}: dL/dgamma_j = {deriv}"
-
-    # N = 1 reduction: vector step == scalar step
-    O1 = O[:, :, :1]
-    H1 = H[:, :, :, :1]
-    d1 = d[:, :, :1]
-    D1 = direction_response(None, d1, P, H1, per_slice=True)
-    F1 = _fields_from_complex(O1, P, H1)
-    e1 = dp_from_fields(F1, occu) - I_dat
-    g1, fb1, vx1 = ml.ml_vector_line_search(e1, F1, D1, omega, occu, fallback=1.0)
-    from ptyrad.mliss import response_terms
-    v1, w1 = response_terms(F1, D1[:, :, :, 0], occu)
-    a1, _ = ml.ml_line_search(e1, v1, w1, omega, fallback=1.0)
-    assert float(g1[0]) == pytest.approx(a1, rel=1e-6)
+    assert len(st.steps_o) == 5 and len(st.steps_p) == 5

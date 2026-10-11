@@ -1,5 +1,4 @@
 from .born import born_forward
-from .iss import iss_forward
 from .multislice import (
     linduda_forward,
     multislice_forward,
@@ -9,7 +8,6 @@ from .multislice import (
 )
 
 __all__ = [
-    "iss_forward",
     "born_forward",
     "multislice_forward",
     "multislice_forward_chin4a",
@@ -19,3 +17,4 @@ __all__ = [
     "detector",
     "prepare_object_complex",
 ]
+from .born_dist import born_forward_dist, make_blocks  # noqa: E402,F401

@@ -517,21 +517,16 @@ class PtychoAD(torch.nn.Module):
         """Dispatches forward model evaluation to specialized math engines."""
         if self.solver_type == "born":
             coeffs = self.opt_born_coeffs if self.use_born_coeffs else None
-            if self.born_iterations == 1 and coeffs is None:
-                from ptyrad.forward_models import iss_forward
+            from ptyrad.forward_models import born_forward
 
-                dp_fwd = iss_forward(object_patches, probes, propagators, self.omode_occu)
-            else:
-                from ptyrad.forward_models import born_forward
-
-                dp_fwd = born_forward(
-                    object_patches,
-                    probes,
-                    propagators,
-                    omode_occu=self.omode_occu,
-                    n_max=self.born_iterations,
-                    coeffs=coeffs,
-                )
+            dp_fwd = born_forward(
+                object_patches,
+                probes,
+                propagators,
+                omode_occu=self.omode_occu,
+                n_max=self.born_iterations,
+                coeffs=coeffs,
+            )
         elif self.solver_type == "strang":
             from ptyrad.forward_models import strang_forward
 
