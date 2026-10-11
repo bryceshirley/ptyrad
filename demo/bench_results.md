@@ -987,6 +987,38 @@ picture (launch-latency-bound) was correctly refuted.
   `bench_ms_vs_born_b1.py` Nz=512 compiled-MS hits an Inductor
   RecursionError on 2.14.1 (512-row head-to-head stands from SSL round 2).
 
+### O.2 Beating 316: born order at pmode 4 (round 4, 2x A100 SXM NV12)
+
+Owner-funded follow-up pod (7l2rfw58c91bw3, $3.58/h, ~$2.2 total), torch
+2.14.1+cu130 matched to the §O table. All arms: pmode 4, slice-2, full
+16384-DP / Nz=42 workload, NITER 1 (grow: 3).
+
+| arm             | s/iter | vs MS-p4 (415) | iter-1 loss | refit det resid |
+|-----------------|--------|----------------|-------------|-----------------|
+| M4 slice-2      | **245.7** | **1.69x**   | 0.3968      | 4.0e-3          |
+| M5 slice-2      | 279.1  | 1.49x          | 0.3961      | 1.3e-3          |
+| M6 slice-2 repro| 312.3  | 1.33x          | 0.3963      | 4.2e-4          |
+| grow 3->6 cap 6 | 246.2 avg | (214.6/244.9/278.9 per iter) | 0.3958->0.3303 | grew n=4->5->6 |
+
+- Cross-pod anchor: repro 312.3 vs §O's 315.8 (1.1% — 2-GPU pod numbers are
+  comparable to the 4-GPU pod's slice-2 arm).
+- **M4 beats the 316 target by 22%** (245.7) at near-identical iter-1 loss
+  (+0.0005); M5 by 12% at equal loss. Refit residual grows 10x per dropped
+  order (4e-4 -> 4e-3): truncation is visible to the fit but not (yet) to
+  the loss.
+- **Risk flag: grow's refit kept promoting 4->5->6 as the object developed**
+  — the data asks for more orders once structure appears, so M4's 1-iter
+  loss parity is NOT proof of equal converged quality. The §K.3 "settles at
+  M=5" result was at 4096 DPs. QUALITY CHECK OWED (local, free): p4
+  M4-vs-M5-vs-M6 contrast at ~10 iters before adopting M4.
+- Interim recommendation: **M5 + pmode 4 + slice-2 = 279 s/iter (1.49x vs
+  MS)** as the safe operating point; M4 (1.69x) if the local quality check
+  clears it. Housekeeping (~10.8 ms/batch, now ~55-70% of the step) remains
+  the untouched lever — engine work, not GPU count.
+- Ops: account-key injection verified (user-deployed pod SSH'd first try);
+  image was torch 2.8.0 (has set_stance) but upgraded anyway for
+  comparability.
+
 Figures: `nvlink/figs_redo/fig_redo_e2e.png` (E2E bars, both mode counts),
 `nvlink/figs_redo/fig_redo_nz_scaling.png` (slice-split speedup vs Nz);
 source `nvlink/redo/make_figs_redo.py`. Raw logs in
