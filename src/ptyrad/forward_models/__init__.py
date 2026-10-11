@@ -19,4 +19,10 @@ __all__ = [
     "detector",
     "prepare_object_complex",
 ]
-from .born_dist import born_forward_dist, make_blocks  # noqa: E402,F401
+from .born_dist import (  # noqa: E402,F401
+    born_forward_dist,
+    depth_bounds,
+    make_blocks,
+    make_modesplit_forward,
+    mode_groups,
+)

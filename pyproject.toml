@@ -90,6 +90,8 @@ ignore = [
 "test/**" = ["E402"]
 "scripts/**" = ["E402"]
 "analysis/**" = ["E402"]
+# demo bench/driver scripts must sys.path-insert and monkey-patch before imports
+"demo/**" = ["E402"]
 "born_coeff_test*.py" = ["E402"]
 "born_vs_recon*.py" = ["E402"]
 

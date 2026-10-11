@@ -53,7 +53,7 @@ def make_blocks(objc_blocks, H_blocks, probe, devices):
     return blocks
 
 
-def born_forward_dist(blocks, omode_occu, n_max, coeffs=None, eps=1e-10):
+def born_forward_dist(blocks, omode_occu, n_max, coeffs=None, eps=1e-10, carry="chain"):
     """Depth-partitioned parallel Born forward (two-level scan).
 
     Args:
@@ -64,6 +64,13 @@ def born_forward_dist(blocks, omode_occu, n_max, coeffs=None, eps=1e-10):
         n_max: Born order M (nilpotent: effective order min(M, Nz)).
         coeffs: optional (M, 2) per-order detector reweights (pseudo-complex).
         eps: detector-intensity floor.
+        carry: carry-combine schedule for phase B. "chain" ripples the running
+            prefix through P-1 SEQUENTIAL hops (each hop waits for the
+            upstream add). "direct" sends every block's local total straight
+            to every downstream device — all P(P-1)/2 boundary transfers are
+            issued concurrently and each block reduces its prefix locally, so
+            the critical path is ~one hop instead of P-1 (identical to
+            "chain" at P=2; more bytes, fewer serial latencies at P>2).
 
     Returns:
         (N, Ny, Nx) diffraction intensity on the last block's device.
@@ -84,6 +91,11 @@ def born_forward_dist(blocks, omode_occu, n_max, coeffs=None, eps=1e-10):
         c_all = torch.complex(coeffs[:, 0], coeffs[:, 1]).to(Psi_M.device)
 
     M = min(n_max, Nz)
+    if P > 1 and blocks[0]["objc"].shape[3] < M:
+        raise ValueError(
+            f"block 0 holds {blocks[0]['objc'].shape[3]} slices but carries the "
+            f"shrinking window: it needs >= M={M} (give block 0 the larger share)"
+        )
     for n in range(M):
         last = n == M - 1
         # --- A: local scatter + scan, all blocks in parallel ---------------
@@ -94,12 +106,28 @@ def born_forward_dist(blocks, omode_occu, n_max, coeffs=None, eps=1e-10):
             b["cs"] = torch.cumsum(sc, dim=3)
             b["t"] = b["cs"][..., -1, :, :]
         # --- B: carry combine, transfer + add only -------------------------
-        prefix = None  # incoming prefix for block i, resident on its device
-        for i in range(P - 1):
-            total = blocks[i]["t"] if prefix is None else prefix + blocks[i]["t"]
-            prefix = total.to(blocks[i + 1]["dev"], non_blocking=True)
-            blocks[i + 1]["prefix"] = prefix
-        D_n = blocks[-1]["t"] if prefix is None else prefix + blocks[-1]["t"]
+        if carry == "direct" and P > 2:
+            # issue ALL boundary transfers up front (concurrent engines),
+            # then reduce each block's prefix locally
+            t_on = [
+                [blocks[i]["t"].to(blocks[j]["dev"], non_blocking=True) for i in range(j)]
+                for j in range(1, P)
+            ]
+            prefix = None
+            for j in range(1, P):
+                pj = t_on[j - 1][0]
+                for ti in t_on[j - 1][1:]:
+                    pj = pj + ti
+                blocks[j]["prefix"] = pj
+                prefix = pj
+            D_n = prefix + blocks[-1]["t"]
+        else:
+            prefix = None  # incoming prefix for block i, resident on its device
+            for i in range(P - 1):
+                total = blocks[i]["t"] if prefix is None else prefix + blocks[i]["t"]
+                prefix = total.to(blocks[i + 1]["dev"], non_blocking=True)
+                blocks[i + 1]["prefix"] = prefix
+            D_n = blocks[-1]["t"] if prefix is None else prefix + blocks[-1]["t"]
         # --- C: psi update, all blocks in parallel --------------------------
         if not last:
             for i, b in enumerate(blocks):
@@ -114,3 +142,99 @@ def born_forward_dist(blocks, omode_occu, n_max, coeffs=None, eps=1e-10):
 
     nw = (omode_occu / (Nx * Ny)).view(1, 1, -1, 1, 1)
     return fftshift2(torch.sum(Psi_M.abs().square() * nw, dim=(1, 2)) + eps)
+
+
+def depth_bounds(nz: int, p: int, m: int = 0) -> list[int]:
+    """Work-balanced depth-block bounds for a P-way slice split.
+
+    Near-equal blocks with the remainder given to the FRONT blocks; block 0
+    is then grown (at the expense of later blocks, each kept >= 1 slice) until
+    it holds at least ``m`` slices — it carries the shrinking window, so the
+    recursion needs nz_0 >= M (see born_forward_dist).
+    """
+    if not 1 <= p <= nz:
+        raise ValueError(f"need 1 <= P={p} <= Nz={nz}")
+    base, rem = divmod(nz, p)
+    sizes = [base + (1 if i < rem else 0) for i in range(p)]
+    need = min(m, nz - (p - 1)) - sizes[0]
+    for i in range(p - 1, 0, -1):
+        if need <= 0:
+            break
+        take = min(need, sizes[i] - 1)
+        sizes[i] -= take
+        sizes[0] += take
+        need -= take
+    bounds = [0]
+    for s in sizes:
+        bounds.append(bounds[-1] + s)
+    return bounds
+
+
+def mode_groups(pmode: int, n_groups: int) -> list[tuple[int, int]]:
+    """Contiguous near-equal probe-mode [lo, hi) groups; empty groups dropped."""
+    n_groups = min(n_groups, pmode)
+    base, rem = divmod(pmode, n_groups)
+    bounds = [0]
+    for i in range(n_groups):
+        bounds.append(bounds[-1] + base + (1 if i < rem else 0))
+    return [(bounds[i], bounds[i + 1]) for i in range(n_groups)]
+
+
+def make_modesplit_forward(devices, base_forward=None):
+    """Drop-in replacement for `born_forward` splitting probe modes across devices.
+
+    Probe modes are incoherent at the detector, so per-group intensities ADD
+    and the split is exact to float reassociation. Group 0 stays on the
+    caller's device (devices[0] is ignored for placement of the output);
+    static H replicas are cached per device keyed by H.data_ptr(). The object
+    patches/probe/coeffs are replicated per call — they change or carry grad,
+    and that per-batch transfer is the known cost of this axis.
+
+    Args:
+        devices: device strings, one probe-mode group per device
+            (e.g. ["cuda:0", "cuda:1", "cuda:2", "cuda:3"] for a 4-way split).
+        base_forward: single-device forward to wrap (defaults to
+            `ptyrad.forward_models.born.born_forward`).
+
+    Returns:
+        Callable with the `born_forward` signature.
+    """
+    if base_forward is None:
+        from .born import born_forward as base_forward
+    h_cache: dict[tuple[int, str], torch.Tensor] = {}
+
+    def forward(object_patches, probe, H, omode_occu, eps=1e-10, n_max=1, coeffs=None):
+        groups = mode_groups(probe.shape[1], len(devices))
+        if len(groups) < 2:
+            return base_forward(
+                object_patches, probe, H, omode_occu, eps=eps, n_max=n_max, coeffs=coeffs
+            )
+        outs = []
+        for gi, ((lo, hi), dev) in enumerate(zip(groups, devices)):
+            if gi == 0:
+                Hd = H  # group 0 stays on the caller's device/graph
+            else:
+                key = (H.data_ptr(), dev)
+                Hd = h_cache.get(key)
+                if Hd is None:
+                    if len(h_cache) > 4 * len(devices):
+                        h_cache.clear()
+                    Hd = H.detach().to(dev)
+                    h_cache[key] = Hd
+            outs.append(
+                base_forward(
+                    object_patches.to(dev),
+                    probe[:, lo:hi].to(dev),
+                    Hd,
+                    omode_occu.to(dev),
+                    eps=eps,
+                    n_max=n_max,
+                    coeffs=coeffs.to(dev) if coeffs is not None else None,
+                )
+            )
+        out = outs[0]
+        for o in outs[1:]:
+            out = out + o.to(out.device)
+        return out - (len(outs) - 1) * eps  # eps was added once per group
+
+    return forward
