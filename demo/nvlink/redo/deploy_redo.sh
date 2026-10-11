@@ -31,7 +31,8 @@ if ! awk -v b="$BAL" -v r="$BUDGET" 'BEGIN{exit !(b>=r)}'; then
   exit 1
 fi
 
-BODY=$(jq -n --argjson g "$GPUS" '{
+PUBKEY="$(cat ~/.ssh/id_ed25519.pub)"
+BODY=$(jq -n --argjson g "$GPUS" --arg pk "$PUBKEY" '{
   name: "nvlink-redo-pso",
   imageName: "runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04",
   cloudType: "SECURE",
@@ -41,7 +42,7 @@ BODY=$(jq -n --argjson g "$GPUS" '{
   containerDiskInGb: 80,
   volumeInGb: 0,
   ports: ["22/tcp"],
-  env: {}
+  env: {PUBLIC_KEY: $pk}
 }')
 echo "creating pod ($GPUS x A100 SXM)..."
 RESP="$(rp_rest POST /pods "$BODY")"
