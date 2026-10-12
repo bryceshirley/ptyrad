@@ -19,6 +19,7 @@ while :; do
     --include='*/' \
     --include='*.log' --include='*.txt' --include='*.md' --include='*.yml' \
     --include='*.png' --include='*.csv' --include='*.json' --include='*.tif' \
+    --include='*.hdf5' \
     --exclude='*' \
     "root@$POD_IP:/workspace/ptyrad/demo/nvlink/results_redo*" \
     "root@$POD_IP:/workspace/ptyrad/demo/output" \
