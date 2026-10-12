@@ -1041,7 +1041,12 @@ synced home continuously (tifs+PNGs+hdf5, 2-min cadence) to
 | 4 | 0.3146 | 139.7 | 165.6 |
 | 6 | 0.3117 | 165.7 | (killed @$2 floor) |
 | 8 | 0.3103 | 202.5 | (not reached) |
-| MS| 0.3096 | 302.4 (mode-2) | — |
+| MS| 0.3096 | — | 302.4 |
+
+Multislice detail (mode-2, from the q5_ms2 ptyrad log): per-iter 303.7 /
+295.3 / 305.4 / 293.6 / 313.9 s (avg 302.4, std 7.4); losses 0.3957 /
+0.3413 / 0.3243 / 0.3143 / 0.3096. MS cannot slice-split (sequential
+slice dependence), so mode-2 is its only 2-GPU option here.
 
 - Loss converges monotonically to MS with order; **born M8 matches MS
   iteration-for-iteration (0.3103 vs 0.3096) at 1.5x the speed**; M4 is the
