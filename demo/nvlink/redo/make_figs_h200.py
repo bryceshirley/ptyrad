@@ -17,7 +17,8 @@ import matplotlib.pyplot as plt
 
 SURFACE, INK, INK2 = "#fcfcfb", "#0b0b0b", "#52514e"
 ORANGE = "#eb6834"
-RAMP = ["#a8c8ec", "#7dafe3", "#5395d9", "#2a78d6", "#174f94"]  # M=1,2,4,6,8 light->dark
+RAMP = ["#a8c8ec", "#7dafe3", "#5395d9", "#2a78d6", "#174f94",
+        "#0d3a73"]  # M=1,2,4,6,8,10 light->dark
 
 plt.rcParams.update({
     "figure.facecolor": SURFACE, "axes.facecolor": SURFACE,
@@ -29,10 +30,10 @@ plt.rcParams.update({
 })
 
 MS_SITER, MS_LOSS = 302.4, 0.3096
-M_VALS = [1, 2, 4, 6, 8]
-SLICE_SITER = [92.3, 109.3, 139.7, 165.7, 202.5]
+M_VALS = [1, 2, 4, 6, 8, 10]  # M=10 measured on the second H200 pod (highM2)
+SLICE_SITER = [92.3, 109.3, 139.7, 165.7, 202.5, 224.2]
 MODE_SITER = {1: 120.5, 2: 131.9, 4: 165.6}  # M6 killed at $2 floor, M8 not reached
-LOSS5 = [0.3335, 0.3160, 0.3146, 0.3117, 0.3103]
+LOSS5 = [0.3335, 0.3160, 0.3146, 0.3117, 0.3103, 0.3099]
 ITERS = [1, 2, 3, 4, 5]
 TRAJ = {  # per-iteration total loss
     1: [0.4103, 0.3549, 0.3431, 0.3374, 0.3335],
@@ -40,6 +41,7 @@ TRAJ = {  # per-iteration total loss
     4: [0.3966, 0.3448, 0.3297, 0.3205, 0.3146],
     6: [0.3962, 0.3432, 0.3275, 0.3176, 0.3117],
     8: [0.3956, 0.3418, 0.3253, 0.3156, 0.3103],
+    10: [0.3956, 0.3416, 0.3254, 0.3153, 0.3099],
 }
 MS_TRAJ = [0.3957, 0.3413, 0.3243, 0.3143, 0.3096]
 
@@ -52,10 +54,10 @@ def save(fig, name):
     print("wrote", name)
 
 
-# M>=10 extension arms ran on 2x H100 (results_redo_highM_*): plotted AS
-# MEASURED (owner instruction) — note the hardware change vs the H200 ladder.
-EXT = {10: 0.3099}          # loss@5; add 12/14 when those arms land
-EXT_SITER = {10: 348.4}     # measured s/iter on 2x H100
+# Slots for arms still running on the highM2 H200 pod (M12, M14): fill in
+# {M: loss} and {M: s/iter} as they land; drawn dashed-open until then.
+EXT = {}
+EXT_SITER = {}
 
 # ---- A. Pareto: iter-5 loss vs time per iteration --------------------------
 fig, ax = plt.subplots(figsize=(5.6, 4.0))
@@ -70,9 +72,6 @@ for m in ext_ms:
             zorder=3)
     ax.annotate(f"M={m}*", (EXT_SITER[m], EXT[m]), xytext=(2, -16),
                 textcoords="offset points", ha="center", fontsize=9, color=INK)
-ax.annotate("*M≥10 measured on 2×H100 (slower GPUs);\n"
-            " M≤8 and multislice measured on 2×H200", (0.97, 0.60),
-            xycoords="axes fraction", ha="right", fontsize=7.5, color=INK2)
 for m, x, y, c in zip(M_VALS, SLICE_SITER, LOSS5, RAMP):
     ax.plot(x, y, "o", color=c, markersize=8, markeredgecolor=SURFACE,
             markeredgewidth=1.3, zorder=3)
