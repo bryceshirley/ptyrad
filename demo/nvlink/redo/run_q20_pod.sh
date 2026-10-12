@@ -4,10 +4,11 @@
 # cap M=8. ONE GPU PER ARM (no contention => timings valid). Outputs kept
 # (SAVE_ITERS 2: model hdf5 + objp tifs); tifs/PNGs sync home continuously,
 # final model_iter0020.hdf5 pulled explicitly at the end.
-# BUDGET CUT (owner, 2026-10-12): only the two decision arms run —
-#   GPU0: m6 (reference)   GPU1: grow1 cap 8      wall ~2.7 h on A100 SXM.
-# m5/m4/grow3 configs are still generated; re-enable their run lines if the
-# budget ever allows the full five.
+# OWNER SPEC (final, 2026-10-12): ONE arm — grow-from-1 cap M=8, 20 iters,
+# run as the production SLICE-2 split across BOTH GPUs (no fixed-M6 arm).
+# Other configs are still generated; re-enable run lines if budget allows.
+# NOTE: no same-workload 20-iter fixed-M6 reference exists for quality
+# comparison — judge via loss trajectory, refit residuals, and tifs.
 set -uo pipefail
 cd /workspace/ptyrad/demo
 export PTYRAD_DISABLE_ISS_PRECOND=1
@@ -24,14 +25,10 @@ growsed(){ echo "s/'born_iterations'         : 6,/'born_iterations'         : $1
 mk q20_grow3 "$(growsed 3)"
 mk q20_grow1 "$(growsed 1)"
 
-run(){ local arm="$1" gpu="$2" tmo="$3"
-  log "ARM $arm on GPU $gpu"
-  timeout "$tmo" env CUDA_VISIBLE_DEVICES="$gpu" python run_cmp_modesplit.py \
-    baseline "params/$arm.yml" > "$RES/e2e_$arm.log" 2>&1
-  rc=$?; [ $rc -ne 0 ] && echo "ARM $arm exited rc=$rc" | tee -a "$RES/summary.log"
-  grep -E "Total Loss|Finished" "$RES/e2e_$arm.log" | tail -3 | tee -a "$RES/summary.log"
-}
-run q20_m6 0 12000 &
-run q20_grow1 1 11000 &
-wait
+log "ARM q20_grow1 (slicedist SLICE_P=2, both GPUs)"
+timeout 10800 env SLICE_P=2 python run_cmp_modesplit.py \
+  slicedist params/q20_grow1.yml > "$RES/e2e_q20_grow1.log" 2>&1
+rc=$?; [ $rc -ne 0 ] && echo "ARM q20_grow1 exited rc=$rc" | tee -a "$RES/summary.log"
+grep -E "Total Loss|Refit born_coeffs|Finished" "$RES/e2e_q20_grow1.log" | tail -25 \
+  | tee -a "$RES/summary.log"
 log "Q20 POD DONE"
