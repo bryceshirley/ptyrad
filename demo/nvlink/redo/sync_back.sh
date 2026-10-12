@@ -18,7 +18,7 @@ while :; do
   rsync -az --timeout=60 -e "$SSH" \
     --include='*/' \
     --include='*.log' --include='*.txt' --include='*.md' --include='*.yml' \
-    --include='*.png' --include='*.csv' --include='*.json' \
+    --include='*.png' --include='*.csv' --include='*.json' --include='*.tif' \
     --exclude='*' \
     "root@$POD_IP:/workspace/ptyrad/demo/nvlink/results_redo*" \
     "root@$POD_IP:/workspace/ptyrad/demo/output" \
