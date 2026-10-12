@@ -276,7 +276,15 @@ if ROLE in ("modesplit", "smoke"):
     _MP = int(os.environ.get("MODE_P", "2"))
     fm.born_forward = make_modesplit_forward(
         [f"cuda:{k}" for k in range(_MP)], base_forward=fm.born_forward)
-    print(f"[cmp] born_forward patched: probe-mode split across {_MP} GPUs (MODE_P)")
+    # multislice too: same incoherent-pmode argument, adapter drops born-only kwargs
+    _ms_base = fm.multislice_forward
+
+    def _ms_adapter(obj, probe, H, occu, eps=1e-10, n_max=1, coeffs=None):
+        return _ms_base(obj, probe, H, occu, eps=eps)
+
+    fm.multislice_forward = make_modesplit_forward(
+        [f"cuda:{k}" for k in range(_MP)], base_forward=_ms_adapter)
+    print(f"[cmp] born+multislice forward patched: probe-mode split across {_MP} GPUs (MODE_P)")
 
 from ptyrad.load import load_params
 from ptyrad.reconstruction import PtyRADSolver
