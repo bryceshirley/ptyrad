@@ -4,8 +4,10 @@
 # cap M=8. ONE GPU PER ARM (no contention => timings valid). Outputs kept
 # (SAVE_ITERS 2: model hdf5 + objp tifs); tifs/PNGs sync home continuously,
 # final model_iter0020.hdf5 pulled explicitly at the end.
-# Queues sized so both GPUs finish ~together (grows are cheap early):
-#   GPU0: m6, m4   GPU1: m5, grow3, grow1      wall ~6.5 h on A100 SXM.
+# BUDGET CUT (owner, 2026-10-12): only the two decision arms run —
+#   GPU0: m6 (reference)   GPU1: grow1 cap 8      wall ~2.7 h on A100 SXM.
+# m5/m4/grow3 configs are still generated; re-enable their run lines if the
+# budget ever allows the full five.
 set -uo pipefail
 cd /workspace/ptyrad/demo
 export PTYRAD_DISABLE_ISS_PRECOND=1
@@ -29,7 +31,7 @@ run(){ local arm="$1" gpu="$2" tmo="$3"
   rc=$?; [ $rc -ne 0 ] && echo "ARM $arm exited rc=$rc" | tee -a "$RES/summary.log"
   grep -E "Total Loss|Finished" "$RES/e2e_$arm.log" | tail -3 | tee -a "$RES/summary.log"
 }
-( run q20_m6 0 12000; run q20_m4 0 11000 ) &
-( run q20_m5 1 11500; run q20_grow3 1 11000; run q20_grow1 1 11000 ) &
+run q20_m6 0 12000 &
+run q20_grow1 1 11000 &
 wait
 log "Q20 POD DONE"
