@@ -52,11 +52,10 @@ def save(fig, name):
     print("wrote", name)
 
 
-# M>=10 extension arms ran on 2x H100 (results_redo_highM_*): losses are
-# hardware-independent (same seed/config); their H200-equivalent s/iter is
-# EXTRAPOLATED from the H200 ladder's linear cost trend (~15.7 s/order).
-EXT = {10: 0.3099}  # add 12: ..., 14: ... when those arms land
-EXT_SITER = {m: SLICE_SITER[-1] + 15.7 * (m - 8) for m in EXT}
+# M>=10 extension arms ran on 2x H100 (results_redo_highM_*): plotted AS
+# MEASURED (owner instruction) — note the hardware change vs the H200 ladder.
+EXT = {10: 0.3099}          # loss@5; add 12/14 when those arms land
+EXT_SITER = {10: 348.4}     # measured s/iter on 2x H100
 
 # ---- A. Pareto: iter-5 loss vs time per iteration --------------------------
 fig, ax = plt.subplots(figsize=(5.6, 4.0))
@@ -69,10 +68,10 @@ for m in ext_ms:
     ax.plot(EXT_SITER[m], EXT[m], "o", markerfacecolor=SURFACE,
             markeredgecolor="#174f94", markeredgewidth=1.6, markersize=8,
             zorder=3)
-    ax.annotate(f"M={m}*", (EXT_SITER[m], EXT[m]), xytext=(6, 6),
-                textcoords="offset points", fontsize=9, color=INK)
-ax.annotate("*measured loss; H200-equivalent time extrapolated\n"
-            " (M≥10 arms ran on 2×H100)", (0.97, 0.60),
+    ax.annotate(f"M={m}*", (EXT_SITER[m], EXT[m]), xytext=(2, -16),
+                textcoords="offset points", ha="center", fontsize=9, color=INK)
+ax.annotate("*M≥10 measured on 2×H100 (slower GPUs);\n"
+            " M≤8 and multislice measured on 2×H200", (0.97, 0.60),
             xycoords="axes fraction", ha="right", fontsize=7.5, color=INK2)
 for m, x, y, c in zip(M_VALS, SLICE_SITER, LOSS5, RAMP):
     ax.plot(x, y, "o", color=c, markersize=8, markeredgecolor=SURFACE,
@@ -81,8 +80,8 @@ for m, x, y, c in zip(M_VALS, SLICE_SITER, LOSS5, RAMP):
                 fontsize=9, color=INK)
 ax.plot(MS_SITER, MS_LOSS, "s", color=ORANGE, markersize=9,
         markeredgecolor=SURFACE, markeredgewidth=1.3, zorder=3)
-ax.annotate("multislice\n(mode-2)", (MS_SITER, MS_LOSS), xytext=(8, 4),
-            textcoords="offset points", fontsize=9, color=INK)
+ax.annotate("multislice\n(mode-2)", (MS_SITER, MS_LOSS), xytext=(0, 10),
+            textcoords="offset points", ha="center", fontsize=9, color=INK)
 ax.axhline(MS_LOSS, color=INK2, linewidth=0.8, linestyle=":", alpha=0.5)
 ax.set_xlabel("time per iteration (s)")
 ax.set_ylabel("loss after 5 iterations")
