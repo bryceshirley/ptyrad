@@ -1024,6 +1024,57 @@ Figures: `nvlink/figs_redo/fig_redo_e2e.png` (E2E bars, both mode counts),
 source `nvlink/redo/make_figs_redo.py`. Raw logs in
 `nvlink/runpod_results/redo/` (gitignored).
 
+### O.3 Quality rounds on 2x H200 SXM NV18 (2026-10-12, owner-driven)
+
+Owner-deployed pod ($10.58/h, ~$35 total over two fundings; watchdog
+$2-floor kill ended the day cleanly at 19:20). pmode 4, full 16384-DP
+tiled workload, 5-iter arms unless noted, torch 2.14.1+cu130. Everything
+synced home continuously (tifs+PNGs+hdf5, 2-min cadence) to
+`runpod_results/redo/` and mirrored to `~/h100-res`.
+
+**Fixed-M ladder, iter-5 loss and s/iter (H200, batch 1):**
+
+| M | loss@5 | slice-2 s/iter | mode-2 s/iter |
+|---|--------|----------------|---------------|
+| 1 | 0.3335 | 92.3  | 120.5 |
+| 2 | 0.3160 | 109.3 | 131.9 |
+| 4 | 0.3146 | 139.7 | 165.6 |
+| 6 | 0.3117 | 165.7 | (killed @$2 floor) |
+| 8 | 0.3103 | 202.5 | (not reached) |
+| MS| 0.3096 | 302.4 (mode-2) | — |
+
+- Loss converges monotonically to MS with order; **born M8 matches MS
+  iteration-for-iteration (0.3103 vs 0.3096) at 1.5x the speed**; M4 is the
+  efficiency knee (0.3146 at 140 s/iter).
+- **Slice-2 beats mode-2 at EVERY order** (~constant ~25 s/iter mode-split
+  replica tax); and slice-vs-mode losses are IDENTICAL per M (exactness
+  confirmed across the whole ladder, both axes).
+- Multislice ran mode-split (MODE_P=2) via the new driver patch (also wraps
+  `multislice_forward`; commit 62c4e77): loss matches the A100 1-GPU MS
+  baseline (0.3957 iter-1 vs 0.3956) — MS mode-split exact too.
+
+**Probe findings (the day's real lesson):**
+1. grow-from-1 cap-8 (20-iter arm, stopped at 10): order grew 1->8 by
+   iter 9 but the probe collapsed to ~equal mode occupancy (33/26/21/20
+   from 94/2/2/2) with delocalized junk modes, |c| ~ 8, refit residual
+   ~2e-2 — the SSK.4 M=1 imprint at 4x the updates. Do NOT start at M=1.
+2. Fixed M8 and pure MULTISLICE show the SAME equalization + displaced-blob
+   modes (MS 39.3/21.3/20.6/18.8 vs born-M8 39.3/21.9/20.1/18.7 at iter 4)
+   => model-independent, split-independent. Prime suspect: the 2x2-TILED
+   dataset's translational degeneracy (+ p4 equalization already present in
+   the 2026-10-09 real-data 1-GPU baseline, 49/19/16/15 at iter 20).
+   **Rule: tiled file for timing only; quality/probe work needs the
+   original 4096-DP scan.**
+3. Large |c| at M=8 occurs from a clean fixed start too — not a grow
+   pathology; ridge (SSL-curve note) becomes relevant at high M.
+
+Ops: this pod's home<->pod route was ~0.15 MB/s raw (vs 8 MB/s on the A100
+pods) — rsync -zz (zstd) doubled it; rsync over ssh.runpod.io proxy is
+BROKEN (banner corrupts the protocol); checkpoint syncing must be split
+from the small-file loop or it starves the tifs. `pkill -f` over ssh (and
+even locally in compound commands) self-matches — use bracket patterns and
+separate calls.
+
 ### Round-3 ops post-mortem (all recovered, $0 lost to idling)
 
 1. RunPod account had NO SSH key registered (`pubKey: null`) — an
