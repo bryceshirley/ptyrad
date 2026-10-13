@@ -90,11 +90,14 @@ def pareto(name, show_ms1, show_ms2, subtitle,
                 markeredgecolor=SURFACE if not show_ms1 else ORANGE,
                 markeredgewidth=1.3 if not show_ms1 else 1.6,
                 markersize=9, zorder=3)
-        ax.annotate("multislice\nmode-2" if not show_ms1 else "MS mode-2\n(2 GPUs)",
-                    (MS2_SITER, MS_LOSS), xytext=(0, -34),
-                    textcoords="offset points", ha="center",
-                    fontsize=9 if not show_ms1 else 8.5,
-                    color=INK if not show_ms1 else INK2)
+        if show_ms1:
+            ax.annotate("MS mode-2\n(2 GPUs)", (MS2_SITER, MS_LOSS),
+                        xytext=(0, -34), textcoords="offset points",
+                        ha="center", fontsize=8.5, color=INK2)
+        else:
+            ax.annotate("multislice", (MS2_SITER, MS_LOSS), xytext=(0, 10),
+                        textcoords="offset points", ha="center", fontsize=9,
+                        color=INK)
     ax.axhline(MS_LOSS, color=INK2, linewidth=0.8, linestyle=":", alpha=0.5)
     ax.set_ylim(0.3045, 0.3355)
     ax.set_xlabel("time per iteration (s)")
