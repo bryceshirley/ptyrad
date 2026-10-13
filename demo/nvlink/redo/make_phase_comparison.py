@@ -45,7 +45,7 @@ print("vmax:", vmax, "| per-panel max:", [f"{im.max():.2f}" for im in imgs])
 
 fig, axes = plt.subplots(1, 3, figsize=(11.4, 4.0))
 for ax, im, (_, title) in zip(axes, imgs, RUNS):
-    h = ax.imshow(im, cmap="gray", vmin=0, vmax=vmax)
+    h = ax.imshow(im, cmap="inferno", vmin=0, vmax=vmax)
     ax.set_title(title, fontsize=9)
     ax.set_xticks([])
     ax.set_yticks([])
