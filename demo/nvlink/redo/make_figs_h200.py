@@ -65,7 +65,8 @@ EXT_SITER = {}
 # ---- A. Pareto: iter-5 loss vs time per iteration --------------------------
 # Three variants: both MS points / MS 1-GPU only (recommended) / mode-2 only.
 def pareto(name, show_ms1, show_ms2, subtitle,
-           titleline="Born order (slice split, 2 GPUs) vs multislice"):
+           titleline="Born order (slice split, 2 GPUs) vs multislice — "
+                     "loss vs time per iteration"):
     fig, ax = plt.subplots(figsize=(5.6, 4.0))
     ax.plot(SLICE_SITER, LOSS5, "-", color="#2a78d6", linewidth=1.6, zorder=2)
     OFF = {1: (6, 6), 2: (6, 6), 4: (6, 6), 6: (6, 6),
@@ -98,8 +99,7 @@ def pareto(name, show_ms1, show_ms2, subtitle,
     ax.set_ylim(0.3045, 0.3355)
     ax.set_xlabel("time per iteration (s)")
     ax.set_ylabel("loss after 5 iterations")
-    ax.set_title(titleline + " — loss/cost frontier\n" + subtitle,
-                 fontsize=9.5, loc="left")
+    ax.set_title(titleline + "\n" + subtitle, fontsize=9.5, loc="left")
     ax.grid(axis="both", color=INK2, alpha=0.12, linewidth=0.6)
     save(fig, name)
 
@@ -111,7 +111,8 @@ pareto("fig_h200_pareto_ms1gpu", True, False,
        "multislice shown at its best: 1 GPU)")
 pareto("fig_h200_pareto_ms2only", False, True,
        "(PSO 16384 DPs, 42 slices, 4 probe modes, 2×H200 SXM NV18)",
-       titleline="Born order (slice split) vs multislice (mode split)")
+       titleline="Born order (slice split) vs multislice (mode split)\n"
+                 "— loss vs time per iteration")
 
 # ---- B. s/iter vs M, split-axis comparison ---------------------------------
 fig, ax = plt.subplots(figsize=(5.6, 3.8))
