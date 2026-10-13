@@ -21,9 +21,9 @@ TAIL = ("_200it_full_N4096_dp256_random1_p4_1obj_21slice_dz10_plr1e-4_"
         "oalr5e-4_oplr5e-4_dpblur1.0_orblur0.4_ozblur1.0_mamp0.03_4.0_"
         "oathr0.96_oposc_sng1.0_spr0.1")
 RUNS = [
-    (f"{BASE}/20261013_local_m1{TAIL}", "First-order Born (M=1)\nProjected Object Phase"),
-    (f"{BASE}/20261012_local_m8{TAIL}", "Eighth-order inter-slice Born (tuned $c_m$)\nProjected Object Phase"),
-    (f"{BASE}/20261012_local_ms{TAIL}", "Multislice\nProjected Object Phase"),
+    (f"{BASE}/20261013_local_m1{TAIL}", "First-order inter-slice Born"),
+    (f"{BASE}/20261012_local_m8{TAIL}", "Eighth-order inter-slice Born (tuned $c_m$)"),
+    (f"{BASE}/20261012_local_ms{TAIL}", "Multislice"),
 ]
 
 
@@ -51,6 +51,7 @@ for ax, im, (_, title) in zip(axes, imgs, RUNS):
     ax.set_yticks([])
 cbar = fig.colorbar(h, ax=axes, fraction=0.025, pad=0.02)
 cbar.set_label("phase [rad]", fontsize=9)
+fig.suptitle("Projected object phase", fontsize=11, y=0.98)
 out = sys.argv[1] if len(sys.argv) > 1 else f"{BASE}/comparison_200it_m1_m8_ms.png"
 fig.savefig(out, dpi=200, bbox_inches="tight", facecolor="white")
 fig.savefig(out.replace(".png", ".pdf"), bbox_inches="tight", facecolor="white")
