@@ -99,18 +99,18 @@ def pareto(name, show_ms1, show_ms2, subtitle,
     ax.set_ylim(0.3045, 0.3355)
     ax.set_xlabel("time per iteration (s)")
     ax.set_ylabel("loss after 5 iterations")
-    ax.set_title(titleline + "\n" + subtitle, fontsize=9.5, loc="left")
+    ax.set_title(titleline + "\n" + subtitle, fontsize=9.5, loc="center")
     ax.grid(axis="both", color=INK2, alpha=0.12, linewidth=0.6)
     save(fig, name)
 
 pareto("fig_h200_pareto", True, True,
-       "(PSO 16384 DPs, 42 slices, 4 probe modes, 2×H200 SXM NV18;\n"
+       "(42 slices, 4 probe modes, 2×H200 SXM NV18;\n"
        "MS best = 1 GPU — mode-split slows it 1.4×)")
 pareto("fig_h200_pareto_ms1gpu", True, False,
-       "(PSO 16384 DPs, 42 slices, 4 probe modes, 2×H200 SXM NV18;\n"
+       "(42 slices, 4 probe modes, 2×H200 SXM NV18;\n"
        "multislice shown at its best: 1 GPU)")
 pareto("fig_h200_pareto_ms2only", False, True,
-       "(PSO 16384 DPs, 42 slices, 4 probe modes, 2×H200 SXM NV18)",
+       "(42 slices, 4 probe modes, 2×H200 SXM NV18)",
        titleline="Born order (slice split) vs multislice (mode split)\n"
                  "— loss vs time per iteration")
 
