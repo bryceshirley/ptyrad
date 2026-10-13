@@ -1080,6 +1080,38 @@ from the small-file loop or it starves the tifs. `pkill -f` over ssh (and
 even locally in compound commands) self-matches — use bracket patterns and
 separate calls.
 
+### O.4 High-order ladder + the multislice-parallelism correction (2026-10-13)
+
+Second H200 pod (ypbl9p59m8lq17; the "H100 SXM" tier is a LOTTERY — it
+dealt H200s twice and a real H100 once; always check nvidia-smi before
+setup). M=10/12/14 slice-2 + multislice 1-GPU, 5 iters, pmode-4 tiled
+workload, torch 2.14.1. The watchdog $2-floor kill landed 11 min AFTER
+"ALL DONE" — nothing lost (next time: self-terminate in the runner).
+
+| arm | s/iter | loss@5 |
+|-----|--------|--------|
+| M=10 slice-2 | 224.2 | 0.3099 |
+| M=12 slice-2 | 256.9 | 0.3096 |
+| M=14 slice-2 | 282.1 | 0.3096 |
+| **MS 1-GPU** | **215.2** | 0.3096 |
+
+- The born ladder SATURATES ON the multislice loss (0.3096 at M>=12), no
+  overshoot. M=10 reproduced across H100/H200 pods to 4 decimals.
+- **CORRECTION to O.3's headline: multislice mode-2 was a bad MS
+  baseline.** MS on ONE GPU runs 215.2 s/iter — mode-splitting SLOWED it
+  1.4x (302.4). MS's best config is 1 GPU. Fair verdict at this workload:
+  **2-GPU born M=8 (202.5, loss +0.0007) ~= 1-GPU MS (215.2) — parity,
+  not a 1.5x win.** Born's true advantage is architectural: slices give
+  it a productive scaling axis (and M a quality knob) where MS has none
+  (modes hurt it, slices can't split).
+- **Tiled-data artifact CONVICTED (local 42-slice control,
+  local_m8_42sl):** fixed M=8, 42x5A on the REAL 4096-DP scan reconstructs
+  cleanly everywhere at iter 10 (crisp columns, compact probe) — so the
+  central-region failure in the tiled runs is the tiling, NOT the 42-slice
+  geometry. dz=5 A exonerated for 5-10 iters on real data.
+- Figures updated in nvlink/figs_redo/ (full M=1..14 ladder, both MS
+  points); GPU specs + 5s utilization CSVs in the results dirs.
+
 ### Round-3 ops post-mortem (all recovered, $0 lost to idling)
 
 1. RunPod account had NO SSH key registered (`pubKey: null`) — an

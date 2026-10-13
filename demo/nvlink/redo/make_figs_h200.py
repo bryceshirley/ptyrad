@@ -18,7 +18,7 @@ import matplotlib.pyplot as plt
 SURFACE, INK, INK2 = "#fcfcfb", "#0b0b0b", "#52514e"
 ORANGE = "#eb6834"
 RAMP = ["#a8c8ec", "#7dafe3", "#5395d9", "#2a78d6", "#174f94",
-        "#0d3a73"]  # M=1,2,4,6,8,10 light->dark
+        "#0d3a73", "#092b57", "#06203f"]  # M=1..14 light->dark
 
 plt.rcParams.update({
     "figure.facecolor": SURFACE, "axes.facecolor": SURFACE,
@@ -29,11 +29,12 @@ plt.rcParams.update({
     "font.size": 10,
 })
 
-MS_SITER, MS_LOSS = 302.4, 0.3096
-M_VALS = [1, 2, 4, 6, 8, 10]  # M=10 measured on the second H200 pod (highM2)
-SLICE_SITER = [92.3, 109.3, 139.7, 165.7, 202.5, 224.2]
+MS_SITER, MS_LOSS = 215.2, 0.3096      # multislice BEST config: 1 GPU
+MS2_SITER = 302.4                       # multislice mode-2 (2 GPUs) — SLOWER
+M_VALS = [1, 2, 4, 6, 8, 10, 12, 14]  # M>=10 from the second H200 pod (highM2)
+SLICE_SITER = [92.3, 109.3, 139.7, 165.7, 202.5, 224.2, 256.9, 282.1]
 MODE_SITER = {1: 120.5, 2: 131.9, 4: 165.6}  # M6 killed at $2 floor, M8 not reached
-LOSS5 = [0.3335, 0.3160, 0.3146, 0.3117, 0.3103, 0.3099]
+LOSS5 = [0.3335, 0.3160, 0.3146, 0.3117, 0.3103, 0.3099, 0.3096, 0.3096]
 ITERS = [1, 2, 3, 4, 5]
 TRAJ = {  # per-iteration total loss
     1: [0.4103, 0.3549, 0.3431, 0.3374, 0.3335],
@@ -42,6 +43,8 @@ TRAJ = {  # per-iteration total loss
     6: [0.3962, 0.3432, 0.3275, 0.3176, 0.3117],
     8: [0.3956, 0.3418, 0.3253, 0.3156, 0.3103],
     10: [0.3956, 0.3416, 0.3254, 0.3153, 0.3099],
+    12: [0.3956, 0.3412, 0.3248, 0.3146, 0.3096],
+    14: [0.3955, 0.3411, 0.3247, 0.3146, 0.3096],
 }
 MS_TRAJ = [0.3957, 0.3413, 0.3243, 0.3143, 0.3096]
 
@@ -72,21 +75,28 @@ for m in ext_ms:
             zorder=3)
     ax.annotate(f"M={m}*", (EXT_SITER[m], EXT[m]), xytext=(2, -16),
                 textcoords="offset points", ha="center", fontsize=9, color=INK)
+OFF = {1: (6, 6), 2: (6, 6), 4: (6, 6), 6: (6, 6),
+       8: (-2, 10), 10: (2, -18), 12: (0, 10), 14: (0, -18)}
 for m, x, y, c in zip(M_VALS, SLICE_SITER, LOSS5, RAMP):
     ax.plot(x, y, "o", color=c, markersize=8, markeredgecolor=SURFACE,
             markeredgewidth=1.3, zorder=3)
-    ax.annotate(f"M={m}", (x, y), xytext=(6, 6), textcoords="offset points",
-                fontsize=9, color=INK)
+    ax.annotate(f"M={m}", (x, y), xytext=OFF[m], textcoords="offset points",
+                ha="center" if m >= 8 else "left", fontsize=9, color=INK)
 ax.plot(MS_SITER, MS_LOSS, "s", color=ORANGE, markersize=9,
-        markeredgecolor=SURFACE, markeredgewidth=1.3, zorder=3)
-ax.annotate("multislice\n(mode-2)", (MS_SITER, MS_LOSS), xytext=(0, 10),
+        markeredgecolor=SURFACE, markeredgewidth=1.3, zorder=4)
+ax.annotate("multislice\n1 GPU (best)", (MS_SITER, MS_LOSS), xytext=(0, -34),
             textcoords="offset points", ha="center", fontsize=9, color=INK)
+ax.plot(MS2_SITER, MS_LOSS, "s", markerfacecolor=SURFACE,
+        markeredgecolor=ORANGE, markeredgewidth=1.6, markersize=9, zorder=3)
+ax.annotate("MS mode-2\n(2 GPUs)", (MS2_SITER, MS_LOSS), xytext=(0, -34),
+            textcoords="offset points", ha="center", fontsize=8.5, color=INK2)
+ax.set_ylim(0.3045, 0.3355)
 ax.axhline(MS_LOSS, color=INK2, linewidth=0.8, linestyle=":", alpha=0.5)
 ax.set_xlabel("time per iteration (s)")
 ax.set_ylabel("loss after 5 iterations")
-ax.set_title("Born order vs multislice on 2 GPUs — loss/cost frontier\n"
-             "(PSO 16384 DPs, 42 slices, 4 probe modes; born: slice split,\n"
-             "MS: probe-mode split — its only parallel axis)",
+ax.set_title("Born order (slice split, 2 GPUs) vs multislice — loss/cost frontier\n"
+             "(PSO 16384 DPs, 42 slices, 4 probe modes; MS best = 1 GPU —\n"
+             "mode-split, its only parallel axis, SLOWS it 1.4×)",
              fontsize=9.5, loc="left")
 ax.grid(axis="both", color=INK2, alpha=0.12, linewidth=0.6)
 save(fig, "fig_h200_pareto")
@@ -110,13 +120,15 @@ for x, y in zip(xs, mode_y):
                     textcoords="offset points", ha="center", fontsize=8.5,
                     color=INK)
 ax.axhline(MS_SITER, color=INK2, linewidth=1.0, linestyle="--", alpha=0.7)
-ax.annotate(f"multislice, mode split: {MS_SITER:.0f} s/iter",
+ax.axhline(MS2_SITER, color=INK2, linewidth=0.8, linestyle=":", alpha=0.5)
+ax.annotate(f"multislice best (1 GPU): {MS_SITER:.0f} s/iter",
             (len(M_VALS) - 0.5, MS_SITER), xytext=(0, 4),
             textcoords="offset points", ha="right", fontsize=9, color=INK2)
 ax.set_xticks(list(xs))
 ax.set_xticklabels([f"M={m}" for m in M_VALS])
 ax.set_ylabel("time per iteration (s)")
 ax.set_ylim(0, 330)
+ax.annotate(f"MS mode-2: {MS2_SITER:.0f}", (0.02, 0.945), xycoords="axes fraction", fontsize=8, color=INK2)
 ax.set_title("Time per iteration vs Born order, 2 GPUs (H200 NV18)",
              fontsize=10, loc="left")
 ax.legend(frameon=False, fontsize=9, loc="upper left")
