@@ -112,7 +112,7 @@ pareto("fig_h200_pareto_ms1gpu", True, False,
 pareto("fig_h200_pareto_ms2only", False, True,
        "(42 slices, 4 probe modes, 2×H200 SXM NV18)",
        titleline="Born order (slice split) vs multislice (mode split)\n"
-                 "— loss vs time per iteration")
+                 "loss vs time per iteration")
 
 # ---- B. s/iter vs M, split-axis comparison ---------------------------------
 fig, ax = plt.subplots(figsize=(5.6, 3.8))
