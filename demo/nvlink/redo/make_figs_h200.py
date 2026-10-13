@@ -103,14 +103,14 @@ def pareto(name, show_ms1, show_ms2, subtitle):
     save(fig, name)
 
 pareto("fig_h200_pareto", True, True,
-       "(PSO 16384 DPs, 42 slices, 4 probe modes; MS best = 1 GPU —\n"
-       "mode-split, its only parallel axis, SLOWS it 1.4×)")
+       "(PSO 16384 DPs, 42 slices, 4 probe modes, 2×H200 SXM NV18;\n"
+       "MS best = 1 GPU — mode-split slows it 1.4×)")
 pareto("fig_h200_pareto_ms1gpu", True, False,
-       "(PSO 16384 DPs, 42 slices, 4 probe modes; multislice shown at its\n"
-       "best: 1 GPU — its probe-mode split slows it 1.4×, see text)")
+       "(PSO 16384 DPs, 42 slices, 4 probe modes, 2×H200 SXM NV18;\n"
+       "multislice shown at its best: 1 GPU)")
 pareto("fig_h200_pareto_ms2only", False, True,
-       "(PSO 16384 DPs, 42 slices, 4 probe modes; multislice mode-split\n"
-       "over 2 GPUs — its only parallel axis; 1-GPU MS runs 215 s/iter)")
+       "(PSO 16384 DPs, 42 slices, 4 probe modes, 2×H200 SXM NV18;\n"
+       "multislice mode-split over 2 GPUs)")
 
 # ---- B. s/iter vs M, split-axis comparison ---------------------------------
 fig, ax = plt.subplots(figsize=(5.6, 3.8))
