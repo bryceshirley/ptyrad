@@ -63,43 +63,54 @@ EXT = {}
 EXT_SITER = {}
 
 # ---- A. Pareto: iter-5 loss vs time per iteration --------------------------
-fig, ax = plt.subplots(figsize=(5.6, 4.0))
-ax.plot(SLICE_SITER, LOSS5, "-", color="#2a78d6", linewidth=1.6, zorder=2)
-ext_ms = sorted(EXT)
-ax.plot([SLICE_SITER[-1]] + [EXT_SITER[m] for m in ext_ms],
-        [LOSS5[-1]] + [EXT[m] for m in ext_ms], "--", color="#174f94",
-        linewidth=1.4, zorder=2)
-for m in ext_ms:
-    ax.plot(EXT_SITER[m], EXT[m], "o", markerfacecolor=SURFACE,
-            markeredgecolor="#174f94", markeredgewidth=1.6, markersize=8,
-            zorder=3)
-    ax.annotate(f"M={m}*", (EXT_SITER[m], EXT[m]), xytext=(2, -16),
-                textcoords="offset points", ha="center", fontsize=9, color=INK)
-OFF = {1: (6, 6), 2: (6, 6), 4: (6, 6), 6: (6, 6),
-       8: (-2, 10), 10: (2, -18), 12: (0, 10), 14: (0, -18)}
-for m, x, y, c in zip(M_VALS, SLICE_SITER, LOSS5, RAMP):
-    ax.plot(x, y, "o", color=c, markersize=8, markeredgecolor=SURFACE,
-            markeredgewidth=1.3, zorder=3)
-    ax.annotate(f"M={m}", (x, y), xytext=OFF[m], textcoords="offset points",
-                ha="center" if m >= 8 else "left", fontsize=9, color=INK)
-ax.plot(MS_SITER, MS_LOSS, "s", color=ORANGE, markersize=9,
-        markeredgecolor=SURFACE, markeredgewidth=1.3, zorder=4)
-ax.annotate("multislice\n1 GPU (best)", (MS_SITER, MS_LOSS), xytext=(0, -34),
-            textcoords="offset points", ha="center", fontsize=9, color=INK)
-ax.plot(MS2_SITER, MS_LOSS, "s", markerfacecolor=SURFACE,
-        markeredgecolor=ORANGE, markeredgewidth=1.6, markersize=9, zorder=3)
-ax.annotate("MS mode-2\n(2 GPUs)", (MS2_SITER, MS_LOSS), xytext=(0, -34),
-            textcoords="offset points", ha="center", fontsize=8.5, color=INK2)
-ax.set_ylim(0.3045, 0.3355)
-ax.axhline(MS_LOSS, color=INK2, linewidth=0.8, linestyle=":", alpha=0.5)
-ax.set_xlabel("time per iteration (s)")
-ax.set_ylabel("loss after 5 iterations")
-ax.set_title("Born order (slice split, 2 GPUs) vs multislice — loss/cost frontier\n"
-             "(PSO 16384 DPs, 42 slices, 4 probe modes; MS best = 1 GPU —\n"
-             "mode-split, its only parallel axis, SLOWS it 1.4×)",
-             fontsize=9.5, loc="left")
-ax.grid(axis="both", color=INK2, alpha=0.12, linewidth=0.6)
-save(fig, "fig_h200_pareto")
+# Three variants: both MS points / MS 1-GPU only (recommended) / mode-2 only.
+def pareto(name, show_ms1, show_ms2, subtitle):
+    fig, ax = plt.subplots(figsize=(5.6, 4.0))
+    ax.plot(SLICE_SITER, LOSS5, "-", color="#2a78d6", linewidth=1.6, zorder=2)
+    OFF = {1: (6, 6), 2: (6, 6), 4: (6, 6), 6: (6, 6),
+           8: (-2, 10), 10: (2, -18), 12: (0, 10), 14: (0, -18)}
+    for m, x, y, c in zip(M_VALS, SLICE_SITER, LOSS5, RAMP):
+        ax.plot(x, y, "o", color=c, markersize=8, markeredgecolor=SURFACE,
+                markeredgewidth=1.3, zorder=3)
+        ax.annotate(f"M={m}", (x, y), xytext=OFF[m], textcoords="offset points",
+                    ha="center" if m >= 8 else "left", fontsize=9, color=INK)
+    if show_ms1:
+        ax.plot(MS_SITER, MS_LOSS, "s", color=ORANGE, markersize=9,
+                markeredgecolor=SURFACE, markeredgewidth=1.3, zorder=4)
+        ax.annotate("multislice\n1 GPU" + (" (best)" if show_ms2 else ""),
+                    (MS_SITER, MS_LOSS), xytext=(0, -34),
+                    textcoords="offset points", ha="center", fontsize=9,
+                    color=INK)
+    if show_ms2:
+        ax.plot(MS2_SITER, MS_LOSS, "s",
+                color=ORANGE if not show_ms1 else "none",
+                markerfacecolor=ORANGE if not show_ms1 else SURFACE,
+                markeredgecolor=SURFACE if not show_ms1 else ORANGE,
+                markeredgewidth=1.3 if not show_ms1 else 1.6,
+                markersize=9, zorder=3)
+        ax.annotate("multislice\nmode-2" if not show_ms1 else "MS mode-2\n(2 GPUs)",
+                    (MS2_SITER, MS_LOSS), xytext=(0, -34),
+                    textcoords="offset points", ha="center",
+                    fontsize=9 if not show_ms1 else 8.5,
+                    color=INK if not show_ms1 else INK2)
+    ax.axhline(MS_LOSS, color=INK2, linewidth=0.8, linestyle=":", alpha=0.5)
+    ax.set_ylim(0.3045, 0.3355)
+    ax.set_xlabel("time per iteration (s)")
+    ax.set_ylabel("loss after 5 iterations")
+    ax.set_title("Born order (slice split, 2 GPUs) vs multislice — "
+                 "loss/cost frontier\n" + subtitle, fontsize=9.5, loc="left")
+    ax.grid(axis="both", color=INK2, alpha=0.12, linewidth=0.6)
+    save(fig, name)
+
+pareto("fig_h200_pareto", True, True,
+       "(PSO 16384 DPs, 42 slices, 4 probe modes; MS best = 1 GPU —\n"
+       "mode-split, its only parallel axis, SLOWS it 1.4×)")
+pareto("fig_h200_pareto_ms1gpu", True, False,
+       "(PSO 16384 DPs, 42 slices, 4 probe modes; multislice shown at its\n"
+       "best: 1 GPU — its probe-mode split slows it 1.4×, see text)")
+pareto("fig_h200_pareto_ms2only", False, True,
+       "(PSO 16384 DPs, 42 slices, 4 probe modes; multislice mode-split\n"
+       "over 2 GPUs — its only parallel axis; 1-GPU MS runs 215 s/iter)")
 
 # ---- B. s/iter vs M, split-axis comparison ---------------------------------
 fig, ax = plt.subplots(figsize=(5.6, 3.8))
