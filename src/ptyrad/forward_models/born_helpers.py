@@ -155,6 +155,10 @@ def born_qr_coeffs(
     Eager; call under torch.no_grad().
     """
     M = D.shape[0]
+    out_dtype = D.dtype if D.dtype in (torch.complex64, torch.complex128) \
+        else torch.complex64  # dtype-preserving: a complex128 basis gets
+    #     complex128 coefficients back (a hard complex64 cast floors
+    #     machine-precision remainder checks at eps32 x the shell hump)
     if omode_occu is not None:
         w = omode_occu.to(D.real.dtype).clamp(min=0).sqrt().view(1, 1, -1, 1, 1)
         D = D * w
@@ -162,22 +166,28 @@ def born_qr_coeffs(
         if extra_rhs is not None:
             extra_rhs = extra_rhs * w
     A = D.reshape(M, -1).T.to(torch.complex128)  # tall factor: one column per order
+    # column equilibration: the shell norms span many decades (the hump),
+    # so gelsd's RELATIVE rank cutoff would truncate the small high-order
+    # columns; normalising columns keeps only the angular conditioning and
+    # is the identical least-squares problem (x is rescaled back below)
+    col = torch.linalg.vector_norm(A, dim=0).clamp(min=torch.finfo(A.real.dtype).tiny)
+    A = A / col
     T_high_pres = T.reshape(-1).to(torch.complex128)
     t_norm = torch.linalg.vector_norm(T_high_pres)
     if not (torch.isfinite(t_norm) and t_norm > 0 and d0_norm2 > 0):
-        ones = torch.ones(M, dtype=torch.complex64, device=D.device)
+        ones = torch.ones(M, dtype=out_dtype, device=D.device)
         if extra_rhs is None:
             return ones, 0.0
-        return ones, 0.0, torch.zeros(M, dtype=torch.complex64, device=D.device)
-    b = T_high_pres - A.sum(dim=1)  # T_tail: what the plain series misses
+        return ones, 0.0, torch.zeros(M, dtype=out_dtype, device=D.device)
+    b = T_high_pres - A @ col.to(A.dtype)  # T_tail: what the plain series misses
     rhs = b[:, None]
     if extra_rhs is not None:
         b_e = extra_rhs.reshape(-1).to(torch.complex128)
         rhs = torch.cat([rhs, b_e[:, None]], dim=1)
     sol = torch.linalg.lstsq(A.cpu(), rhs.cpu(), driver="gelsd").solution.to(A.device)
-    x = sol[:, 0]
+    delta = (torch.linalg.vector_norm(A @ sol[:, 0] - b) / t_norm).item()
+    x = sol[:, 0] / col.to(A.dtype)  # undo the column scaling
     c = 1.0 + x
-    delta = (torch.linalg.vector_norm(A @ x - b) / t_norm).item()
     if extra_rhs is None:
-        return c.to(torch.complex64), delta
-    return c.to(torch.complex64), delta, sol[:, 1].to(torch.complex64)
+        return c.to(out_dtype), delta
+    return c.to(out_dtype), delta, (sol[:, 1] / col.to(A.dtype)).to(out_dtype)
