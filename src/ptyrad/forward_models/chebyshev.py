@@ -9,11 +9,15 @@ per object slab EXACTLY (to a truncation tolerance) via a Chebyshev
 operator polynomial, so that FEWER, THICKER object slabs can be used with
 zero splitting error inside each slab. Here
 
-    mu  = -K_perp^2 / k0^2            (Fourier multiplier, band-projected:
-                                       k_perp < band_frac * min(k0, sqrt(2)*K_Nyq),
-                                       zero outside; the mask is baked into the
-                                       multiplier so it acts inside EVERY
-                                       operator application),
+    mu  = -K_perp^2 / k0^2            (Fourier multiplier, band-projected to
+                                       the hard antialias band
+                                       k_perp < band_frac * K_Nyq (default 2/3
+                                       Nyquist; the data contains nothing
+                                       beyond it), zero outside; the SAME hard
+                                       mask is baked into the multiplier AND
+                                       applied to the field at the entrance of
+                                       every polynomial application and at the
+                                       exit, so nothing lives off-interval),
     eps = 2*(n-1) + (n-1)^2,          (n-1) = phase_slab / (k0 * dz_slab),
 
 with phase_slab the SUM of the constituent slice phases in the slab (the
@@ -46,6 +50,11 @@ are built, padded by pad_frac (default 30%) of the span on each side, and
 the coefficients are rebuilt ONLY when the object's eps range escapes the
 padded interval (a cheap host-side check once per iteration; see
 ChebyshevSlabKernel.refresh).
+
+The band choice dominates the cost: the degree scales as
+k0*dz*(sqrt(b)-sqrt(a))/2 ~ dz*k_band^2/(4*k0), i.e. quadratically in
+k_band. Cropping from the historical wide band 0.9*min(k0, sqrt(2)*K_Nyq)
+~ 1.27 K_Nyq to the 2/3-Nyquist antialias band cuts the degree ~3.6x.
 
 Coefficients are computed host-side in numpy float64 (Chebyshev
 interpolation at first-kind nodes, truncated at tail tolerance `tol`,
@@ -91,7 +100,7 @@ from torch.fft import fft2, ifft2
 from ptyrad.utils import fftshift2, vprint
 
 
-def chebyshev_coeffs(theta, lo, hi, tol=1e-6, degree_cap=512):
+def chebyshev_coeffs(theta, lo, hi, tol=1e-4, degree_cap=512):
     """
     Host-side numpy (float64) Chebyshev coefficients of
     f(x) = exp(i*theta*x/(1+sqrt(1+x))) over [lo, hi].
@@ -104,7 +113,7 @@ def chebyshev_coeffs(theta, lo, hi, tol=1e-6, degree_cap=512):
     Args:
         theta (float): k0 * dz of the propagated (half-)slab.
         lo, hi (float): padded SHIFTED interval [a-1-pad, b-1+pad].
-        tol (float): tail truncation tolerance. Defaults to 1e-6.
+        tol (float): tail truncation tolerance. Defaults to 1e-4.
         degree_cap (int): hard cap on the polynomial degree. Defaults to 512.
 
     Returns:
@@ -232,11 +241,21 @@ def _select_poly_impl():
     return _apply_cheb_poly if os.environ.get("PTYRAD_CHEB_EAGER") else _apply_cheb_poly_fused
 
 
-def chebyshev_exit_wave(object_patches, psi, mu_mul, coeffs_half, lo, hi, k0_dz_slab, groups):
+def chebyshev_exit_wave(
+    object_patches, psi, mu_mul, band_mask, coeffs_half, lo, hi, k0_dz_slab, groups
+):
     """
     Sweep the wave through all slabs: per slab U(dz/2) * A * U(dz/2) with
     U the Chebyshev half-slab exponential and A the pointwise amplitude
     screen at the slab centre.
+
+    The hard band mask (the same one baked into mu_mul) is applied to the
+    field at the ENTRANCE of every polynomial application and to the exit
+    wave: the real-space eps and amplitude multiplies scatter a little
+    content off-band inside each application, and the projection kills it
+    before it can accumulate or reach the detector mis-propagated (its
+    mu is zeroed, i.e. it would drift as if k_perp = 0). Costs one FFT
+    pair per application plus one at the exit.
 
     Args:
         object_patches (torch.Tensor): (N, omode, Nz, Ny, Nx, 2) pseudo-complex
@@ -244,6 +263,8 @@ def chebyshev_exit_wave(object_patches, psi, mu_mul, coeffs_half, lo, hi, k0_dz_
         psi (torch.Tensor): (N, pmode, omode|1, Ny, Nx) wave at the entrance face.
         mu_mul (torch.Tensor): (Ny, Nx) real band-projected Fourier multiplier
             -K_perp^2/k0^2 (unshifted fft layout).
+        band_mask (torch.Tensor): (Ny, Nx) real hard band mask (1 in-band,
+            0 outside; unshifted fft layout).
         coeffs_half (torch.Tensor): (M+1,) complex HALF-slab Chebyshev
             coefficients (detached constants).
         lo, hi (float): padded shifted expansion interval.
@@ -255,6 +276,10 @@ def chebyshev_exit_wave(object_patches, psi, mu_mul, coeffs_half, lo, hi, k0_dz_
         face of the last slab (total drift n_slab*dz_slab, carrier removed).
     """
     apply_poly = _select_poly_impl()
+
+    def band_project(v):
+        return ifft2(band_mask * fft2(v))
+
     amp = object_patches[..., 0]
     phase = object_patches[..., 1]
     for s0, s1 in groups:
@@ -264,16 +289,17 @@ def chebyshev_exit_wave(object_patches, psi, mu_mul, coeffs_half, lo, hi, k0_dz_
         # exp(sum(log)) instead of prod: amplitudes are strictly positive and
         # prod's backward breaks CUDA-graph capture (host-side zero check)
         amp_slab = amp[:, :, s0:s1].clamp_min(1e-10).log().sum(dim=2).exp()[:, None]
-        psi = apply_poly(psi, coeffs_half, lo, hi, mu_mul, eps_r)
+        psi = apply_poly(band_project(psi), coeffs_half, lo, hi, mu_mul, eps_r)
         psi = psi * amp_slab
-        psi = apply_poly(psi, coeffs_half, lo, hi, mu_mul, eps_r)
-    return psi
+        psi = apply_poly(band_project(psi), coeffs_half, lo, hi, mu_mul, eps_r)
+    return band_project(psi)
 
 
 def multislice_forward_chebyshev(
     object_patches,
     probe,
     mu_mul,
+    band_mask,
     coeffs_half,
     lo,
     hi,
@@ -290,8 +316,8 @@ def multislice_forward_chebyshev(
         object_patches (torch.Tensor): (N, omode, Nz, Ny, Nx, 2) pseudo-complex
             object patches with float amplitude and phase components.
         probe (torch.Tensor): (N|1, pmode, Ny, Nx) complex probe(s).
-        mu_mul, coeffs_half, lo, hi, k0_dz_slab, groups: precomputed kernel
-            state from ChebyshevSlabKernel (coeffs are detached constants).
+        mu_mul, band_mask, coeffs_half, lo, hi, k0_dz_slab, groups: precomputed
+            kernel state from ChebyshevSlabKernel (coeffs are detached constants).
         omode_occu (torch.Tensor, optional): (omode,) occupancies summing to 1.
         eps (float, optional): numerical stability floor. Defaults to 1e-10.
 
@@ -306,7 +332,9 @@ def multislice_forward_chebyshev(
         omode_occu = torch.ones(objp.size(1), dtype=objp.dtype, device=objp.device) / objp.size(1)
 
     psi = probe[:, :, None, :, :]  # (N, pmode, omode, Ny, Nx)
-    psi = chebyshev_exit_wave(object_patches, psi, mu_mul, coeffs_half, lo, hi, k0_dz_slab, groups)
+    psi = chebyshev_exit_wave(
+        object_patches, psi, mu_mul, band_mask, coeffs_half, lo, hi, k0_dz_slab, groups
+    )
 
     dp_fwd = (
         torch.sum(
@@ -336,10 +364,10 @@ class ChebyshevSlabKernel:
         groups,
         device,
         dtype=torch.complex64,
-        tol=1e-6,
+        tol=1e-4,
         degree_cap=512,
         pad_frac=0.3,
-        band_frac=0.9,
+        band_frac=2.0 / 3.0,
         verbose=True,
     ):
         """
@@ -354,7 +382,8 @@ class ChebyshevSlabKernel:
             tol (float): coefficient tail truncation tolerance.
             degree_cap (int): hard cap on the polynomial degree.
             pad_frac (float): interval padding fraction per side.
-            band_frac (float): band projection fraction of min(k0, sqrt(2)*K_Nyq).
+            band_frac (float): hard antialias band as a fraction of K_Nyquist
+                (default 2/3, the antialias standard; safety-clamped below k0).
         """
         self.verbose = verbose
         self.tol = float(tol)
@@ -376,10 +405,14 @@ class ChebyshevSlabKernel:
         kx = 2.0 * np.pi * np.fft.fftfreq(Nx, d=float(dx))
         K2 = ky[:, None] ** 2 + kx[None, :] ** 2
         k_nyq = np.pi / float(dx)
-        k_band = self.band_frac * min(self.k0, np.sqrt(2.0) * k_nyq)
-        mu = np.where(K2 < k_band**2, -K2 / self.k0**2, 0.0)
+        # hard antialias band: fraction of K_Nyquist (2/3 by default); the
+        # sqrt generator needs 1 + mu + eps > 0, so stay safely below k0
+        k_band = min(self.band_frac * k_nyq, 0.95 * self.k0)
+        band = K2 < k_band**2
+        mu = np.where(band, -K2 / self.k0**2, 0.0)
         self.mu_min = float(mu.min())
         self.mu_mul = torch.tensor(mu, dtype=self.rdtype, device=device)
+        self.band_mask = torch.tensor(band.astype(np.float64), dtype=self.rdtype, device=device)
 
         self.lo = None
         self.hi = None
@@ -388,7 +421,7 @@ class ChebyshevSlabKernel:
         vprint(
             f"Chebyshev slab kernel: k0 = {self.k0:.4f}, dz_slab = {self.dz_slab:.4f} "
             f"({len(self.groups)} slab(s) of {self.groups[0][1] - self.groups[0][0]} slice(s)), "
-            f"band k_perp < {k_band:.4f} (frac {self.band_frac} of min(k0, sqrt(2)*K_Nyq)), "
+            f"hard band k_perp < {k_band:.4f} (frac {self.band_frac:.4f} of K_Nyq = {k_nyq:.4f}), "
             f"mu_min = {self.mu_min:.3e}",
             verbose=self.verbose,
         )
@@ -444,4 +477,12 @@ class ChebyshevSlabKernel:
 
     def kernels(self):
         """Forward-model kernel state (coeffs are detached constants)."""
-        return (self.mu_mul, self.coeffs, self.lo, self.hi, self.k0_dz_slab, self.groups)
+        return (
+            self.mu_mul,
+            self.band_mask,
+            self.coeffs,
+            self.lo,
+            self.hi,
+            self.k0_dz_slab,
+            self.groups,
+        )

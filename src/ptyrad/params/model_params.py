@@ -202,7 +202,7 @@ class ModelParams(BaseModel):
     )
 
     cheb_tol: float = Field(
-        default=1e-6,
+        default=1e-4,
         gt=0,
         description="Chebyshev coefficient tail truncation tolerance "
         "(solver_type='chebyshev').",
@@ -225,12 +225,17 @@ class ModelParams(BaseModel):
     )
 
     cheb_band_frac: float = Field(
-        default=0.9,
+        default=2.0 / 3.0,
         gt=0,
-        le=1,
-        description="Band projection of the mu = -K_perp^2/k0^2 Fourier "
-        "multiplier: keep k_perp < cheb_band_frac * min(k0, sqrt(2)*K_Nyquist), "
-        "zero outside (solver_type='chebyshev').",
+        le=1.5,
+        description="Hard antialias band as a fraction of K_Nyquist "
+        "(solver_type='chebyshev'): the mu = -K_perp^2/k0^2 Fourier "
+        "multiplier is zeroed for k_perp >= cheb_band_frac * K_Nyquist "
+        "(safety-clamped below k0) and the SAME hard mask is applied to "
+        "the field at the entrance of every Chebyshev polynomial "
+        "application and at the exit, so no content lives off-band. The "
+        "polynomial degree scales as cheb_band_frac^2; 2/3 Nyquist is the "
+        "antialias standard (the data contains nothing beyond it).",
     )
 
     born_iterations: int = Field(

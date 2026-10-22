@@ -321,10 +321,10 @@ class PtychoAD(torch.nn.Module):
                     groups=groups,
                     device=device,
                     dtype=torch.complex64,
-                    tol=model_params.get("cheb_tol", 1e-6),
+                    tol=model_params.get("cheb_tol", 1e-4),
                     degree_cap=model_params.get("cheb_degree_cap", 512),
                     pad_frac=model_params.get("cheb_pad_frac", 0.3),
-                    band_frac=model_params.get("cheb_band_frac", 0.9),
+                    band_frac=model_params.get("cheb_band_frac", 2.0 / 3.0),
                     verbose=verbose,
                 )
                 self.cheb_manager.refresh(self.opt_objp)
@@ -571,12 +571,12 @@ class PtychoAD(torch.nn.Module):
         if getattr(self, "_cheb_graph_key", None) != key:
             from ptyrad.forward_models import multislice_forward_chebyshev
 
-            mu_mul, coeffs, lo, hi, k0_dz_slab, groups = m.kernels()
+            mu_mul, band_mask, coeffs, lo, hi, k0_dz_slab, groups = m.kernels()
             occu = self.omode_occu
 
             def fn(p, pr):
                 return multislice_forward_chebyshev(
-                    p, pr, mu_mul, coeffs, lo, hi, k0_dz_slab, groups, omode_occu=occu
+                    p, pr, mu_mul, band_mask, coeffs, lo, hi, k0_dz_slab, groups, omode_occu=occu
                 )
 
             sample = (
@@ -620,11 +620,12 @@ class PtychoAD(torch.nn.Module):
             if use_graph:
                 dp_fwd = self._get_cheb_graphed(object_patches, probes)(object_patches, probes)
             else:
-                mu_mul, coeffs, lo, hi, k0_dz_slab, groups = self.cheb_manager.kernels()
+                mu_mul, band_mask, coeffs, lo, hi, k0_dz_slab, groups = self.cheb_manager.kernels()
                 dp_fwd = multislice_forward_chebyshev(
                     object_patches,
                     probes,
                     mu_mul,
+                    band_mask,
                     coeffs,
                     lo,
                     hi,

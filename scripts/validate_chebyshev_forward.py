@@ -136,6 +136,10 @@ def cheb_unshifted_exit(patches, psi, km):
     a = 2.0 / (hi1 - lo1)
     b = -(hi1 + lo1) / (hi1 - lo1)
     mu_mul = km.mu_mul
+    mask = km.band_mask
+
+    def bp(v):
+        return ifft2(mask * fft2(v))
 
     def apply_poly(v, eps_r):
         def S_op(w):
@@ -158,10 +162,10 @@ def cheb_unshifted_exit(patches, psi, km):
         nm1 = phase[:, :, s0:s1].sum(dim=2) / km.k0_dz_slab
         eps_r = (nm1 * (2.0 + nm1))[:, None]
         amp_slab = amp[:, :, s0:s1].prod(dim=2)[:, None]
-        psi = apply_poly(psi, eps_r)
+        psi = apply_poly(bp(psi), eps_r)
         psi = psi * amp_slab
-        psi = apply_poly(psi, eps_r)
-    return psi, coeffs.shape[0] - 1
+        psi = apply_poly(bp(psi), eps_r)
+    return bp(psi), coeffs.shape[0] - 1
 
 
 def rel_err(psi, ref):
@@ -169,6 +173,13 @@ def rel_err(psi, ref):
     z = torch.sum(torch.conj(ref) * psi)
     phase = z / z.abs().clamp_min(1e-30)
     return float(torch.linalg.vector_norm(psi * torch.conj(phase) - ref) / torch.linalg.vector_norm(ref))
+
+
+def rel_err_inband(psi, ref, mask):
+    """rel_err with both fields hard-projected onto the band (same mask the
+    solver applies); the comparison then ignores out-of-band content the
+    band-cropped model removes by construction."""
+    return rel_err(ifft2(mask * fft2(psi)), ifft2(mask * fft2(ref)))
 
 
 def cuda_time(fn, warmup=3, reps=5):
@@ -291,6 +302,25 @@ def main():
         rows["cheb3_unshifted"] = (rel_err(psi_uns[:, :, 0], ref), 2 * deg_uns * 3)
         fields["cheb3_unshifted"] = psi_uns[:, :, 0]
 
+        # in-band comparison: both fields hard-projected onto the solver's
+        # antialias band before the metric (the band crop removes
+        # out-of-band GT content by construction; in-band is the
+        # apples-to-apples accuracy number)
+        mask = kms["cheb3"].band_mask
+        F_ref = fft2(ref)
+        pw = F_ref.abs().square()
+        oob_frac = float((pw * (1.0 - mask)).sum() / pw.sum())
+        inband = {
+            "lt21": rel_err_inband(psi_lt, ref, mask),
+            "chin4a11": rel_err_inband(psi_chin, ref, mask),
+            "cheb3": rel_err_inband(fields["cheb3"], ref, mask),
+            "cheb1": rel_err_inband(fields["cheb1"], ref, mask),
+        }
+        print(f"GT power beyond the {kms['cheb3'].band_frac:.4f}*K_Nyq band: {oob_frac:.3e}")
+        print(f"{'model':<18}{'in-band rel L2':>16}")
+        for k, e in inband.items():
+            print(f"{k:<18}{e:>16.3e}")
+
         # roundoff isolation: each precision's field vs the f64 shifted field
         if prec == "f64":
             cheb3_f64_field = fields["cheb3"]
@@ -305,6 +335,8 @@ def main():
         for k, (e, nfft) in rows.items():
             print(f"{k:<18}{e:>14.3e}{nfft:>11d}")
         results[prec] = {k: {"rel_l2": e, "fft_pairs": nfft} for k, (e, nfft) in rows.items()}
+        results[prec]["inband_rel_l2"] = inband
+        results[prec]["gt_power_beyond_band"] = oob_frac
 
         if prec == "f32":
             # wall times (exit-wave computation, CUDA events, best of 5)
@@ -329,13 +361,15 @@ def main():
     torch.manual_seed(0)
     ph_s = 0.05 * torch.rand(1, 2, ng, ng, dtype=torch.float64, device=dev)
     km.refresh(ph_s)
-    mu_mul, coeffs, lo, hi, k0dz, groups = km.kernels()
+    mu_mul, band_mask, coeffs, lo, hi, k0dz, groups = km.kernels()
     print(f"gradcheck half-slab degree: {coeffs.shape[0] - 1}")
 
     def fwd(obja_p, objp_p, probe_r, probe_i):
         patches = torch.stack([obja_p, objp_p], dim=-1)[None]  # (1,1,2,ng,ng,2)
         pr = torch.complex(probe_r, probe_i)[None]  # (1,1,ng,ng)
-        return multislice_forward_chebyshev(patches, pr, mu_mul, coeffs, lo, hi, k0dz, groups)
+        return multislice_forward_chebyshev(
+            patches, pr, mu_mul, band_mask, coeffs, lo, hi, k0dz, groups
+        )
 
     inputs = (
         (1.0 - 0.02 * torch.rand(1, 2, ng, ng, dtype=torch.float64, device=dev)).requires_grad_(),
