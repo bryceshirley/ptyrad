@@ -1,0 +1,50 @@
+{
+ "runs": [
+  {
+   "label": "LT 21 (benchmark)",
+   "dataset": "optimizable_tensors/objp",
+   "run": "20260927_lt21_ref_s42_full_N3769_dp256_random1_p4_1obj_21slice_dz10_plr1e-4_oalr5e-4_oplr5e-4_dpblur1.0_orblur0.4_ozblur1.0_mamp0.03_4.0_oathr0.96_oposc_sng1.0_spr0.1"
+  },
+  {
+   "label": "Chin 4A, 11 slices (archived baseline)",
+   "dataset": "optimizable_tensors/objp",
+   "run": "20260925_chin4a_matched_n100_full_N4096_dp256_random1_p4_1obj_11slice_dz19.1_plr1e-4_oalr1e-3_oplr1e-3_dpblur1.0_orblur0.4_ozblur0.5238_mamp0.03_4.0_oathr0.96_oposc_sng1.0_spr0.05"
+  },
+  {
+   "label": "LT 11 (archived)",
+   "dataset": "optimizable_tensors/objp",
+   "run": "20260925_lt11_n100_full_N4096_dp256_random1_p4_1obj_11slice_dz19.1_plr1e-4_oalr5e-4_oplr5e-4_dpblur1.0_orblur0.4_ozblur1.0_mamp0.03_4.0_oathr0.96_oposc_sng1.0_spr0.1"
+  },
+  {
+   "label": "Chin 4A + antialias, raw g (arm i)",
+   "dataset": "optimizable_tensors/objp",
+   "run": "20261022_chin4a_aa_n100_full_N4096_dp256_random1_p4_1obj_11slice_dz19.1_plr1e-4_oalr1e-3_oplr1e-3_dpblur1.0_orblur0.4_ozblur0.5238_mamp0.03_4.0_oathr0.96_oposc_sng1.0_spr0.05"
+  },
+  {
+   "label": "Chin 4A + antialias + band-limited g (arm ii)",
+   "dataset": "optimizable_tensors/objp",
+   "run": "20261022_chin4a_aa_blg_n100_full_N4096_dp256_random1_p4_1obj_11slice_dz19.1_plr1e-4_oalr1e-3_oplr1e-3_dpblur1.0_orblur0.4_ozblur0.5238_mamp0.03_4.0_oathr0.96_oposc_sng1.0_spr0.05"
+  },
+  {
+   "label": "Chin 4A + antialias, g off (arm iii)",
+   "dataset": "optimizable_tensors/objp",
+   "run": "20261022_chin4a_aa_g0_n100_full_N4096_dp256_random1_p4_1obj_11slice_dz19.1_plr1e-4_oalr1e-3_oplr1e-3_dpblur1.0_orblur0.4_ozblur0.5238_mamp0.03_4.0_oathr0.96_oposc_sng1.0_spr0.05"
+  }
+ ],
+ "fine_band_ratios": [
+  1.0,
+  0.8761745704120717,
+  0.1364825569177418,
+  0.844645431233454,
+  28.15297072161398,
+  0.7768304117609749
+ ],
+ "band_nyquist": [
+  0.3,
+  0.6
+ ],
+ "crop_shape": [
+  639,
+  639
+ ]
+}
