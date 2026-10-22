@@ -653,6 +653,149 @@ def _compile_case(device):
     return object_patches, g_patches, probe, kern, dz_t, k0_t
 
 
+# ---------------------------------------------------------------------------
+# 9. band-limited g (chin_g_bandlimit) and antialias aperture (propagator_antialias)
+#
+# MEASURED on the PSO recovered specimen and synthetic sharp objects
+# (test/bench_chin_antialias.py + markdowns/chin_antialias.md, 2026-10-22):
+# band-limiting g does NOT beat the raw finite-difference g on objects with
+# content beyond k_Nyq/3 — the FD stencil's own transfer function already
+# attenuates the aliased band, and no POINTWISE g can restore fourth order
+# once chi itself is aliased (the [V,[T,V]] locality needs chi band-limited,
+# not just g). The regime where the band-limited spectral g provably works
+# is chi band-limited at k_c <= k_Nyq/3: there it restores the
+# double-commutator cancellation exactly (the FD g does too, up to its
+# stencil error). This test pins that measured ordering.
+# ---------------------------------------------------------------------------
+
+
+def band_edge_eta(n, dx, strength=0.5, seed=11):
+    """chi density that is HARD band-limited at k_Nyq/3 but concentrated at
+    the band edge (3-5 px oscillations): the sharpest object class for which
+    a pointwise g correction is exact."""
+    rng = np.random.default_rng(seed)
+    kN = np.pi / dx
+    F = rng.normal(size=(n, n)) + 1j * rng.normal(size=(n, n))
+    k1 = 2 * np.pi * np.fft.fftfreq(n, d=dx)
+    KY, KX = np.meshgrid(k1, k1, indexing="ij")
+    KR = np.sqrt(KY**2 + KX**2)
+    eta = np.real(np.fft.ifft2(F * ((KR >= 0.20 * kN) & (KR <= kN / 3.0))))
+    y, x = np.meshgrid(np.arange(n), np.arange(n), indexing="ij")
+    w = np.exp(-((((y - n / 2) ** 2 + (x - n / 2) ** 2) / (2 * (0.28 * n) ** 2)) ** 2))
+    eta = strength * eta * w / np.abs(eta * w).max()
+    return torch.tensor(eta * (1.0 - 0.25j), dtype=torch.complex128)
+
+
+def hard_bandlimited_spectral_g(phase, logamp, dx, frac=1.0 / 3.0):
+    """Periodic-patch mirror of the production chin_g_bandlimit path
+    (PtychoAD._bandlimited_chi_gradients): HARD cutoff at frac*k_Nyq, then
+    spectral gradient."""
+    n = phase.shape[-1]
+    k1d = 2 * torch.pi * torch.fft.fftfreq(n, d=dx, dtype=torch.float64)
+    Ky, Kx = torch.meshgrid(k1d, k1d, indexing="ij")
+    filt = ((Ky**2 + Kx**2) <= (frac * torch.pi / dx) ** 2).to(torch.complex128)
+
+    def grad(f):
+        F = torch.fft.fft2(f.to(torch.complex128)) * filt
+        return torch.fft.ifft2(1j * Ky * F).real, torch.fft.ifft2(1j * Kx * F).real
+
+    gyp, gxp = grad(phase)
+    gyl, gxl = grad(logamp)
+    return torch.stack(
+        [gyp**2 - gyl**2 + gxp**2 - gxl**2, -2.0 * (gyp * gyl + gxp * gxl)], dim=-1
+    )
+
+
+def test_bandlimited_g_order_band_edge_object():
+    """On a band-edge chi (hard band-limited at k_Nyq/3), the production
+    hard-cutoff spectral g restores the double-commutator cancellation:
+    clearly better than g = 0 at every windowed dz with order >= ~2.8; and
+    the raw FD g is at least as good (the measured NEGATIVE result for the
+    band-limited-g-beats-raw-g hypothesis — see module comment)."""
+    n, dx, k0 = N_ORD, DX_ORD, K0_ORD
+    eta = band_edge_eta(n, dx)
+    probe = gaussian_probe(n)
+    dzs = [24.0 * 0.5**i for i in range(7)]
+    errs = {"fd": [], "blh": [], "g0": []}
+    for dz in dzs:
+        I_ref = exact_intensity(eta, dz, dx, k0, probe)
+        norm = I_ref.abs().sum()
+        obj, g_fd = slab_inputs(eta, dz, 1, dx, g_mode="fd")
+        chi = eta * dz
+        g_blh = hard_bandlimited_spectral_g(chi.real, -chi.imag, dx)
+        g_blh = g_blh.expand(1, 1, 1, n, n, 2).clone()
+        H = fresnel_kernel_t(n, dx, dz / 2, k0)[None]
+        dz_t = torch.tensor(dz, dtype=torch.float64)
+        k0_t = torch.tensor(k0, dtype=torch.float64)
+        for name, g in (("fd", g_fd), ("blh", g_blh), ("g0", None)):
+            I = _multislice_forward_chin4a_impl(
+                obj, probe[None, None], H, g, dz_t, k0_t, eps=0.0
+            )[0]
+            errs[name].append(float((I - I_ref).abs().sum() / norm))
+
+    print_error_table("Band-edge object, local relative L1 error", dzs, errs)
+    d = np.asarray(dzs)
+    sel = (np.asarray(errs["g0"]) > 1e-11) & (np.asarray(errs["g0"]) < 3e-2)
+    assert sel.sum() >= 3, errs
+    slopes = {s: float(np.polyfit(np.log(d[sel]), np.log(np.asarray(errs[s])[sel]), 1)[0])
+              for s in errs}
+    print(f"windowed slopes: { {s: round(v, 2) for s, v in slopes.items()} }")
+
+    for i in np.flatnonzero(sel):
+        # band-limited g clearly beats no-g ...
+        assert errs["blh"][i] < 0.65 * errs["g0"][i], (i, errs)
+        # ... and the raw FD g is at least as good as the band-limited g
+        assert errs["fd"][i] <= 1.05 * errs["blh"][i], (i, errs)
+    assert slopes["blh"] >= 2.8 and slopes["fd"] >= 2.8, slopes
+
+
+def test_model_bandlimit_and_antialias_plumbing():
+    """Model-level flags: defaults off (bit-for-bit path), antialias mask is
+    a tapered [0,1] aperture that changes the forward, chin_g_bandlimit
+    switches the g path, both stay finite."""
+    from test.golden.golden_setup import build_golden_model, golden_indices
+
+    base = build_golden_model(
+        model_params_extra={"propagator_kernel": "fresnel", "splitting": "chin_4a"}
+    )
+    m_aa = build_golden_model(
+        model_params_extra={"propagator_kernel": "fresnel", "splitting": "chin_4a",
+                            "propagator_antialias": 0.667}
+    )
+    m_bl = build_golden_model(
+        model_params_extra={"propagator_kernel": "fresnel", "splitting": "chin_4a",
+                            "chin_g_bandlimit": 0.333}
+    )
+    assert base.antialias_mask is None
+    mask = m_aa.antialias_mask
+    assert mask is not None and float(mask.min()) == 0.0 and float(mask.max()) == 1.0
+    # cosine taper: some strictly interior values
+    assert bool(((mask > 0) & (mask < 1)).any())
+
+    idx = golden_indices()
+    with torch.no_grad():
+        d0, d1, d2 = base(idx), m_aa(idx), m_bl(idx)
+    for d in (d0, d1, d2):
+        assert torch.isfinite(d).all()
+    assert float((d1 - d0).abs().sum()) > 0  # kernel change is visible
+    assert float((d2 - d0).abs().sum()) > 0  # g change alters the forward
+
+
+def test_params_validation_bandlimit_antialias():
+    from src.ptyrad.params.model_params import ModelParams
+
+    mp = ModelParams(splitting="chin_4a", propagator_kernel="fresnel",
+                     chin_g_bandlimit=0.333, propagator_antialias=0.667)
+    assert mp.chin_g_bandlimit == 0.333 and mp.propagator_antialias == 0.667
+    assert ModelParams().chin_g_bandlimit is None
+    assert ModelParams().propagator_antialias is None
+    with pytest.raises(Exception, match="propagator_antialias"):
+        ModelParams(propagator_antialias=0.667)  # needs a chin splitting
+    with pytest.raises(Exception, match="chin_g_bandlimit"):
+        ModelParams(splitting="chin_4a", propagator_kernel="fresnel",
+                    chin_g_bandlimit=1.5)
+
+
 @pytest.mark.parametrize(
     "device",
     ["cpu"]
