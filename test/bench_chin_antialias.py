@@ -82,9 +82,14 @@ def fresnel_kernel(n, dx, dz, k0, dtype, device):
 
 
 def antialias_mask(n, dx, frac, dtype, device):
+    """Cosine-tapered circular aperture at frac*k_Nyq (taper width 2 k-pixels),
+    identical to PtychoAD's propagator_antialias mask."""
     Ky, Kx = k_grids(n, dx, dtype, device)
     k_cut = frac * torch.pi / dx
-    return ((Kx**2 + Ky**2) <= k_cut**2).to(dtype)
+    kr = torch.sqrt(Kx**2 + Ky**2)
+    w = 2.0 * (2 * torch.pi / (dx * n))
+    t = ((k_cut - kr) / w).clamp(0.0, 1.0)
+    return 0.5 - 0.5 * torch.cos(torch.pi * t)
 
 
 def _cplx(dtype):
