@@ -224,9 +224,34 @@ def main():
             print(f"GT convergence: |GT16 - GT32| / |GT32| = {conv:.3e}")
             results["gt_convergence_16_vs_32"] = conv
             ref64 = gt[32]
+
+            # exactness isolation: fine-LT ground truth on the HOMOGENISED
+            # 3-slab medium (each slab replaced by its z-mean phase/log-amp).
+            # Chebyshev-3 vs this reference removes the homogenisation error;
+            # what remains is the sqrt-generator cross term (the Chebyshev
+            # generator sqrt(1+mu+eps) differs from the fine-LT limit
+            # sqrt(1+mu) + (n-1) at order mu*eps) plus the 1e-6 truncation.
+            la = np.log(np.clip(obja, 1e-10, None))
+            ph_h = objp.copy()
+            la_h = la.copy()
+            for i in range(3):
+                s = slice(7 * i, 7 * (i + 1))
+                ph_h[s] = objp[s].mean(axis=0, keepdims=True)
+                la_h[s] = la[s].mean(axis=0, keepdims=True)
+            amp_h = torch.tensor(np.exp(la_h), dtype=rdt, device=dev)
+            ph_ht = torch.tensor(ph_h, dtype=rdt, device=dev)
+            nsub = 32
+            H_sub = torch.tensor(np.exp(1j * (dz / nsub) * Kz_AS), dtype=cdt, device=dev)
+            T_sub = torch.polar(amp_h ** (1.0 / nsub), ph_ht / nsub).to(cdt)
+            psi = psi0[:, :, 0].clone()
+            for n in range(nz):
+                for _ in range(nsub):
+                    psi = ifft2(H_sub * fft2(psi * T_sub[n]))
+            gt_homog = psi
         ref = ref64.to(cdt)
 
         rows = {}
+        fields = {}
         # (c) LT 21, full drift
         H1 = torch.tensor(np.exp(1j * dz * Kz_AS), dtype=cdt, device=dev)
         psi_lt = lt_exit(obj_cplx, psi0[:, :, 0], H1)
@@ -254,10 +279,27 @@ def main():
             psi_cheb = chebyshev_exit_wave(patches, psi0, *km.kernels())[:, :, 0]
             deg_half = km.coeffs.shape[0] - 1
             rows[name] = (rel_err(psi_cheb, ref), 2 * deg_half * n_slab)
+            fields[name] = psi_cheb
+            if prec == "f64" and name == "cheb3":
+                e_h = rel_err(psi_cheb, gt_homog)
+                print(f"cheb3 vs homogenised-slab GT32 (in-slab exactness + "
+                      f"cross term only): {e_h:.3e}")
+                results["cheb3_vs_homogenised_gt"] = e_h
 
         # (e) unshifted form, 3 slabs
         psi_uns, deg_uns = cheb_unshifted_exit(patches, psi0, kms["cheb3"])
         rows["cheb3_unshifted"] = (rel_err(psi_uns[:, :, 0], ref), 2 * deg_uns * 3)
+        fields["cheb3_unshifted"] = psi_uns[:, :, 0]
+
+        # roundoff isolation: each precision's field vs the f64 shifted field
+        if prec == "f64":
+            cheb3_f64_field = fields["cheb3"]
+        else:
+            ro_sh = rel_err(fields["cheb3"].to(torch.complex128), cheb3_f64_field)
+            ro_un = rel_err(fields["cheb3_unshifted"].to(torch.complex128), cheb3_f64_field)
+            print(f"f32 numerical error vs f64 shifted field: shifted {ro_sh:.3e}, "
+                  f"unshifted {ro_un:.3e}")
+            results["f32_roundoff"] = {"shifted": ro_sh, "unshifted": ro_un}
 
         print(f"{'model':<18}{'rel L2 vs GT':>14}{'FFT pairs':>11}")
         for k, (e, nfft) in rows.items():
