@@ -137,7 +137,9 @@ class ModelParams(BaseModel):
 
     solver_type: str = Field(
         default="multislice",
-        description="Type of solver to use for forward model: 'multislice' or 'born'",
+        description="Type of solver to use for forward model: 'multislice', 'born', "
+        "'strang', 'linduda', or 'chebyshev' (exact-generator slab model; see "
+        "cheb_n_slab)",
     )
     """
     The solver type determines which forward model implementation to use:
@@ -184,6 +186,51 @@ class ModelParams(BaseModel):
         "absorbed into the optimized probe, whose plane thereby shifts by "
         "a1*dz ~ 0.2113*dz into the first slab. Saves one FFT pair per "
         "forward pass. Default False (end drifts applied explicitly).",
+    )
+
+    cheb_n_slab: int | None = Field(
+        default=None,
+        ge=1,
+        description="Number of object slabs for solver_type='chebyshev' (the "
+        "Chebyshev exact-generator slab forward model). The Nz stored object "
+        "slices are grouped into cheb_n_slab contiguous slabs by summing "
+        "phases (Nz must be divisible); each slab exponential "
+        "exp(i*k0*dz_slab*(sqrt(1+mu+eps)-1)) is evaluated exactly (to "
+        "cheb_tol) by a Chebyshev operator polynomial, with the amplitude "
+        "screen applied pointwise at the slab centre. Default null uses one "
+        "slab per slice.",
+    )
+
+    cheb_tol: float = Field(
+        default=1e-6,
+        gt=0,
+        description="Chebyshev coefficient tail truncation tolerance "
+        "(solver_type='chebyshev').",
+    )
+
+    cheb_degree_cap: int = Field(
+        default=512,
+        ge=1,
+        description="Hard cap on the Chebyshev polynomial degree per "
+        "half-slab (solver_type='chebyshev').",
+    )
+
+    cheb_pad_frac: float = Field(
+        default=0.3,
+        ge=0,
+        description="Padding fraction of the Weyl interval span added on "
+        "each side before building the Chebyshev coefficients; the "
+        "coefficients are rebuilt only when the object's eps range escapes "
+        "the padded interval (solver_type='chebyshev').",
+    )
+
+    cheb_band_frac: float = Field(
+        default=0.9,
+        gt=0,
+        le=1,
+        description="Band projection of the mu = -K_perp^2/k0^2 Fourier "
+        "multiplier: keep k_perp < cheb_band_frac * min(k0, sqrt(2)*K_Nyquist), "
+        "zero outside (solver_type='chebyshev').",
     )
 
     born_iterations: int = Field(

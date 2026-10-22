@@ -697,6 +697,13 @@ def recon_loop(
     for niter in range(1, NITER + 1):
         toggle_grad_requires(model_instance, niter, verbose)
 
+        # Chebyshev slab solver: cheap host-side interval check once per
+        # iteration; rebuilds the coefficients only when the object's eps
+        # range escapes the padded expansion interval.
+        cheb = getattr(model_instance, "cheb_manager", None)
+        if cheb is not None:
+            cheb.refresh(model_instance.opt_objp, verbose=verbose)
+
         if niter in model_instance.compilation_iters:
             vprint(
                 f"Setting up PyTorch compiler with {compiler_configs}",

@@ -289,6 +289,46 @@ class PtychoAD(torch.nn.Module):
             self.init_propagator_vars()
             self.init_compilation_iters()
 
+            # Chebyshev exact-generator slab forward model (solver_type
+            # 'chebyshev'): host-side coefficient manager; the slice axis is
+            # grouped into cheb_n_slab contiguous slabs by summing phases.
+            self.cheb_manager = None
+            if self.solver_type == "chebyshev":
+                from ptyrad.forward_models import ChebyshevSlabKernel
+
+                if self.change_thickness:
+                    raise ValueError(
+                        "solver_type='chebyshev' requires a fixed slice_thickness "
+                        "(the coefficients are built for a fixed dz_slab)"
+                    )
+                if self.tilt_obj:
+                    raise ValueError("solver_type='chebyshev' does not support object tilts")
+                n_slab = model_params.get("cheb_n_slab") or self.n_slice
+                if self.n_slice % n_slab != 0:
+                    raise ValueError(
+                        f"cheb_n_slab = {n_slab} must divide n_slices = {self.n_slice}"
+                    )
+                gs = self.n_slice // n_slab
+                groups = tuple((i * gs, (i + 1) * gs) for i in range(n_slab))
+                import numpy as np
+
+                dz_slice = float(np.asarray(init_variables["slice_thickness"]).ravel()[0])
+                self.cheb_manager = ChebyshevSlabKernel(
+                    shape=(self.Ny, self.Nx),
+                    dx=float(np.asarray(init_variables["dx"]).ravel()[0]),
+                    lambd=float(np.asarray(init_variables["lambd"]).ravel()[0]),
+                    dz_slab=gs * dz_slice,
+                    groups=groups,
+                    device=device,
+                    dtype=torch.complex64,
+                    tol=model_params.get("cheb_tol", 1e-6),
+                    degree_cap=model_params.get("cheb_degree_cap", 512),
+                    pad_frac=model_params.get("cheb_pad_frac", 0.3),
+                    band_frac=model_params.get("cheb_band_frac", 0.9),
+                    verbose=verbose,
+                )
+                self.cheb_manager.refresh(self.opt_objp)
+
             vprint("### Done initializing PtychoAD model ###", verbose=verbose)
 
     def get_complex_probe_view(self):
@@ -526,6 +566,21 @@ class PtychoAD(torch.nn.Module):
                 omode_occu=self.omode_occu,
                 n_max=self.born_iterations,
                 coeffs=coeffs,
+            )
+        elif self.solver_type == "chebyshev":
+            from ptyrad.forward_models import multislice_forward_chebyshev
+
+            mu_mul, coeffs, lo, hi, k0_dz_slab, groups = self.cheb_manager.kernels()
+            dp_fwd = multislice_forward_chebyshev(
+                object_patches,
+                probes,
+                mu_mul,
+                coeffs,
+                lo,
+                hi,
+                k0_dz_slab,
+                groups,
+                omode_occu=self.omode_occu,
             )
         elif self.solver_type == "strang":
             from ptyrad.forward_models import strang_forward
