@@ -176,6 +176,32 @@ class ModelParams(BaseModel):
         "(fe_v3 items 1.5/1.7), so g = 0 is the recommended production setting.",
     )
 
+    chin_g_bandlimit: float | None = Field(
+        default=None,
+        description="Band-limit (fraction of Nyquist, e.g. 0.333) for the "
+        "g = grad(chi).grad(chi) term of the chin_4a/chin_4b kicks. When set, "
+        "objp and log(obja) are Gaussian low-pass filtered (sigma_k = "
+        "chin_g_bandlimit * pi/dx) on the replicate-padded full canvas and the "
+        "gradient is taken SPECTRALLY, instead of the default raw fourth-order "
+        "finite differences. Rationale (paper-2): the double-commutator "
+        "locality argument needs the slice phase band-limited — cubic products "
+        "stay alias-free only for k_c <= k_Nyquist/3; on sharp potentials the "
+        "raw-canvas g is aliased and demotes the schemes to ~second order. "
+        "Default null keeps the existing finite-difference g bit-for-bit.",
+    )
+
+    propagator_antialias: float | None = Field(
+        default=None,
+        description="In-model antialias aperture (fraction of Nyquist, e.g. "
+        "0.667) for the chin_4a/chin_4b splittings: every fractional Fresnel "
+        "drift kernel (H_half for 4A; K(a1 dz), K(2 a1 dz), K(a2 dz) for 4B) "
+        "is multiplied by a hard circular band-limit mask at "
+        "propagator_antialias * k_Nyquist (abTEM-style 2/3 aperture). This is "
+        "a KERNEL change (not a pointwise transmission factor), so unlike the "
+        "g term it is visible to the reconstruction fit. Default null leaves "
+        "the kernels untouched (bit-for-bit).",
+    )
+
     chin4b_drop_end_props: bool = Field(
         default=False,
         description="For splitting='chin_4b' with far-field data only: drop "
@@ -299,6 +325,18 @@ class ModelParams(BaseModel):
                     "not a local multiplication and the fourth-order schemes are not "
                     "fourth order"
                 )
+        for name in ("chin_g_bandlimit", "propagator_antialias"):
+            val = getattr(self, name)
+            if val is not None:
+                if self.splitting not in ("chin_4a", "chin_4b"):
+                    raise ValueError(
+                        f"{name} requires splitting='chin_4a' or 'chin_4b', "
+                        f"got splitting='{self.splitting}'"
+                    )
+                if not (0.0 < val <= 1.0):
+                    raise ValueError(
+                        f"{name} must be in (0, 1] (fraction of Nyquist), got {val}"
+                    )
         return self
 
     @field_validator("born_coeffs_refit", mode="after")

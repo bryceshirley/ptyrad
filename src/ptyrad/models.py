@@ -47,6 +47,22 @@ class PtychoAD(torch.nn.Module):
             self.splitting_gradient_term = bool(
                 model_params.get("splitting_gradient_term", True)
             )
+            # Antialias options for the Chin splittings (both default None =
+            # bit-for-bit legacy behavior; see params.model_params for the
+            # rationale). chin_g_bandlimit: Gaussian-band-limited SPECTRAL g
+            # instead of the raw finite-difference g. propagator_antialias:
+            # hard circular aperture multiplied into the fractional Fresnel
+            # drift kernels (a kernel change, visible to the fit).
+            self.chin_g_bandlimit = model_params.get("chin_g_bandlimit", None)
+            self.propagator_antialias = model_params.get("propagator_antialias", None)
+            for _name, _val in (
+                ("chin_g_bandlimit", self.chin_g_bandlimit),
+                ("propagator_antialias", self.propagator_antialias),
+            ):
+                if _val is not None and not (0.0 < float(_val) <= 1.0):
+                    raise ValueError(
+                        f"{_name} must be None or in (0, 1] (fraction of Nyquist), got {_val}"
+                    )
             if self.propagator_kernel not in ("angular_spectrum", "fresnel"):
                 raise ValueError(
                     f"Invalid propagator_kernel: '{self.propagator_kernel}', "
@@ -382,6 +398,15 @@ class PtychoAD(torch.nn.Module):
         else:
             self.Kz_prop = self.Kz
 
+        # Hard circular antialias aperture at propagator_antialias * k_Nyquist
+        # for the Chin fractional drift kernels (None = no mask).
+        if self.propagator_antialias is not None:
+            k_nyq = torch.pi / float(self.dx)
+            k_cut = float(self.propagator_antialias) * k_nyq
+            self.antialias_mask = ((Kx**2 + Ky**2) <= k_cut**2).to(torch.float32)
+        else:
+            self.antialias_mask = None
+
     def init_compilation_iters(self):
         """Determine iteration bounds requiring dynamic graph compilation."""
         compilation_iters = {1}
@@ -450,14 +475,22 @@ class PtychoAD(torch.nn.Module):
 
         Used by the Chin 4A/4B splittings.
 
+        With chin_g_bandlimit set, the raw finite differences are replaced by
+        the band-limited SPECTRAL gradient of Gaussian low-pass filtered
+        (sigma_k = chin_g_bandlimit * pi/dx) phase and log-amplitude on the
+        replicate-padded canvas (see _bandlimited_chi_gradients).
+
         Returns:
             (N, omode, Nz, Ny, Nx, 2) float tensor holding Re(g_k), Im(g_k).
         """
         from ptyrad.utils import fd_gradient4
 
         dx = float(self.dx)
-        gyp, gxp = fd_gradient4(self.opt_objp, dx)
-        gyl, gxl = fd_gradient4(torch.log(self.opt_obja + 1e-10), dx)
+        if self.chin_g_bandlimit is not None:
+            (gyp, gxp), (gyl, gxl) = self._bandlimited_chi_gradients()
+        else:
+            gyp, gxp = fd_gradient4(self.opt_objp, dx)
+            gyl, gxl = fd_gradient4(torch.log(self.opt_obja + 1e-10), dx)
         # (d chi)^2 = (d phase)^2 - (d logamp)^2 - 2i (d phase)(d logamp), summed over y, x
         g_re = gyp**2 - gyl**2 + gxp**2 - gxl**2
         g_im = -2.0 * (gyp * gyl + gxp * gxl)
@@ -466,6 +499,51 @@ class PtychoAD(torch.nn.Module):
         grid_y = self.rpy_grid[None, :, :] + self.crop_pos[indices, None, None, 0]
         grid_x = self.rpx_grid[None, :, :] + self.crop_pos[indices, None, None, 1]
         return g[:, :, grid_y, grid_x, :].permute(2, 0, 1, 3, 4, 5)
+
+    def _bandlimited_chi_gradients(self):
+        """
+        Band-limited spectral transverse gradients of chi on the full canvas
+        (chin_g_bandlimit path of get_g_patches).
+
+        objp and log(obja) are replicate-padded by ~32 px (to the next
+        multiple of 16, so the FFT size stays friendly and there is no
+        periodic wrap-around of the sharp canvas edges), Gaussian low-pass
+        filtered with sigma_k = chin_g_bandlimit * pi/dx (attenuation e^-0.5
+        at the cutoff, e^-4.5 at 3x the cutoff), differentiated spectrally
+        (i*K), and cropped back. Fully differentiable.
+
+        Returns:
+            ((gyp, gxp), (gyl, gxl)): gradients of filtered phase and
+            filtered log-amplitude, each shaped like opt_objp.
+        """
+        dx = float(self.dx)
+        k_cut = float(self.chin_g_bandlimit) * torch.pi / dx
+
+        fields = torch.stack(
+            [self.opt_objp, torch.log(self.opt_obja + 1e-10)], dim=0
+        )  # (2, omode, Nz, Noy, Nox)
+        shape = fields.shape
+        ny, nx = shape[-2], shape[-1]
+        pad_y = (-(ny + 64)) % 16 + 64  # total pad >= 64, padded size % 16 == 0
+        pad_x = (-(nx + 64)) % 16 + 64
+        py0, py1 = pad_y // 2, pad_y - pad_y // 2
+        px0, px1 = pad_x // 2, pad_x - pad_x // 2
+
+        f = fields.reshape(-1, 1, ny, nx)
+        fp = torch.nn.functional.pad(f, (px0, px1, py0, py1), mode="replicate")
+        npy, npx = ny + pad_y, nx + pad_x
+
+        ky = 2 * torch.pi * torch.fft.fftfreq(npy, d=dx, dtype=fields.dtype, device=fields.device)
+        kx = 2 * torch.pi * torch.fft.fftfreq(npx, d=dx, dtype=fields.dtype, device=fields.device)
+        Ky, Kx = torch.meshgrid(ky, kx, indexing="ij")
+        filt = torch.exp(-0.5 * (Ky**2 + Kx**2) / k_cut**2)
+
+        F = fft2(fp) * filt
+        gy = ifft2(torch.complex(torch.zeros_like(Ky), Ky) * F).real
+        gx = ifft2(torch.complex(torch.zeros_like(Kx), Kx) * F).real
+        gy = gy[..., py0 : py0 + ny, px0 : px0 + nx].reshape(shape)
+        gx = gx[..., py0 : py0 + ny, px0 : px0 + nx].reshape(shape)
+        return (gy[0], gx[0]), (gy[1], gx[1])
 
     def get_probes(self, indices):
         """Batch-generate complex probes with shift offsets."""
@@ -659,19 +737,24 @@ class PtychoAD(torch.nn.Module):
             # canvas-g gather entirely.
             dz = self.opt_slice_thickness
             g = self.get_g_patches(indices) if self.splitting_gradient_term else None
-            propagators = (self.make_propagator(0.5 * dz, indices), g)
+            H_half = self.make_propagator(0.5 * dz, indices)
+            if self.antialias_mask is not None:
+                H_half = H_half * self.antialias_mask
+            propagators = (H_half, g)
 
         elif self.solver_type == "multislice" and self.splitting == "chin_4b":
             from ptyrad.forward_models.multislice import CHIN_4B_A1, CHIN_4B_A2
 
             dz = self.opt_slice_thickness
             g = self.get_g_patches(indices) if self.splitting_gradient_term else None
-            propagators = (
+            kernels = [
                 self.make_propagator(CHIN_4B_A1 * dz, indices),
                 self.make_propagator(2.0 * CHIN_4B_A1 * dz, indices),
                 self.make_propagator(CHIN_4B_A2 * dz, indices),
-                g,
-            )
+            ]
+            if self.antialias_mask is not None:
+                kernels = [H * self.antialias_mask for H in kernels]
+            propagators = (*kernels, g)
 
         dp_fwd = self.get_forward_meas(object_patches, probes, propagators)
 
