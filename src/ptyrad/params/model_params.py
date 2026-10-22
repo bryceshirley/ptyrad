@@ -180,14 +180,17 @@ class ModelParams(BaseModel):
         default=None,
         description="Band-limit (fraction of Nyquist, e.g. 0.333) for the "
         "g = grad(chi).grad(chi) term of the chin_4a/chin_4b kicks. When set, "
-        "objp and log(obja) are Gaussian low-pass filtered (sigma_k = "
-        "chin_g_bandlimit * pi/dx) on the replicate-padded full canvas and the "
-        "gradient is taken SPECTRALLY, instead of the default raw fourth-order "
-        "finite differences. Rationale (paper-2): the double-commutator "
-        "locality argument needs the slice phase band-limited — cubic products "
-        "stay alias-free only for k_c <= k_Nyquist/3; on sharp potentials the "
+        "objp and log(obja) are HARD band-limited at k_c = chin_g_bandlimit * "
+        "pi/dx on the replicate-padded full canvas and the gradient is taken "
+        "SPECTRALLY, instead of the default raw fourth-order finite "
+        "differences. Rationale (paper-2): the double-commutator locality "
+        "argument needs the slice phase band-limited — cubic products stay "
+        "alias-free only for k_c <= k_Nyquist/3; on sharp potentials the "
         "raw-canvas g is aliased and demotes the schemes to ~second order. "
-        "Default null keeps the existing finite-difference g bit-for-bit.",
+        "The cutoff must be hard: a Gaussian roll-off at sigma_k = k_c "
+        "perturbs the in-band gradient enough to destroy the order "
+        "restoration (test/bench_chin_antialias.py). Default null keeps the "
+        "existing finite-difference g bit-for-bit.",
     )
 
     propagator_antialias: float | None = Field(
@@ -195,8 +198,10 @@ class ModelParams(BaseModel):
         description="In-model antialias aperture (fraction of Nyquist, e.g. "
         "0.667) for the chin_4a/chin_4b splittings: every fractional Fresnel "
         "drift kernel (H_half for 4A; K(a1 dz), K(2 a1 dz), K(a2 dz) for 4B) "
-        "is multiplied by a hard circular band-limit mask at "
-        "propagator_antialias * k_Nyquist (abTEM-style 2/3 aperture). This is "
+        "is multiplied by a circular band-limit mask at propagator_antialias "
+        "* k_Nyquist (abTEM-style 2/3 aperture, cosine-tapered over ~2 "
+        "k-pixels — a zero-width edge rings in real space and destabilises "
+        "batch-1 reconstructions). This is "
         "a KERNEL change (not a pointwise transmission factor), so unlike the "
         "g term it is visible to the reconstruction fit. Default null leaves "
         "the kernels untouched (bit-for-bit).",
