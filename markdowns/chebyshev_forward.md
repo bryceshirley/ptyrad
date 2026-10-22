@@ -137,8 +137,57 @@ ratio to the LT21 benchmark, computed exactly as
 `figs-p2/paper2_pso_fine_band.py` (common centre crop 639^2). Ladder:
 LT21 = 1, Chin4A-11 = 0.876, LT11 = 0.136.
 
-PENDING — filled when the live run (pid 1977579) finishes.
+Run `20261022_cheb3_matched_n50` completed 50/50 iterations (exit 0,
+2 h 58 min 56 s total). ONE coefficient build (half-slab degree 103,
+interval [-2.329e-2, 5.374e-3]) and ONE CUDA-graph capture served the
+whole run — the 30%-padded interval was never escaped by the object.
+
+| arm (fine band, ratio to LT21)      | iters | ratio | data loss | s/iter |
+|-------------------------------------|------:|------:|----------:|-------:|
+| LT, 21 slices (benchmark)           |   100 | 1.000 |    0.2642 |   31.4 |
+| Chin 4A, 11 slices (matched proto)  |   100 | 0.876 |    0.2647 |   50.4 |
+| LT, 11 slices                       |   100 | 0.136 |    0.2712 |   23.9 |
+| **Chebyshev, 3 slabs**              |**50** |**0.530**| **0.2785**|**213.4**|
+
+- Chebyshev final: total loss 0.3021 = data (loss_single) 0.2785 +
+  sparse 0.0236; measured 213.38 +- 1.23 s/iter (A100 80GB PCIe, batch 1,
+  4096 positions, PTYRAD_CHEB_GRAPH=1) = 52.1 ms/position fwd+bwd, vs
+  8.3 ms (LT21, 31.4 s/iter at N3769) and 12.3 ms (Chin4A-11).
+- Fine-band trajectory (iters 5..50, step 5): 0.011, 0.047, 0.106,
+  0.168, 0.220, 0.268, 0.327, 0.412, 0.483, 0.530 — still rising
+  ~+0.01/iter at termination, no plateau (data loss meanwhile nearly
+  flat: 0.2789 -> 0.2785 over the last three iterations; the fine band
+  sharpens long after the loss saturates, exactly as in the baselines).
+
+**50-vs-100-iteration caveat, stated plainly:** this is a 50-iteration
+run scored against 100-iteration baselines. The fine-band metric grows
+monotonically through training and had not plateaued at iter 50, so
+0.530 is a LOWER BOUND on the protocol-matched number and the comparison
+is biased against the Chebyshev arm. The only safe claims are
+directional: at half the iteration budget, 3-slab Chebyshev already
+sits 3.9x above the fully-converged 11-slice Lie-Trotter arm (0.136 at
+100 iters) and at 60% of the fully-converged Chin4A-11 arm (0.876);
+whether it reaches Chin4A/LT21 parity requires a matched 100-iteration
+run, which was outside this budget.
 
 ## Verdict
 
-PENDING.
+- **Quality at fewer slices: yes, with the iteration caveat.** The
+  3-slab exact-generator model clearly does NOT collapse the way
+  Lie-Trotter does when slices are removed (LT11 = 0.136 with 100
+  iterations; plain 3-slice LT would be far worse): at 50 of 100
+  iterations it already recovers 0.530 of the benchmark fine-band power
+  and is still climbing without plateau, consistent with the forward
+  validation (cheb3 field error 0.139 vs LT21's 0.129, and only 0.044
+  of it is propagator error) and with the information argument (~2.4
+  independent slabs in the data). Parity with the 21-slice benchmark is
+  plausible but not demonstrated at this budget.
+- **Wall cost: expensive, and not reduced by using fewer slabs.**
+  213 s/iter vs 31-50 s/iter for the Trotter/Chin arms (6.3x LT21,
+  4.2x Chin4A-11 per position), because the Chebyshev degree is set by
+  k0*dz_slab*k_band^2-type scaling, not by the slab count: total FFT
+  pairs are ~constant in the partition (642 at 3 slabs, 566 at 1). The
+  payoff of 3 slabs is information-matched degrees of freedom (3
+  optimizable layers, no z-blur crutch), memory, and zero intra-slab
+  splitting error — not propagation FLOPs. As a drop-in speed play it
+  loses; as an exact few-DoF depth model it works.
