@@ -165,6 +165,73 @@ def _apply_cheb_poly(psi, coeffs, lo, hi, mu_mul, eps_r):
     return acc
 
 
+def _cheb_pointwise(Gr, t1r, t0r, accr, eps_b, cre, cim):
+    """
+    Fused pointwise tail of one recurrence step, on float real views:
+    t2 = G + eps_t*t1 - t0;  acc += (cre + i*cim) * t2.
+    Compiled (real arithmetic only, so Inductor can fuse it into one kernel);
+    mathematically identical to the reference eager path.
+    """
+    t2r = Gr + eps_b * t1r - t0r
+    re = t2r[..., 0]
+    im = t2r[..., 1]
+    acc_re = accr[..., 0] + cre * re - cim * im
+    acc_im = accr[..., 1] + cre * im + cim * re
+    return t2r, torch.stack([acc_re, acc_im], dim=-1)
+
+
+_cheb_pointwise_compiled = None
+
+
+def _apply_cheb_poly_fused(psi, coeffs, lo, hi, mu_mul, eps_r):
+    """
+    Fast path of _apply_cheb_poly (identical math): the recurrence
+    t_{k+1} = M t_k - t_{k-1} with M = 2S is applied with the interval map
+    pre-folded into the multipliers (mu_t = (4/(hi-lo))*mu_mul in k-space,
+    eps_t = (4/(hi-lo))*eps_r - 2(hi+lo)/(hi-lo) in real space) and the
+    pointwise tail of each step fused into a single compiled kernel on
+    real views. Set PTYRAD_CHEB_EAGER=1 to force the reference path.
+    """
+    global _cheb_pointwise_compiled
+    if _cheb_pointwise_compiled is None:
+        _cheb_pointwise_compiled = torch.compile(_cheb_pointwise, dynamic=False)
+
+    deg = coeffs.shape[0] - 1
+    if deg < 2:
+        return _apply_cheb_poly(psi, coeffs, lo, hi, mu_mul, eps_r)
+
+    a = 2.0 / (hi - lo)
+    b = -(hi + lo) / (hi - lo)
+    mu_t = (2.0 * a) * mu_mul
+    eps_t = (2.0 * a) * eps_r + (2.0 * b)
+    rdt = eps_t.dtype
+    cre = coeffs.real.to(rdt)
+    cim = coeffs.imag.to(rdt)
+
+    t0 = psi
+    G = ifft2(mu_t * fft2(psi))
+    t1 = 0.5 * (G + eps_t * psi)  # S psi = (M psi)/2
+    acc = coeffs[0] * t0 + coeffs[1] * t1
+
+    t0r = torch.view_as_real(t0.contiguous())
+    t1r = torch.view_as_real(t1)
+    accr = torch.view_as_real(acc)
+    eps_b = eps_t.unsqueeze(-1)
+    for k in range(2, deg + 1):
+        G = ifft2(mu_t * fft2(torch.view_as_complex(t1r)))
+        t2r, accr = _cheb_pointwise_compiled(
+            torch.view_as_real(G), t1r, t0r, accr, eps_b, cre[k], cim[k]
+        )
+        t0r, t1r = t1r, t2r
+    return torch.view_as_complex(accr)
+
+
+def _select_poly_impl():
+    import os
+
+    return _apply_cheb_poly if os.environ.get("PTYRAD_CHEB_EAGER") else _apply_cheb_poly_fused
+
+
 def chebyshev_exit_wave(object_patches, psi, mu_mul, coeffs_half, lo, hi, k0_dz_slab, groups):
     """
     Sweep the wave through all slabs: per slab U(dz/2) * A * U(dz/2) with
@@ -187,16 +254,19 @@ def chebyshev_exit_wave(object_patches, psi, mu_mul, coeffs_half, lo, hi, k0_dz_
         torch.Tensor: (N, pmode, omode, Ny, Nx) complex exit wave at the back
         face of the last slab (total drift n_slab*dz_slab, carrier removed).
     """
+    apply_poly = _select_poly_impl()
     amp = object_patches[..., 0]
     phase = object_patches[..., 1]
     for s0, s1 in groups:
         phase_slab = phase[:, :, s0:s1].sum(dim=2)  # (N, omode, Ny, Nx)
         nm1 = phase_slab / k0_dz_slab
         eps_r = (nm1 * (2.0 + nm1))[:, None]  # (N, 1, omode, Ny, Nx)
-        amp_slab = amp[:, :, s0:s1].prod(dim=2)[:, None]
-        psi = _apply_cheb_poly(psi, coeffs_half, lo, hi, mu_mul, eps_r)
+        # exp(sum(log)) instead of prod: amplitudes are strictly positive and
+        # prod's backward breaks CUDA-graph capture (host-side zero check)
+        amp_slab = amp[:, :, s0:s1].clamp_min(1e-10).log().sum(dim=2).exp()[:, None]
+        psi = apply_poly(psi, coeffs_half, lo, hi, mu_mul, eps_r)
         psi = psi * amp_slab
-        psi = _apply_cheb_poly(psi, coeffs_half, lo, hi, mu_mul, eps_r)
+        psi = apply_poly(psi, coeffs_half, lo, hi, mu_mul, eps_r)
     return psi
 
 
