@@ -20,6 +20,10 @@ docs/.ipynb_checkpoints/
 *.png
 *.log
 *.npy
+*.yml
+.claude/
+A100_results/
+benchmarks/
 /demo/*
 !/demo/params/
 !/A100_results/**

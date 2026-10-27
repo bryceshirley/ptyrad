@@ -134,6 +134,82 @@ def born_multislice_target(
     return (F * H[:, :, :, Nz - 1].conj()).expand(B, -1, omode, -1, -1)
 
 
+def born_multislice_volume_target(
+    object_patches: torch.Tensor,
+    probe: torch.Tensor,
+    H: torch.Tensor,
+) -> torch.Tensor:
+    """Per-plane multislice wavefield of the current object: psi_j, the field
+    INCIDENT on slice j, for j = 0..Nz-1, by one sequential sweep that stores
+    every plane. Same plane convention and normalisation as the per-order
+    stacks of born_volume_basis, so sum_m V[m] equals this target to float
+    precision (nilpotent termination); the exit/detector entry is NOT
+    included — pair with born_multislice_target for the detector row block.
+    Returns (B, pmode, omode, Nz, Ny, Nx) complex. Memory is one full
+    per-slice stack per view: call on small view chunks. Eager; call under
+    torch.no_grad()."""
+    B, omode, Nz, Ny, Nx, _ = object_patches.shape
+    O = torch.polar(object_patches[..., 0], object_patches[..., 1])
+    H1 = H[:, :, :, min(1, Nz - 1)]  # single-step propagator (ones when Nz == 1)
+    psi = (probe[:, :, None] * torch.ones_like(O[:, None, :, 0])).to(O.dtype)
+    planes = [psi]
+    for j in range(Nz - 1):
+        psi = ifft2(H1 * fft2(psi * O[:, None, :, j]))
+        planes.append(psi)
+    return torch.stack(planes, dim=3).expand(B, -1, omode, -1, -1, -1)
+
+
+def born_volume_remainder_rows(
+    V: torch.Tensor,
+    D: torch.Tensor,
+    T_vol: torch.Tensor,
+    T_det: torch.Tensor,
+    D0: torch.Tensor,
+    M: int,
+    omode_occu: torch.Tensor | None = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Stacked rows of the VOLUME-remainder least-squares problem for one
+    view chunk: columns Psi^(m) (m = 1..M) over every plane plus the
+    detector entry, right-hand side the multislice tail (T_vol - V[0] on
+    the planes, T_det - D0 at the detector). Minimising over offsets from
+    c = 1 downstream (born_residual_solve_from_r with offset_from_one=True)
+    gives the remainder fit of born_qr_coeffs extended from the detector
+    rows to the full wavefield — the target is the stored multislice
+    solution on every plane, not the fixed-point residual.
+
+    Same normalisation conventions as born_volume_residual_rows: unitary
+    (detector block divided by sqrt(Ny*Nx)), optional sqrt(omode_occu) row
+    weights, plane-0 rows dropped (every order >= 1 and the tail are zero
+    there — psi_0 is the probe for any object).
+
+    V, D from born_volume_basis(..., n_max=M) — the remainder fit needs no
+    order beyond those retained, unlike the residual rows. T_vol from
+    born_multislice_volume_target, T_det from born_multislice_target, D0
+    from the basis call. Returns (A, b): A (rows, M) and b (rows,) in V's
+    dtype — cast to complex128 downstream (born_tsqr_update does). Eager;
+    call under torch.no_grad()."""
+    Ny, Nx = V.shape[-2], V.shape[-1]
+    det_scale = 1.0 / math.sqrt(Ny * Nx)
+    if omode_occu is not None:
+        w = omode_occu.to(V.real.dtype).clamp(min=0).sqrt()
+        wv = w.view(1, 1, -1, 1, 1, 1)
+        wd = w.view(1, 1, -1, 1, 1)
+    else:
+        wv = wd = None
+
+    def _rows(vol_block, det_block):
+        if wv is not None:
+            vol_block = vol_block * wv
+            det_block = det_block * wd
+        return torch.cat(
+            [vol_block[..., 1:, :, :].reshape(-1), (det_block * det_scale).reshape(-1)]
+        )
+
+    cols = [_rows(V[m].expand_as(T_vol), D[m - 1]) for m in range(1, M + 1)]
+    b = _rows(T_vol - V[0].expand_as(T_vol), T_det - D0)
+    return torch.stack(cols, dim=1), b
+
+
 def born_qr_coeffs(
     D: torch.Tensor,
     T: torch.Tensor,

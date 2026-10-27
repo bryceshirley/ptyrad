@@ -39,6 +39,35 @@ def multislice_exit_wave(object_cplx, psi, H1):
     return psi * object_cplx[:, None, :, n_slices - 1]
 
 
+def default_omode_occu(objp):
+    """Uniform (omode,) occupancy matching objp's ((N, omode, ...)) dtype/device."""
+    return torch.ones(objp.size(1), dtype=objp.dtype, device=objp.device) / objp.size(1)
+
+
+def detector(psi, omode_occu, eps=1e-10):
+    """
+    Far-field detector intensities shared by all multislice-family forward
+    models: |fftshift(fft2(psi))|^2 incoherently summed over probe and object
+    modes with omode occupancies. norm='ortho' keeps sum(|psi|^2) == sum(dp)
+    per sample; eps is a numerical stability floor.
+
+    Args:
+        psi (torch.Tensor): (N, pmode, omode, Ny, Nx) complex exit wave.
+        omode_occu (torch.Tensor): (omode,) occupancies summing to 1.
+        eps (float, optional): stability floor. Defaults to 1e-10.
+
+    Returns:
+        torch.Tensor: (N, Ky, Kx) float forward diffraction patterns.
+    """
+    return (
+        torch.sum(
+            (fftshift2(fft2(psi, norm="ortho"))).abs().square() * omode_occu[:, None, None],
+            dim=(1, 2),
+        )
+        + eps
+    )
+
+
 @torch.compile(mode="max-autotune")
 def multislice_forward(object_patches, probe, H, omode_occu=None, eps=1e-10):
     """
@@ -71,11 +100,7 @@ def multislice_forward(object_patches, probe, H, omode_occu=None, eps=1e-10):
 
     # Initialize omode_occu if it's not specified
     if omode_occu is None:
-        objp = object_patches[..., 1]
-        device = objp.device
-        dtype = objp.dtype
-        omode = objp.size(1)
-        omode_occu = torch.ones(omode, dtype=dtype, device=device) / omode
+        omode_occu = default_omode_occu(object_patches[..., 1])
 
     # Cast the object back to actual complex tensor
     object_cplx = torch.polar(
@@ -99,14 +124,7 @@ def multislice_forward(object_patches, probe, H, omode_occu=None, eps=1e-10):
     # dp_fwd = sum(weighted_psi_k)
     # Note that norm = 'ortho' is needed to ensure that for each sample, sum(|psi|^2) and sum(dp) has the same scale (should be 1)
 
-    dp_fwd = (
-        torch.sum(
-            (fftshift2(fft2(psi, norm="ortho"))).abs().square() * omode_occu[:, None, None],
-            dim=(1, 2),
-        )
-        + eps
-    )  # Add eps for numerical stability
-    return dp_fwd
+    return detector(psi, omode_occu, eps)
 
 
 @torch.compile(mode="max-autotune")
@@ -126,11 +144,7 @@ def linduda_forward(object_patches, probe, H, delta, L_op=None, omode_occu=None,
     H = H.contiguous()
 
     if omode_occu is None:
-        objp = object_patches[..., 1]
-        device = objp.device
-        dtype = objp.dtype
-        omode = objp.size(1)
-        omode_occu = torch.ones(omode, dtype=dtype, device=device) / omode
+        omode_occu = default_omode_occu(object_patches[..., 1])
 
     object_cplx = torch.polar(object_patches[..., 0], object_patches[..., 1]).contiguous()
     n_slices = object_cplx.shape[2]
@@ -188,15 +202,7 @@ def linduda_forward(object_patches, probe, H, delta, L_op=None, omode_occu=None,
     object_slice = object_cplx[:, :, n_slices - 1, :, :]
     psi = psi * object_slice[:, None, :, :, :]
 
-    dp_fwd = (
-        torch.sum(
-            (fftshift2(fft2(psi, norm="ortho"))).abs().square() * omode_occu[:, None, None],
-            dim=(1, 2),
-        )
-        + eps
-    )
-
-    return dp_fwd
+    return detector(psi, omode_occu, eps)
 
 
 @torch.compile(mode="max-autotune")
@@ -210,11 +216,7 @@ def strang_forward(object_patches, probe, H_tuple, omode_occu=None, eps=1e-10):
     H, H_half = H_tuple
 
     if omode_occu is None:
-        objp = object_patches[..., 1]
-        device = objp.device
-        dtype = objp.dtype
-        omode = objp.size(1)
-        omode_occu = torch.ones(omode, dtype=dtype, device=device) / omode
+        omode_occu = default_omode_occu(object_patches[..., 1])
 
     object_cplx = torch.polar(object_patches[..., 0], object_patches[..., 1]).contiguous()
 
@@ -240,14 +242,7 @@ def strang_forward(object_patches, probe, H_tuple, omode_occu=None, eps=1e-10):
 
     # Final conjugate half-drift out of the last slice is cancelled out by the final FFT and modulus.
 
-    dp_fwd = (
-        torch.sum(
-            (fftshift2(fft2(psi, norm="ortho"))).abs().square() * omode_occu[:, None, None],
-            dim=(1, 2),
-        )
-        + eps
-    )
-    return dp_fwd
+    return detector(psi, omode_occu, eps)
 
 
 # ---------------------------------------------------------------------------
@@ -362,8 +357,7 @@ def _multislice_forward_chin4a_impl(
         g_patches = g_patches.contiguous()
 
     if omode_occu is None:
-        objp = object_patches[..., 1]
-        omode_occu = torch.ones(objp.size(1), dtype=objp.dtype, device=objp.device) / objp.size(1)
+        omode_occu = default_omode_occu(object_patches[..., 1])
 
     amp = object_patches[..., 0]
     phase = object_patches[..., 1]
@@ -395,14 +389,7 @@ def _multislice_forward_chin4a_impl(
 
     psi = psi * B_out[:, None]
 
-    dp_fwd = (
-        torch.sum(
-            (fftshift2(fft2(psi, norm="ortho"))).abs().square() * omode_occu[:, None, None],
-            dim=(1, 2),
-        )
-        + eps
-    )
-    return dp_fwd
+    return detector(psi, omode_occu, eps)
 
 
 def _multislice_forward_chin4b_impl(
@@ -476,8 +463,7 @@ def _multislice_forward_chin4b_impl(
         g_patches = g_patches.contiguous()
 
     if omode_occu is None:
-        objp = object_patches[..., 1]
-        omode_occu = torch.ones(objp.size(1), dtype=objp.dtype, device=objp.device) / objp.size(1)
+        omode_occu = default_omode_occu(object_patches[..., 1])
 
     n_slices = object_patches.shape[2]
 
@@ -501,14 +487,7 @@ def _multislice_forward_chin4b_impl(
     if apply_end_props:
         psi = ifft2(H_a1[:, None, None] * fft2(psi))
 
-    dp_fwd = (
-        torch.sum(
-            (fftshift2(fft2(psi, norm="ortho"))).abs().square() * omode_occu[:, None, None],
-            dim=(1, 2),
-        )
-        + eps
-    )
-    return dp_fwd
+    return detector(psi, omode_occu, eps)
 
 
 # Compiled entry points; the _impl functions stay reachable for float64

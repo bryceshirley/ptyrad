@@ -315,6 +315,46 @@ class IndicesDataset(Dataset):
         return self.indices[idx]
 
 
+class EPIE(torch.optim.Optimizer):
+    """ePIE-style preconditioned gradient descent (Maiden & Rodenburg 2009).
+
+    Plain SGD with each group's gradient divided by the peak intensity of the
+    field that multiplies its unknown in the forward model -- the Lipschitz
+    normalisation of the ISS paper's preconditioned update: max_r sum_p |P|^2
+    for the object groups (obja/objp), max_r sum_z |O|^2 for the probe group.
+    Group lrs act as the ePIE step sizes alpha. Any other group falls back to
+    plain SGD at its lr. Stateless (no moments), so its step is far cheaper
+    than Adam's and there is no optimizer state to save or load.
+    """
+
+    def __init__(self, params, **kwargs):
+        super().__init__(params, dict(lr=0.0))
+
+    @torch.no_grad()
+    def step(self, closure=None):
+        by_name = {g.get("name"): g for g in self.param_groups}
+        probe_g = by_name.get("probe")
+        obja_g = by_name.get("obja")
+        K_obj = K_prb = None
+        if probe_g is not None:
+            pr = probe_g["params"][0]
+            K_obj = pr.abs().square().sum(0).amax().clamp_min(1e-12)
+        if obja_g is not None:
+            oa = obja_g["params"][0]
+            K_prb = oa.square().sum(1).amax().clamp_min(1e-12)
+        for g in self.param_groups:
+            name, lr = g.get("name"), g["lr"]
+            for p in g["params"]:
+                if p.grad is None or lr == 0:
+                    continue
+                if name in ("obja", "objp") and K_obj is not None:
+                    p.sub_(p.grad * (lr / K_obj))
+                elif name == "probe" and K_prb is not None:
+                    p.sub_(p.grad * (lr / K_prb))
+                else:
+                    p.add_(p.grad, alpha=-lr)
+
+
 def create_optimizer(optimizer_params, optimizable_params, verbose=True):
     def _fix_optimizer_state_dict_format(optim_state_dict: dict) -> dict:
         fixed = {}
@@ -355,7 +395,7 @@ def create_optimizer(optimizer_params, optimizable_params, verbose=True):
         verbose=verbose,
     )
 
-    optimizer_class = getattr(torch.optim, optimizer_name, None)
+    optimizer_class = EPIE if optimizer_name == "EPIE" else getattr(torch.optim, optimizer_name, None)
 
     if optimizer_class is None:
         raise ValueError(f"Optimizer '{optimizer_name}' is not supported.")
@@ -769,6 +809,36 @@ def recon_loop(
                             + "\n"
                         )
 
+            # flush the per-position coefficient-fit stats buffered by
+            # _born_perpos_coeffs during this iteration's training steps
+            perpos_rows = getattr(model_instance, "born_perpos_rows", None)
+            if perpos_rows:
+                if output_path is not None:
+                    csv_path = os.path.join(output_path, "born_perpos_stats.csv")
+                    is_new = not os.path.exists(csv_path)
+                    with open(csv_path, "a") as f:
+                        if is_new:
+                            f.write("iter,step,rel_res,rank,cond,max_abs_c,fallback\n")
+                        for step, (rel_res, rank, cond, cmax, fb) in enumerate(perpos_rows):
+                            f.write(
+                                f"{niter},{step},{rel_res:.8g},{rank},{cond:.8g},"
+                                f"{cmax:.8g},{fb}\n"
+                            )
+                model_instance.born_perpos_rows = []
+
+            # same for the GMRES forward-model stats
+            gmres_rows = getattr(model_instance, "born_gmres_rows", None)
+            if gmres_rows:
+                if output_path is not None:
+                    csv_path = os.path.join(output_path, "born_gmres_stats.csv")
+                    is_new = not os.path.exists(csv_path)
+                    with open(csv_path, "a") as f:
+                        if is_new:
+                            f.write("iter,step,fallback,k,rel_res,beta\n")
+                        for step, (fb, k, rel_res, beta) in enumerate(gmres_rows):
+                            f.write(f"{niter},{step},{fb},{k},{rel_res:.8g},{beta:.8g}\n")
+                model_instance.born_gmres_rows = []
+
             if SAVE_ITERS is not None and niter % SAVE_ITERS == 0:
                 with torch.no_grad():
                     save_results(
@@ -825,6 +895,10 @@ def recon_step(
 
     optimizer.zero_grad(set_to_none=True)
 
+    # closed-form PIE updates (ePIE / 3PIE): no backward, no optimizer,
+    # no illumination preconditioner — the modulus projection IS the update
+    use_pie = getattr(model_instance, "update_rule", "autodiff") == "pie"
+
     # 🌟 INITIALIZE PRECONDITIONER CANVAS
     # PTYRAD_DISABLE_ISS_PRECOND=1 skips the illumination preconditioner:
     # at batch 1 the canvas holds a single position, so the focused
@@ -834,9 +908,49 @@ def recon_step(
     precond_canvas = (
         torch.zeros_like(model_instance.opt_obja)
         if model_instance.solver_type == "born"
+        and not use_pie
         and not os.environ.get("PTYRAD_DISABLE_ISS_PRECOND")
         else None
     )
+
+    if use_pie:
+        from ptyrad.pie import pie_batch_update
+
+        for batch_idx, batch in enumerate(batches):
+            start_batch_t = time_sync()
+            model_DP, measured_DP, object_patches = pie_batch_update(
+                model_instance, batch, **model_instance.pie_params
+            )
+            with torch.no_grad():
+                _, losses = loss_fn(
+                    model_DP, measured_DP, object_patches, model_instance.omode_occu
+                )
+            batch_t = time_sync() - start_batch_t
+            model_instance.clear_cache()
+            for loss_name, loss_value in zip(
+                loss_fn.loss_params.keys(), losses, strict=False
+            ):
+                batch_losses[loss_name].append(loss_value.detach().cpu().numpy())
+            if batch_idx in np.linspace(0, len(batches) - 1, num=6, dtype=int):
+                vprint(
+                    f"Done batch {batch_idx + 1} with {len(batch)} indices ({batch[:5].tolist()}...) in {batch_t:.3f} sec",
+                    verbose=verbose,
+                )
+
+        constraint_fn(model_instance, niter)
+
+        iter_t = time_sync() - start_iter_t
+        model_instance.loss_iters.append(
+            (niter, loss_logger(batch_losses, niter, iter_t, verbose=verbose))
+        )
+        model_instance.iter_times.append(iter_t)
+        model_instance.dz_iters.append(
+            (niter, model_instance.opt_slice_thickness.detach().cpu().numpy())
+        )
+        model_instance.avg_tilt_iters.append(
+            (niter, model_instance.opt_obj_tilts.detach().mean(0).cpu().numpy())
+        )
+        return batch_losses
 
     for batch_idx, batch in enumerate(batches):
         start_batch_t = time_sync()

@@ -17,7 +17,9 @@ class OptimizerParams(BaseModel):
     @field_validator("name")
     @classmethod
     def validate_optimizer_name(cls, v: str) -> str:
-        """Ensure optimizer name is a valid PyTorch optimizer."""
+        """Ensure optimizer name is a valid PyTorch optimizer or a PtyRAD one."""
+        if v == "EPIE":  # ePIE-preconditioned SGD, defined in ptyrad.reconstruction
+            return v
         if not hasattr(torch.optim, v) or not callable(getattr(torch.optim, v)):
             raise ValueError(f"Optimizer name '{v}' is not a valid PyTorch optimizer")
         return v
@@ -207,6 +209,21 @@ class ModelParams(BaseModel):
     When using the Linduda approximation solver, this controls the order of the approximation.
     """
 
+    update_rule: str = Field(
+        default="autodiff",
+        description="'autodiff' (default): loss.backward() + optimizer. 'pie': "
+        "closed-form ePIE (solver_type='born', born_iterations=1) or 3PIE "
+        "(solver_type='multislice', lie_trotter) updates with no autograd and "
+        "no optimizer step; BATCH_SIZE must be 1. See ptyrad/pie.py.",
+    )
+
+    pie_params: dict[str, float] | None = Field(
+        default=None,
+        description="Step sizes for update_rule='pie': {'beta_obj': 1.0, "
+        "'beta_probe': 1.0} (ePIE/3PIE betas). The lr_params learning rates "
+        "are ignored by the PIE update.",
+    )
+
     born_coeffs_refit: dict[str, int | float | bool | str | None] | None = Field(
         default=None,
         description="In-reconstruction refit of the Born coefficients on a fixed "
@@ -249,6 +266,41 @@ class ModelParams(BaseModel):
     regularisation policies (benchmarked irrelevant at M<=8 and worse than
     the unregularised solve at M=16; only the TSVD cutoff remains).
     """
+
+    born_per_pos_fit: bool = Field(
+        default=False,
+        description="Refit the Born coefficients at EVERY forward pass from the "
+        "batch's own object patch and probe (solver_type='born'), by the "
+        "target-free volume-residual least squares "
+        "(born_helpers.born_position_residual_fit: born_volume_basis to order "
+        "M+1, born_volume_residual_rows, TSQR, TSVD solve for c directly — M "
+        "steps of GMRES on the fixed-point equation started from Psi^(0)). No "
+        "multislice target is formed and no measured data enters; the "
+        "coefficients are constants in the backward pass. Intended for batch "
+        "size 1 (a larger batch fits one shared c over the batch's rows). "
+        "Overrides opt_born_coeffs and born_coeffs_refit in the forward pass: "
+        "keep born_coeffs_refit null and update_params['born_coeffs'] lr at 0. "
+        "Per-step (rel_res, rank, cond, max|c|) land in born_perpos_stats.csv.",
+    )
+
+    born_gmres_forward: bool = Field(
+        default=False,
+        description="Replace the Born forward model by per-position GMRES(M) on "
+        "the fixed-point equation (I - E) Psi = Psi^(0) (solver_type='born', "
+        "M = born_iterations): Arnoldi with classical Gram-Schmidt + one "
+        "reorthogonalisation in the volume-residual row norm, small Hessenberg "
+        "solve by QR in complex128, vacuum fallback to the plain unit-coefficient "
+        "series, happy-breakdown early stop. Differentiable end to end; eager "
+        "(NOT torch.compile'd, unlike born_forward). Intended for batch size 1. "
+        "Per-step (fallback, k, rel_res, beta) land in born_gmres_stats.csv.",
+    )
+
+    born_gmres_detach: bool = Field(
+        default=False,
+        description="With born_gmres_forward: detach every Arnoldi inner "
+        "product, norm and the small-solve result, so gradients flow only "
+        "through the applications of E. Default False (full differentiation).",
+    )
 
     born_coeffs_init: list[list[float]] | str | None = Field(
         default=None,

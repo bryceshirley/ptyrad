@@ -36,6 +36,15 @@ class PtychoAD(torch.nn.Module):
             self.obj_preblur_std = model_params["obj_preblur_std"]
             self.solver_type = model_params.get("solver_type", "multislice")
             self.born_iterations = model_params.get("born_iterations", 1)
+            # 'autodiff' (default): loss.backward() + optimizer. 'pie':
+            # closed-form ePIE (born, M = 1) / 3PIE (multislice) updates in
+            # ptyrad/pie.py — no autograd, no optimizer step.
+            self.update_rule = model_params.get("update_rule", "autodiff")
+            self.pie_params = model_params.get("pie_params") or {}
+            if self.update_rule not in ("autodiff", "pie"):
+                raise ValueError(
+                    f"Invalid update_rule: '{self.update_rule}', use 'autodiff' or 'pie'"
+                )
             self.linduda_order = model_params.get("linduda_order", 2)
 
             # Propagator kernel and multislice splitting scheme (validated here
@@ -250,6 +259,24 @@ class PtychoAD(torch.nn.Module):
                     .to(device),
                     persistent=False,
                 )
+            # Per-forward-pass coefficient refit from the batch's own patch
+            # (target-free volume-residual fit); overrides opt_born_coeffs /
+            # born_coeffs_refit in the forward pass. Stats rows are buffered
+            # here and flushed to born_perpos_stats.csv by recon_loop.
+            self.born_per_pos_fit = bool(model_params.get("born_per_pos_fit", False))
+            self.born_perpos_rows = []
+            # Per-position GMRES(M) forward model (born_gmres.born_gmres_forward):
+            # Arnoldi-orthonormal Krylov basis per scan position, replaces
+            # born_forward entirely. Stats rows flushed to born_gmres_stats.csv.
+            self.born_gmres = bool(model_params.get("born_gmres_forward", False))
+            self.born_gmres_detach = bool(model_params.get("born_gmres_detach", False))
+            self.born_gmres_rows = []
+            if self.born_per_pos_fit and refit_on:
+                vprint(
+                    "WARNING: born_per_pos_fit overrides born_coeffs_refit in the "
+                    "forward pass; set born_coeffs_refit to null.",
+                    verbose=verbose,
+                )
             # Coefficients must reach the forward model whenever they can differ
             # from 1: AD-tuned, warm-started (even frozen), or refit-managed.
             self.use_born_coeffs = bool(
@@ -355,7 +382,9 @@ class PtychoAD(torch.nn.Module):
             tensor.requires_grad = in_optimizer and start == 1
 
             if in_optimizer:
-                self.optimizable_params.append({"params": [tensor], "lr": lr})
+                # "name" rides along in the param group (torch keeps unknown
+                # keys); the EPIE optimizer uses it to pick preconditioners
+                self.optimizable_params.append({"params": [tensor], "lr": lr, "name": param_name})
 
         if verbose:
             self.print_model_summary()
@@ -513,10 +542,65 @@ class PtychoAD(torch.nn.Module):
             self.H_3d = H_2d.pow(z_idx)
         return self.H_3d
 
+    @torch._dynamo.disable
+    def _born_perpos_coeffs(self, object_patches, probes, propagators):
+        """Refit the Born coefficients for THIS batch's position(s) by the
+        target-free volume-residual fit (born_position_residual_fit), on
+        detached copies of the current patch/probe/propagators. The returned
+        (n, 2) pseudo-complex float tensor carries no autograd history, so
+        the coefficients are constants in the backward pass, exactly like
+        the shared refit-managed ones. Solved in offset coordinates
+        (x = c - 1: rank truncation shrinks toward the plain series, never
+        zeroing an order's gradient) with the vacuum fallback to c = 1 when
+        the order-1 field is negligible. Stats are buffered only when called
+        with grad enabled (a training step, not a plotting/holdout eval)."""
+        from ptyrad.forward_models.born_helpers import born_position_residual_fit
+
+        log_stats = torch.is_grad_enabled()
+        with torch.no_grad():
+            c, rel_res, rank, cond, fallback = born_position_residual_fit(
+                object_patches.detach(),
+                probes.detach(),
+                propagators.detach(),
+                self.born_iterations,
+                self.omode_occu,
+                offset_from_one=True,
+                vacuum_tol=1e-6,
+            )
+            if log_stats:
+                self.born_perpos_rows.append(
+                    (rel_res, rank, cond, c.abs().max().item(), int(fallback))
+                )
+            return torch.stack([c.real, c.imag], dim=-1).to(torch.float32)
+
     def get_forward_meas(self, object_patches, probes, propagators):
         """Dispatches forward model evaluation to specialized math engines."""
-        if self.solver_type == "born":
+        if self.solver_type == "born" and self.born_gmres:
+            from ptyrad.forward_models.born_gmres import born_gmres_forward
+
+            stats = {}
+            dp_fwd = born_gmres_forward(
+                object_patches,
+                probes,
+                propagators,
+                omode_occu=self.omode_occu,
+                n_max=self.born_iterations,
+                detach_coeffs=self.born_gmres_detach,
+                stats=stats,
+            )
+            if torch.is_grad_enabled():
+                self.born_gmres_rows.append(
+                    (
+                        int(stats.get("fallback", False)),
+                        stats.get("k", 0),
+                        stats.get("rel_res", 0.0),
+                        stats.get("beta", 0.0),
+                    )
+                )
+        elif self.solver_type == "born":
             coeffs = self.opt_born_coeffs if self.use_born_coeffs else None
+            if self.born_per_pos_fit:
+                coeffs = self._born_perpos_coeffs(object_patches, probes, propagators)
             from ptyrad.forward_models import born_forward
 
             dp_fwd = born_forward(
