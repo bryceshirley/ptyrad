@@ -331,6 +331,86 @@ def _cheb_epie(
     return dp_model, obj_new, dP
 
 
+def _cheb_grads(
+    object_patches, probes, mu_mul, band_mask, coeffs, lo, hi, k0_dz_slab, groups,
+    occu, meas, eps, detector_blur_std=None,
+):
+    """EXACT gradients of the (optionally detector-blurred) amplitude loss
+    L = sum_r (sqrt(blur(dp)) - sqrt(meas))^2 w.r.t. the object amp/phase
+    patches and the per-position probes -- the same loss the autodiff path
+    differentiates, computed by the adjoint solve instead of a tape. For
+    feeding a torch optimizer (update_rule='adjoint'): unlike the ePIE step,
+    the seed keeps the full Wirtinger chain (1 - r at the detector, carried
+    back through the symmetric blur; torchvision's reflect padding makes the
+    blur adjoint approximate in a 2-pixel detector border).
+
+    Returns (dp_model, grad_obja, grad_objp, grad_probe): dp_model blurred
+    for loss logging; grad_probe complex per position with the convention
+    that the gradient on a view_as_real probe leaf is view_as_real(2*it)."""
+    object_patches = object_patches.contiguous()
+    probes = probes.contiguous()
+    T, eps_ts, nm1s, ckpts = chebyshev_forward_ckpt(
+        object_patches, probes, mu_mul, band_mask, coeffs, lo, hi, k0_dz_slab, groups
+    )
+    scale = 1.0 / (T.shape[-2] * T.shape[-1])
+    dp_model = (
+        fftshift2(torch.sum(T.abs().square() * occu.view(1, 1, -1, 1, 1), dim=(1, 2)))
+        * scale + eps
+    )
+    if detector_blur_std:
+        dp_model = gaussian_blur(dp_model, kernel_size=[5, 5], sigma=detector_blur_std)
+    g_I = 1.0 - torch.sqrt(meas.clamp_min(0.0) / dp_model)  # dL/d(blurred dp)
+    if detector_blur_std:
+        g_I = gaussian_blur(g_I, kernel_size=[5, 5], sigma=detector_blur_std)
+    lam = fftshift2(g_I)[:, None, None] * occu.view(1, 1, -1, 1, 1) * scale * T
+    grad_obja, grad_objp, grad_probe = chebyshev_vjp(
+        object_patches, probes, mu_mul, band_mask, coeffs, lo, hi, k0_dz_slab,
+        groups, lam, forward_state=(eps_ts, nm1s, ckpts),
+    )
+    return dp_model, grad_obja, grad_objp, grad_probe
+
+
+class _CudaGraphedGrads:
+    """CUDA-graph capture/replay of _cheb_grads, keyed on shapes (same
+    pattern and output conventions as _CudaGraphedEpie)."""
+
+    def __init__(self):
+        self._cache = {}
+
+    def __call__(self, object_patches, probes, mu_mul, band_mask, coeffs, lo, hi,
+                 k0_dz_slab, groups, occu, meas, eps, detector_blur_std=None):
+        if not object_patches.is_cuda:
+            return _cheb_grads(object_patches, probes, mu_mul, band_mask, coeffs,
+                               lo, hi, k0_dz_slab, groups, occu, meas, eps,
+                               detector_blur_std)
+        key = (tuple(object_patches.shape), tuple(probes.shape), detector_blur_std)
+        entry = self._cache.get(key)
+        if entry is None:
+            s_obj = object_patches.detach().clone()
+            s_pr = probes.detach().clone().contiguous()
+            s_meas = meas.detach().clone()
+            run = lambda: _cheb_grads(  # noqa: E731
+                s_obj, s_pr, mu_mul, band_mask, coeffs, lo, hi, k0_dz_slab,
+                groups, occu, s_meas, eps, detector_blur_std,
+            )
+            stream = torch.cuda.Stream()
+            stream.wait_stream(torch.cuda.current_stream())
+            with torch.cuda.stream(stream):
+                for _ in range(3):
+                    run()
+            torch.cuda.current_stream().wait_stream(stream)
+            graph = torch.cuda.CUDAGraph()
+            with torch.cuda.graph(graph):
+                s_out = run()
+            entry = self._cache[key] = (graph, s_obj, s_pr, s_meas, s_out)
+        graph, s_obj, s_pr, s_meas, s_out = entry
+        s_obj.copy_(object_patches)
+        s_pr.copy_(probes)
+        s_meas.copy_(meas)
+        graph.replay()
+        return s_out
+
+
 class _CudaGraphedEpie:
     """CUDA-graph capture/replay of _cheb_epie, keyed on shapes and betas.
 
@@ -385,10 +465,12 @@ class _CudaGraphedEpie:
         return s_out
 
 
-# Entry point: CUDA-graphed fused-step update (production pattern);
-# PTYRAD_PIE_EAGER=1 keeps the plain eager arithmetic (identical numbers up
-# to kernel fusion).
+# Entry points: CUDA-graphed fused-step update / gradients (production
+# pattern); PTYRAD_PIE_EAGER=1 keeps the plain eager arithmetic (identical
+# numbers up to kernel fusion).
 if os.environ.get("PTYRAD_PIE_EAGER", "0") == "1":
     cheb_epie_update = _cheb_epie
+    cheb_adjoint_grads = _cheb_grads
 else:
     cheb_epie_update = _CudaGraphedEpie()
+    cheb_adjoint_grads = _CudaGraphedGrads()

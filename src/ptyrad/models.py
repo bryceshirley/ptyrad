@@ -37,14 +37,20 @@ class PtychoAD(torch.nn.Module):
             self.solver_type = model_params.get("solver_type", "multislice")
             self.born_iterations = model_params.get("born_iterations", 1)
             # 'autodiff' (default): loss.backward() + optimizer. 'pie':
-            # closed-form ePIE (born, M = 1) / 3PIE (multislice) updates in
-            # ptyrad/pie.py — no autograd, no optimizer step.
+            # closed-form ePIE (born, M = 1) / 3PIE (multislice) / adjoint
+            # ePIE (chebyshev) updates in ptyrad/pie.py — no autograd, no
+            # optimizer step. 'adjoint' (chebyshev only): the same analytic
+            # adjoint-solve gradients written into .grad, then the configured
+            # optimizer steps exactly as in the autodiff path — no tape.
             self.update_rule = model_params.get("update_rule", "autodiff")
             self.pie_params = model_params.get("pie_params") or {}
-            if self.update_rule not in ("autodiff", "pie"):
+            if self.update_rule not in ("autodiff", "pie", "adjoint"):
                 raise ValueError(
-                    f"Invalid update_rule: '{self.update_rule}', use 'autodiff' or 'pie'"
+                    f"Invalid update_rule: '{self.update_rule}', use 'autodiff', "
+                    "'pie', or 'adjoint'"
                 )
+            if self.update_rule == "adjoint" and model_params.get("solver_type") != "chebyshev":
+                raise ValueError("update_rule 'adjoint' requires solver_type='chebyshev'")
             self.linduda_order = model_params.get("linduda_order", 2)
 
             # Propagator kernel and multislice splitting scheme (validated here

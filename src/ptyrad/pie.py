@@ -357,6 +357,62 @@ def _write_back_object(model, indices, O_new):
         model.opt_objp.data[:, :, grid_y[n], grid_x[n]] = phase[n]
 
 
+@torch.no_grad()
+def adjoint_grad_batch(model, indices):
+    """Fill the canvas .grad fields with the EXACT analytic gradients of the
+    autodiff data term (amplitude loss on the detector-blurred model DP) for
+    solver_type='chebyshev', computed by the adjoint solve -- no tape. Used
+    by update_rule='adjoint': the reconstruction loop then runs the
+    configured torch optimizer exactly as in the autodiff path. Gradients
+    are ADDED (sum over positions / grad accumulation, like loss.backward).
+    Returns (model_DP, measured_DP, object_patches) for loss logging."""
+    from ptyrad.forward_models.chebyshev_adjoint import cheb_adjoint_grads
+
+    object_patches = model.get_obj_patches(indices)  # (N, omode, Nz, Ny, Nx, 2)
+    probes = model.get_probes(indices)  # (N|1, pmode, Ny, Nx)
+    meas = model.get_measurements(indices)  # (N, Ky, Kx), fftshifted
+    N = object_patches.shape[0]
+    if probes.shape[0] == 1 and N > 1:
+        probes = probes.expand(N, -1, -1, -1)
+    kernel, groups = model.cheb_na
+
+    dp_model, g_obja, g_objp, g_probe = cheb_adjoint_grads(
+        object_patches, probes, *kernel, groups, model.omode_occu, meas,
+        1e-10, detector_blur_std=model.detector_blur_std,
+    )
+
+    if model.opt_obja.requires_grad or model.opt_objp.requires_grad:
+        grid_y = model.rpy_grid[None, :, :] + model.crop_pos[indices, None, None, 0]
+        grid_x = model.rpx_grid[None, :, :] + model.crop_pos[indices, None, None, 1]
+        omode, nz, cy, cx = model.opt_obja.shape
+        flat = (grid_y * cx + grid_x).reshape(-1)
+        for p, g in ((model.opt_obja, g_obja), (model.opt_objp, g_objp)):
+            if not p.requires_grad:
+                continue
+            if p.grad is None:
+                p.grad = torch.zeros_like(p)
+            p.grad.view(omode, nz, -1).index_add_(
+                2, flat, g.permute(1, 2, 0, 3, 4).reshape(omode, nz, -1)
+            )
+
+    if model.opt_probe.requires_grad:
+        if model.shift_probes:
+            shifts = model.opt_probe_pos_shifts[indices]
+            g_probe = torch.stack(
+                [
+                    imshift_batch(g_probe[n], shifts=-shifts[n : n + 1],
+                                  grid=model.shift_probes_grid)[0]
+                    for n in range(g_probe.shape[0])
+                ]
+            )
+        gp = torch.view_as_real(2.0 * g_probe.sum(0))  # sum over positions
+        if model.opt_probe.grad is None:
+            model.opt_probe.grad = torch.zeros_like(model.opt_probe)
+        model.opt_probe.grad.add_(gp)
+
+    return dp_model, meas, object_patches
+
+
 def _write_back_object_ap(model, indices, obj_new, object_patches):
     """Chebyshev write-back on the amp/phase canvases directly (no angle()
     wrap). At batch 1 the patch is written in place; larger batches add the

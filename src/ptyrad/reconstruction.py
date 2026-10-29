@@ -952,13 +952,29 @@ def recon_step(
         )
         return batch_losses
 
+    # update_rule 'adjoint': analytic adjoint-solve gradients fill .grad in
+    # place of compute_loss + backward; the optimizer path below is shared
+    # with autodiff unchanged.
+    use_adjoint = getattr(model_instance, "update_rule", "autodiff") == "adjoint"
+    if use_adjoint and acc is not None and getattr(acc, "num_processes", 1) > 1:
+        raise ValueError("update_rule 'adjoint' does not support multi-process accelerate")
+
     for batch_idx, batch in enumerate(batches):
         start_batch_t = time_sync()
 
-        loss_batch, losses = compute_loss(batch, model, model_instance, loss_fn, acc)
-        loss_batch = loss_batch / grad_accumulation
+        if use_adjoint:
+            from ptyrad.pie import adjoint_grad_batch
 
-        acc.backward(loss_batch) if acc is not None else loss_batch.backward()
+            model_DP, measured_DP, obj_patches_b = adjoint_grad_batch(model_instance, batch)
+            with torch.no_grad():
+                _, losses = loss_fn(
+                    model_DP, measured_DP, obj_patches_b, model_instance.omode_occu
+                )
+        else:
+            loss_batch, losses = compute_loss(batch, model, model_instance, loss_fn, acc)
+            loss_batch = loss_batch / grad_accumulation
+
+            acc.backward(loss_batch) if acc is not None else loss_batch.backward()
 
         # ACCUMULATE BATCH ILLUMINATION
         if precond_canvas is not None:

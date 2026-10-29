@@ -275,9 +275,13 @@ class ModelParams(BaseModel):
         default="autodiff",
         description="'autodiff' (default): loss.backward() + optimizer. 'pie': "
         "closed-form ePIE (solver_type='born', born_iterations=1), 3PIE "
-        "(solver_type='multislice', lie_trotter), or the adjoint-solve ePIE "
-        "gradient step (solver_type='chebyshev') with no autograd and no "
-        "optimizer step; BATCH_SIZE must be 1. See ptyrad/pie.py.",
+        "(solver_type='multislice', lie_trotter; BATCH_SIZE 1), or the "
+        "adjoint-solve ePIE gradient step (solver_type='chebyshev'; any "
+        "batch) with no autograd and no optimizer step. 'adjoint' "
+        "(solver_type='chebyshev' only): the analytic adjoint-solve "
+        "gradients of the autodiff data term are written into .grad and the "
+        "configured optimizer (e.g. Adam) steps as usual -- autodiff "
+        "convergence without the tape. See ptyrad/pie.py.",
     )
 
     pie_params: dict[str, float] | None = Field(

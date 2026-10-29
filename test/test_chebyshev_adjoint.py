@@ -169,6 +169,47 @@ def test_forward_matches_production_dp():
     assert rel < 1e-13, f"dp mismatch {rel:.3e}"
 
 
+def test_cheb_grads_match_autodiff_amplitude_loss():
+    """_cheb_grads (update_rule='adjoint' seed) vs autograd of the same
+    amplitude loss through the production forward. Exact without blur; with
+    detector blur the adjoint reuses the symmetric blur, which differs from
+    torchvision's reflect-padded autograd only in a 2-pixel border."""
+    try:
+        from torchvision.transforms.functional import gaussian_blur
+    except ImportError:
+        from ptyrad.utils import gaussian_blur_2d as gaussian_blur
+    from ptyrad.forward_models.chebyshev_adjoint import _cheb_grads
+
+    dtype = torch.complex128
+    obj, probe = _problem(dtype)
+    kernel, groups = _kernel(dtype, 3)
+    omode = obj.shape[1]
+    occu = torch.full((omode,), 1.0 / omode, dtype=torch.float64)
+    torch.manual_seed(5)
+    meas = torch.rand(obj.shape[0], NPIX, NPIX, dtype=torch.float64)
+
+    for blur, tol in ((None, 1e-11), (1.0, 5e-3)):
+        obj_ad = obj.clone().requires_grad_(True)
+        probe_r = torch.view_as_real(probe).clone().requires_grad_(True)
+        dp = multislice_forward_chebyshev(
+            obj_ad, torch.view_as_complex(probe_r), *kernel, groups, omode_occu=occu
+        )
+        if blur:
+            dp = gaussian_blur(dp, kernel_size=[5, 5], sigma=blur)
+        (dp.sqrt() - meas.sqrt()).square().sum().backward()
+
+        _, ga, gp, gprobe = _cheb_grads(
+            obj, probe, *kernel, groups, occu, meas, 1e-10, detector_blur_std=blur
+        )
+        for got, want, name in [
+            (ga, obj_ad.grad[..., 0], "obja"),
+            (gp, obj_ad.grad[..., 1], "objp"),
+            (torch.view_as_real(2.0 * gprobe), probe_r.grad, "probe"),
+        ]:
+            rel = (got - want).norm() / want.norm()
+            assert rel < tol, f"blur={blur} {name}: rel err {rel:.3e}"
+
+
 def test_epie_update_reduces_data_error():
     """Noiseless self-consistent problem: repeated updates at one position
     must drive the modulus error down."""
