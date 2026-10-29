@@ -139,7 +139,9 @@ class ModelParams(BaseModel):
 
     solver_type: str = Field(
         default="multislice",
-        description="Type of solver to use for forward model: 'multislice' or 'born'",
+        description="Type of solver to use for forward model: 'multislice', 'born', "
+        "'strang', 'linduda', or 'chebyshev' (exact-generator slab model; see "
+        "cheb_n_slab)",
     )
     """
     The solver type determines which forward model implementation to use:
@@ -209,12 +211,66 @@ class ModelParams(BaseModel):
     When using the Linduda approximation solver, this controls the order of the approximation.
     """
 
+    cheb_n_slab: int | None = Field(
+        default=None,
+        ge=1,
+        description="Number of object slabs for solver_type='chebyshev' (the "
+        "Chebyshev exact-generator slab forward model). The Nz stored object "
+        "slices are grouped into cheb_n_slab contiguous slabs by summing "
+        "phases (Nz must be divisible); each slab exponential "
+        "exp(i*k0*dz_slab*(sqrt(1+mu+eps)-1)) is evaluated exactly (to "
+        "cheb_tol) by a Chebyshev operator polynomial. Default null uses one "
+        "slab per slice.",
+    )
+
+    cheb_tol: float = Field(
+        default=1e-4,
+        gt=0,
+        description="Chebyshev truncation error per slab "
+        "(solver_type='chebyshev').",
+    )
+
+    cheb_degree_cap: int = Field(
+        default=512,
+        ge=1,
+        description="Hard cap on the Chebyshev polynomial degree per slab "
+        "(solver_type='chebyshev').",
+    )
+
+    cheb_band_frac: float = Field(
+        default=2.0 / 3.0,
+        gt=0,
+        le=1.5,
+        description="Hard antialias band as a fraction of K_Nyquist "
+        "(solver_type='chebyshev'): the mu = -K_perp^2/k0^2 Fourier "
+        "multiplier is zeroed for k_perp >= cheb_band_frac * K_Nyquist and "
+        "the SAME hard mask is applied to the field at every Chebyshev "
+        "recurrence step, so no content lives off-band. The polynomial "
+        "degree scales as cheb_band_frac^2; 2/3 Nyquist is the antialias "
+        "standard.",
+    )
+
+    cheb_phase_cap: list[float] | None = Field(
+        default=None,
+        description="[lo, hi] slab phase range in rad the Chebyshev "
+        "coefficients are built for (required for solver_type='chebyshev'). "
+        "Make it generous: outside the caps the operator error grows "
+        "quickly.",
+    )
+
+    cheb_amp_cap: list[float] | None = Field(
+        default=None,
+        description="[lo, hi] slab amplitude range for the Chebyshev "
+        "coefficients (solver_type='chebyshev'); defaults to (0.5, 1.5).",
+    )
+
     update_rule: str = Field(
         default="autodiff",
         description="'autodiff' (default): loss.backward() + optimizer. 'pie': "
-        "closed-form ePIE (solver_type='born', born_iterations=1) or 3PIE "
-        "(solver_type='multislice', lie_trotter) updates with no autograd and "
-        "no optimizer step; BATCH_SIZE must be 1. See ptyrad/pie.py.",
+        "closed-form ePIE (solver_type='born', born_iterations=1), 3PIE "
+        "(solver_type='multislice', lie_trotter), or the adjoint-solve ePIE "
+        "gradient step (solver_type='chebyshev') with no autograd and no "
+        "optimizer step; BATCH_SIZE must be 1. See ptyrad/pie.py.",
     )
 
     pie_params: dict[str, float] | None = Field(

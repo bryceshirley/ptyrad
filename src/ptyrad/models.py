@@ -316,6 +316,52 @@ class PtychoAD(torch.nn.Module):
             self.init_propagator_vars()
             self.init_compilation_iters()
 
+            # Chebyshev exact-generator slab forward model (solver_type
+            # 'chebyshev'): the slice axis is grouped into cheb_n_slab
+            # contiguous slabs by summing phases. The coefficients are built
+            # ONCE from fixed phase/amp caps that must bracket the slab
+            # phase/amplitude for the whole reconstruction (no per-iteration
+            # refresh), so the forward runs on a single CUDA-graph capture.
+            self.cheb_na = None  # (kernel tuple, groups)
+            if self.solver_type == "chebyshev":
+                from ptyrad.forward_models import chebyshev_setup
+
+                if self.change_thickness:
+                    raise ValueError(
+                        "solver_type='chebyshev' requires a fixed slice_thickness "
+                        "(the coefficients are built for a fixed dz_slab)"
+                    )
+                if self.tilt_obj:
+                    raise ValueError("solver_type='chebyshev' does not support object tilts")
+                n_slab = model_params.get("cheb_n_slab") or self.n_slice
+                if self.n_slice % n_slab != 0:
+                    raise ValueError(
+                        f"cheb_n_slab = {n_slab} must divide n_slices = {self.n_slice}"
+                    )
+                gs = self.n_slice // n_slab
+                groups = tuple((i * gs, (i + 1) * gs) for i in range(n_slab))
+                import numpy as np
+
+                dz_slice = float(np.asarray(init_variables["slice_thickness"]).ravel()[0])
+                shape = tuple(self.get_complex_probe_view().shape[-2:])
+                dx = float(np.asarray(init_variables["dx"]).ravel()[0])
+                lambd = float(np.asarray(init_variables["lambd"]).ravel()[0])
+                kernel = chebyshev_setup(
+                    shape=shape,
+                    dx=dx,
+                    lambd=lambd,
+                    dz_slab=gs * dz_slice,
+                    phase_cap=tuple(model_params["cheb_phase_cap"]),
+                    amp_cap=tuple(model_params.get("cheb_amp_cap") or (0.5, 1.5)),
+                    tol=model_params.get("cheb_tol", 1e-4),
+                    degree_cap=model_params.get("cheb_degree_cap", 512),
+                    band_frac=model_params.get("cheb_band_frac", 2.0 / 3.0),
+                    device=device,
+                    dtype=torch.complex64,
+                    verbose=verbose,
+                )
+                self.cheb_na = (kernel, groups)
+
             vprint("### Done initializing PtychoAD model ###", verbose=verbose)
 
     def get_complex_probe_view(self):
@@ -573,6 +619,39 @@ class PtychoAD(torch.nn.Module):
                 )
             return torch.stack([c.real, c.imag], dim=-1).to(torch.float32)
 
+    def _get_cheb_na_graphed(self, object_patches, probes):
+        """
+        CUDA-graphed Chebyshev forward: the per-position forward+backward is
+        captured once and replayed, removing the per-op launch overhead of the
+        long recurrence. The coefficients are fixed (built once), so the capture
+        only depends on the batch shapes. torch.compile cannot be used on this
+        forward (inductor's complex-FFT lowering fails on the backward).
+        """
+        kernel, groups = self.cheb_na
+        key = (tuple(object_patches.shape), tuple(probes.shape), probes.requires_grad)
+        if getattr(self, "_cheb_na_graph_key", None) != key:
+            from ptyrad.forward_models.chebyshev import (
+                multislice_forward_chebyshev as cheb_na_forward,
+            )
+
+            occu = self.omode_occu
+
+            def fn(p, pr):
+                return cheb_na_forward(p, pr, *kernel, groups, omode_occu=occu)
+
+            sample = (
+                object_patches.detach().clone().requires_grad_(True),
+                probes.detach().clone().requires_grad_(probes.requires_grad),
+            )
+            self._cheb_na_graphed = torch.cuda.make_graphed_callables(fn, sample)
+            self._cheb_na_graph_key = key
+            vprint(
+                f"Chebyshev (non-adapt) forward: captured CUDA graph "
+                f"(degree {kernel[2].shape[0] - 1})",
+                verbose=self.verbose,
+            )
+        return self._cheb_na_graphed
+
     def get_forward_meas(self, object_patches, probes, propagators):
         """Dispatches forward model evaluation to specialized math engines."""
         if self.solver_type == "born" and self.born_gmres:
@@ -611,6 +690,21 @@ class PtychoAD(torch.nn.Module):
                 n_max=self.born_iterations,
                 coeffs=coeffs,
             )
+        elif self.solver_type == "chebyshev":
+            use_graph = (
+                object_patches.is_cuda
+                and torch.is_grad_enabled()
+                and object_patches.requires_grad
+            )
+            if use_graph:
+                dp_fwd = self._get_cheb_na_graphed(object_patches, probes)(object_patches, probes)
+            else:
+                from ptyrad.forward_models import multislice_forward_chebyshev
+
+                kernel, groups = self.cheb_na
+                dp_fwd = multislice_forward_chebyshev(
+                    object_patches, probes, *kernel, groups, omode_occu=self.omode_occu
+                )
         elif self.solver_type == "strang":
             from ptyrad.forward_models import strang_forward
 
