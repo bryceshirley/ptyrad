@@ -368,16 +368,16 @@ def _write_back_object_ap(model, indices, obj_new, object_patches):
         model.opt_objp.data[:, :, grid_y[0], grid_x[0]] = obj_new[0, ..., 1]
         return
     delta = obj_new - object_patches  # (N, omode, Nz, Ny, Nx, 2)
-    acc_a = torch.zeros_like(model.opt_obja.data)
-    acc_p = torch.zeros_like(model.opt_objp.data)
-    cnt = torch.zeros_like(model.opt_obja.data[0, 0])
-    for n in range(delta.shape[0]):
-        acc_a[:, :, grid_y[n], grid_x[n]] += delta[n, ..., 0]
-        acc_p[:, :, grid_y[n], grid_x[n]] += delta[n, ..., 1]
-        cnt[grid_y[n], grid_x[n]] += 1.0
-    w = cnt.clamp_min(1.0)
-    model.opt_obja.data.add_(acc_a / w).clamp_min_(_TINY)
-    model.opt_objp.data.add_(acc_p / w)
+    omode, nz, cy, cx = model.opt_obja.shape
+    flat = (grid_y * cx + grid_x).reshape(-1)  # (N*Ny*Nx,)
+    vals = delta.permute(1, 2, 0, 3, 4, 5).reshape(omode, nz, flat.shape[0], 2)
+    acc = torch.zeros(omode, nz, cy * cx, 2, dtype=delta.dtype, device=delta.device)
+    acc.index_add_(2, flat, vals)
+    cnt = torch.zeros(cy * cx, dtype=delta.dtype, device=delta.device)
+    cnt.index_add_(0, flat, torch.ones_like(flat, dtype=delta.dtype))
+    acc = (acc / cnt.clamp_min(1.0)[:, None]).reshape(omode, nz, cy, cx, 2)
+    model.opt_obja.data.add_(acc[..., 0]).clamp_min_(_TINY)
+    model.opt_objp.data.add_(acc[..., 1])
 
 
 def _write_back_probe(model, indices, dP):
