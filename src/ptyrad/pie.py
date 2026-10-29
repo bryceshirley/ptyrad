@@ -46,6 +46,8 @@ not overlap (batch size 1 in practice); a guard refuses batches > 1 with
 overlapping ROIs rather than silently racing.
 """
 
+import os
+
 import torch
 from torch.fft import fft2, ifft2
 
@@ -74,13 +76,14 @@ def pie_batch_update(model, indices, beta_obj=1.0, beta_probe=1.0, eps=1e-10,
     update_probe = model.opt_probe.requires_grad
 
     if model.solver_type == "born":
-        if model.born_iterations != 1:
+        if model.born_iterations not in (1, 2):
             raise ValueError(
-                "update_rule 'pie' implements ePIE for the inter-slice FIRST Born "
-                f"model only (born_iterations = 1), got {model.born_iterations}"
+                "update_rule 'pie' implements ePIE for the inter-slice Born "
+                f"series at order 1 or 2 only, got {model.born_iterations}"
             )
         H3d = model.get_propagators_3d(H)  # (N|1,1,1,Nz,Ny,Nx)
-        dp_model, O_new, dP = _epie_born_compiled(
+        fn = _epie_born_compiled if model.born_iterations == 1 else _epie_born2_compiled
+        dp_model, O_new, dP = fn(
             O, probes, H3d, occu, meas, beta_obj, beta_probe, update_probe, eps,
             probe_direct_only,
         )
@@ -172,6 +175,68 @@ def _epie_born(O, probes, H3d, occu, meas, beta_obj, beta_probe, update_probe, e
     return I_model, O_new, dP
 
 
+def _epie_born2(O, probes, H3d, occu, meas, beta_obj, beta_probe, update_probe, eps,
+                probe_direct_only=False):
+    """ePIE for the inter-slice Born series truncated at order 2 (plain
+    c = 1). Forward: orders 0 + 1 + 2 of the series, with the order-1 field
+    at each slice built by the exclusive cumulative sum in depth (the GV
+    bounce of the paper). Updates: the ePIE-preconditioned closed-form
+    gradients of paper-1 Sec. Inversion at M = 2,
+
+        g_j = conj(Psi0_j) (Phi0_j + Phi1_j) + conj(Psi1_j) Phi0_j,
+
+    with Phi1 = G* conj(V) Phi0 evaluated by the reversed exclusive
+    cumulative sum, and the probe step through the direct term and both
+    branch adjoints. Denominators are the sum-model ePIE normalisations of
+    _epie_born with the illumination Psi0 + Psi1."""
+    P_k = fft2(probes, norm="ortho")[:, :, None, None]  # (N,pmode,1,1,Ny,Nx)
+    v0 = ifft2(H3d * P_k, norm="ortho")  # Psi0: (N,pmode,1,Nz,Ny,Nx)
+    dO = (O - 1.0).unsqueeze(1)  # (N,1,omode,Nz,Ny,Nx)
+
+    s1 = fft2(dO * v0, norm="ortho") * H3d.conj()  # per-slice order-1 readout
+    cs = torch.cumsum(s1, dim=3) - s1  # exclusive: scatterers above slice k
+    w = ifft2(H3d * cs, norm="ortho")  # Psi1 at each slice
+    s2 = fft2(dO * w, norm="ortho") * H3d.conj()
+    Psi_hat = P_k.squeeze(3) + s1.sum(dim=3) + s2.sum(dim=3)
+
+    I_model, r = _modulus_ratio(Psi_hat, occu, meas, eps)
+    dPsi = Psi_hat * (r - 1.0)  # detector correction, k-space
+
+    chi = ifft2(H3d * dPsi[:, :, :, None], norm="ortho")  # Phi0 at each slice
+    u = fft2(dO.conj() * chi, norm="ortho") * H3d.conj()
+    rcs = torch.flip(torch.cumsum(torch.flip(u, [3]), dim=3), [3]) - u
+    phi1 = ifft2(H3d * rcs, norm="ortho")  # Phi1 at each slice
+
+    num = (v0.conj() * (chi + phi1) + w.conj() * chi).sum(dim=1)
+    illum = v0 + w
+    den = (
+        (illum.abs().square())
+        .sum(dim=1)
+        .sum(dim=2, keepdim=True)
+        .amax(dim=(-2, -1), keepdim=True)
+    )
+    O_new = O + beta_obj * num / (den + _TINY)
+
+    dP = None
+    if update_probe:
+        if probe_direct_only:
+            dP_modes = ifft2(dPsi, norm="ortho")
+        else:
+            back1 = u.sum(dim=3)
+            back2 = (H3d.conj() * fft2(dO.conj() * phi1, norm="ortho")).sum(dim=3)
+            dP_modes = ifft2(dPsi + back1 + back2, norm="ortho")
+        dP = torch.sum(dP_modes * occu.view(1, 1, -1, 1, 1), dim=2)
+        den_p = (
+            1.0
+            + (dO.abs().square().sum(dim=3) * occu.view(1, 1, -1, 1, 1))
+            .sum(dim=2)
+            .amax(dim=(-2, -1), keepdim=True)
+        )
+        dP = beta_probe * dP / (den_p + _TINY)
+
+    return I_model, O_new, dP
+
+
 def _pie3_multislice(O, probes, H, occu, meas, beta_obj, beta_probe, update_probe, eps,
                      beta_wave=None):
     """3PIE: multislice ePIE with the sequential backward sweep, following
@@ -240,9 +305,16 @@ def _pie3_multislice(O, probes, H, occu, meas, beta_obj, beta_probe, update_prob
 # ~200 launches), and max-autotune's CUDA graphs collapse that. The eager
 # _epie_born/_pie3_multislice stay reachable for tests. Outputs are consumed
 # within the same batch (write-back + loss logging), so CUDA-graph buffer
-# reuse across calls is safe.
-_epie_born_compiled = torch.compile(_epie_born, mode="max-autotune")
-_pie3_multislice_compiled = torch.compile(_pie3_multislice, mode="max-autotune")
+# reuse across calls is safe. PTYRAD_PIE_EAGER=1 skips the compilation
+# entirely (for timing comparisons; the arithmetic is identical).
+if os.environ.get("PTYRAD_PIE_EAGER", "0") == "1":
+    _epie_born_compiled = _epie_born
+    _epie_born2_compiled = _epie_born2
+    _pie3_multislice_compiled = _pie3_multislice
+else:
+    _epie_born_compiled = torch.compile(_epie_born, mode="max-autotune")
+    _epie_born2_compiled = torch.compile(_epie_born2, mode="max-autotune")
+    _pie3_multislice_compiled = torch.compile(_pie3_multislice, mode="max-autotune")
 
 
 def _write_back_object(model, indices, O_new):

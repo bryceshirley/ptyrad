@@ -16,12 +16,13 @@ docs/_autosummary/
 docs/.doctrees/
 docs/.ipynb_checkpoints/
 
+.claude/
 *.csv
 *.png
 *.log
 *.npy
 *.yml
-.claude/
+.claude/wh
 A100_results/
 benchmarks/
 /demo/*
