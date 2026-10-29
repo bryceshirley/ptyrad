@@ -20,6 +20,11 @@ PIE updates straight into the parameter tensors:
   deep stacks need. On tBL-WSe2 the engine locks into a limit cycle at
   beta = 1 (the per-view full-strength probe step); beta_obj = beta_probe
   = 0.1 with beta_wave = 1.0 converges below the batch-1 Adam baseline.
+- solver_type 'chebyshev': the analytic adjoint-solve ePIE gradient step of
+  forward_models/chebyshev_adjoint.py -- the exact reverse-mode gradient of
+  the exact-exponential slab model computed by an adjoint Chebyshev solve
+  (no autograd tape, O(1) memory per slab), preconditioned per slab by the
+  peak incident intensity max_r sum_p |psi_in|^2 as in ePIE/3PIE.
 - solver_type 'born' (born_iterations = 1, the inter-slice first Born /
   ISS model): ePIE applied to every slice with its own defocused probe
   v0_j = P_{z_j} P (paper-1 Sec. Inversion). The detector correction is
@@ -92,10 +97,29 @@ def pie_batch_update(model, indices, beta_obj=1.0, beta_probe=1.0, eps=1e-10,
             O, probes, H, occu, meas, beta_obj, beta_probe, update_probe, eps,
             beta_wave=beta_wave,
         )
+    elif model.solver_type == "chebyshev":
+        # analytic adjoint-solve gradients of the exact-exponential slab
+        # model, ePIE-preconditioned -- no tape, O(1) memory per slab. The
+        # update is a preconditioned gradient step (not a sequential
+        # projection), so batches > 1 are allowed: overlapping ROIs receive
+        # the MEAN of their per-view deltas.
+        from ptyrad.forward_models.chebyshev_adjoint import cheb_epie_update
+
+        kernel, groups = model.cheb_na
+        dp_model, obj_new, dP = cheb_epie_update(
+            object_patches, probes, *kernel, groups, occu, meas,
+            beta_obj, beta_probe, update_probe, eps,
+        )
+        if update_obj:
+            _write_back_object_ap(model, indices, obj_new, object_patches)
+        if update_probe and dP is not None:
+            _write_back_probe(model, indices, dP)
+        return dp_model, meas, object_patches
     else:
         raise ValueError(
-            f"update_rule 'pie' supports solver_type 'born' or plain 'multislice', "
-            f"got '{model.solver_type}' (splitting='{getattr(model, 'splitting', None)}')"
+            f"update_rule 'pie' supports solver_type 'born', plain 'multislice', "
+            f"or 'chebyshev', got '{model.solver_type}' "
+            f"(splitting='{getattr(model, 'splitting', None)}')"
         )
 
     if update_obj:
@@ -330,6 +354,30 @@ def _write_back_object(model, indices, O_new):
     for n in range(O_new.shape[0]):
         model.opt_obja.data[:, :, grid_y[n], grid_x[n]] = amp[n]
         model.opt_objp.data[:, :, grid_y[n], grid_x[n]] = phase[n]
+
+
+def _write_back_object_ap(model, indices, obj_new, object_patches):
+    """Chebyshev write-back on the amp/phase canvases directly (no angle()
+    wrap). At batch 1 the patch is written in place; larger batches add the
+    MEAN of the per-view deltas on overlapping ROIs -- gradient-descent
+    semantics, unlike the projection branches which keep the batch-1 guard."""
+    grid_y = model.rpy_grid[None, :, :] + model.crop_pos[indices, None, None, 0]
+    grid_x = model.rpx_grid[None, :, :] + model.crop_pos[indices, None, None, 1]
+    if len(indices) == 1:
+        model.opt_obja.data[:, :, grid_y[0], grid_x[0]] = obj_new[0, ..., 0].clamp_min(_TINY)
+        model.opt_objp.data[:, :, grid_y[0], grid_x[0]] = obj_new[0, ..., 1]
+        return
+    delta = obj_new - object_patches  # (N, omode, Nz, Ny, Nx, 2)
+    acc_a = torch.zeros_like(model.opt_obja.data)
+    acc_p = torch.zeros_like(model.opt_objp.data)
+    cnt = torch.zeros_like(model.opt_obja.data[0, 0])
+    for n in range(delta.shape[0]):
+        acc_a[:, :, grid_y[n], grid_x[n]] += delta[n, ..., 0]
+        acc_p[:, :, grid_y[n], grid_x[n]] += delta[n, ..., 1]
+        cnt[grid_y[n], grid_x[n]] += 1.0
+    w = cnt.clamp_min(1.0)
+    model.opt_obja.data.add_(acc_a / w).clamp_min_(_TINY)
+    model.opt_objp.data.add_(acc_p / w)
 
 
 def _write_back_probe(model, indices, dP):

@@ -250,6 +250,13 @@ class ModelParams(BaseModel):
         "standard.",
     )
 
+    cheb_non_adapt: bool = Field(
+        default=True,
+        description="Accepted for config compatibility: the ported solver is "
+        "the non-adaptive variant (coefficients built once from the caps); "
+        "false is not implemented.",
+    )
+
     cheb_phase_cap: list[float] | None = Field(
         default=None,
         description="[lo, hi] slab phase range in rad the Chebyshev "
