@@ -109,6 +109,7 @@ def pie_batch_update(model, indices, beta_obj=1.0, beta_probe=1.0, eps=1e-10,
         dp_model, obj_new, dP = cheb_epie_update(
             object_patches, probes, *kernel, groups, occu, meas,
             beta_obj, beta_probe, update_probe, eps,
+            detector_blur_std=model.detector_blur_std,
         )
         if update_obj:
             _write_back_object_ap(model, indices, obj_new, object_patches)

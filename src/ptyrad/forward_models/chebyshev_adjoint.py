@@ -61,6 +61,11 @@ import os
 import torch
 from torch.fft import fft2, ifft2
 
+try:
+    from torchvision.transforms.functional import gaussian_blur
+except ImportError:  # torchvision unavailable: use the local separable blur
+    from ptyrad.utils import gaussian_blur_2d as gaussian_blur
+
 from ptyrad.utils import fftshift2
 
 _TINY = 1e-12
@@ -263,7 +268,7 @@ def chebyshev_vjp(
 
 def _cheb_epie(
     object_patches, probes, mu_mul, band_mask, coeffs, lo, hi, k0_dz_slab, groups,
-    occu, meas, beta_obj, beta_probe, update_probe, eps,
+    occu, meas, beta_obj, beta_probe, update_probe, eps, detector_blur_std=None,
 ):
     """ePIE-preconditioned analytic gradient step for the Chebyshev model.
 
@@ -284,8 +289,18 @@ def _cheb_epie(
         fftshift2(torch.sum(T.abs().square() * occu.view(1, 1, -1, 1, 1), dim=(1, 2)))
         * scale + eps
     )
-    ratio = torch.sqrt(meas.clamp_min(0.0) / dp_model)
+    # The seed uses the UNBLURRED intensities even when the data term blurs
+    # the model DP (models.get_forward_meas): the raw modulus seed is
+    # self-bounded, |T * r| <= sqrt(meas * scale), because T is small exactly
+    # where the ratio is huge, while a blur between the ratio and the T
+    # multiplication smears dark-field ratios onto bright pixels and
+    # diverges at batch 1 (measured). Ignoring the blur in the DIRECTION is
+    # a second-order bias; the cap is residual insurance.
+    ratio = torch.sqrt(meas.clamp_min(0.0) / dp_model).clamp(max=10.0)
     lam = T * (fftshift2(ratio)[:, None, None] - 1.0)
+    if detector_blur_std:
+        # returned blurred so the logged loss matches the autodiff path
+        dp_model = gaussian_blur(dp_model, kernel_size=[5, 5], sigma=detector_blur_std)
 
     _lam_in, Ws = chebyshev_adjoint(lam, eps_ts, ckpts, mu_mul, band_mask, coeffs, lo, hi)
 
@@ -333,13 +348,15 @@ class _CudaGraphedEpie:
 
     def __call__(self, object_patches, probes, mu_mul, band_mask, coeffs, lo, hi,
                  k0_dz_slab, groups, occu, meas, beta_obj, beta_probe,
-                 update_probe, eps):
+                 update_probe, eps, detector_blur_std=None):
         if not object_patches.is_cuda:
             return _cheb_epie(object_patches, probes, mu_mul, band_mask, coeffs,
                               lo, hi, k0_dz_slab, groups, occu, meas,
-                              beta_obj, beta_probe, update_probe, eps)
+                              beta_obj, beta_probe, update_probe, eps,
+                              detector_blur_std)
         key = (tuple(object_patches.shape), tuple(probes.shape),
-               float(beta_obj), float(beta_probe), bool(update_probe))
+               float(beta_obj), float(beta_probe), bool(update_probe),
+               detector_blur_std)
         entry = self._cache.get(key)
         if entry is None:
             s_obj = object_patches.detach().clone()
@@ -348,6 +365,7 @@ class _CudaGraphedEpie:
             run = lambda: _cheb_epie(  # noqa: E731
                 s_obj, s_pr, mu_mul, band_mask, coeffs, lo, hi, k0_dz_slab,
                 groups, occu, s_meas, beta_obj, beta_probe, update_probe, eps,
+                detector_blur_std,
             )
             stream = torch.cuda.Stream()
             stream.wait_stream(torch.cuda.current_stream())
