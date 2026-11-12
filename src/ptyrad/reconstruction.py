@@ -809,23 +809,6 @@ def recon_loop(
                             + "\n"
                         )
 
-            # flush the per-position coefficient-fit stats buffered by
-            # _born_perpos_coeffs during this iteration's training steps
-            perpos_rows = getattr(model_instance, "born_perpos_rows", None)
-            if perpos_rows:
-                if output_path is not None:
-                    csv_path = os.path.join(output_path, "born_perpos_stats.csv")
-                    is_new = not os.path.exists(csv_path)
-                    with open(csv_path, "a") as f:
-                        if is_new:
-                            f.write("iter,step,rel_res,rank,cond,max_abs_c,fallback\n")
-                        for step, (rel_res, rank, cond, cmax, fb) in enumerate(perpos_rows):
-                            f.write(
-                                f"{niter},{step},{rel_res:.8g},{rank},{cond:.8g},"
-                                f"{cmax:.8g},{fb}\n"
-                            )
-                model_instance.born_perpos_rows = []
-
             # same for the GMRES forward-model stats
             gmres_rows = getattr(model_instance, "born_gmres_rows", None)
             if gmres_rows:
@@ -838,6 +821,21 @@ def recon_loop(
                         for step, (fb, k, rel_res, beta) in enumerate(gmres_rows):
                             f.write(f"{niter},{step},{fb},{k},{rel_res:.8g},{beta:.8g}\n")
                 model_instance.born_gmres_rows = []
+
+            # per-position Born-residual forward-model stats (born_residual): one
+            # pooled row per coefficient-table refresh (or per batch when
+            # solving on the fly without a table)
+            residual_rows = getattr(model_instance, "born_residual_rows", None)
+            if residual_rows:
+                if output_path is not None:
+                    csv_path = os.path.join(output_path, "born_residual_stats.csv")
+                    is_new = not os.path.exists(csv_path)
+                    with open(csv_path, "a") as f:
+                        if is_new:
+                            f.write("iter,step,fallback,k,rel_res,beta\n")
+                        for step, (fb, k, rel_res, beta) in enumerate(residual_rows):
+                            f.write(f"{niter},{step},{fb},{k},{rel_res:.8g},{beta:.8g}\n")
+                model_instance.born_residual_rows = []
 
             if SAVE_ITERS is not None and niter % SAVE_ITERS == 0:
                 with torch.no_grad():
@@ -1048,10 +1046,22 @@ def recon_step(
 def refit_born_coeffs(model, niter, verbose=True):
     """Schedule gate for the Born-coefficient refit
     (model_params['born_coeffs_refit']); delegates to
-    _refit_born_coeffs_detector — the detector-space least squares against
-    the exact multislice-sweep target, THE coefficient algorithm.
+    _refit_born_coeffs_fourier — the least squares of the retained orders
+    onto the exact multislice-sweep target on the FOURIER basis, over all
+    N+1 planes plus the exit block. THE coefficient algorithm, and now the
+    only one: that is the norm the per-position born_residual forward
+    minimises, and the extra plane rows pin down directions the detector
+    rows alone cannot (measured on real bases at Nz = 21, M = 8: |c|max
+    3.6 vs 71, volume error 0.40 vs 20, coefficient swing under a 1%
+    object perturbation 3.9e-4 vs 2.8e-3).
 
-    Earlier variants were removed: method='data' (multi-start L-BFGS
+    Earlier variants were removed: method='detector' (the same remainder
+    fit restricted to the detector rows — 2-8x better in the DETECTOR norm
+    in the mid-range, which is the one thing given up here, but with
+    coefficients an order of magnitude larger and a wavefield up to 50x
+    further from multislice inside the sample; grow_tol and 'hybrid_amp'
+    were carried over to the Fourier rows before it went), method='data'
+    (multi-start L-BFGS
     against measured intensities — data-fitted coefficients absorb object
     error, the gauge leak) and method='gmres' (equation-residual fit on the
     Krylov Gram — 4-135x oblique to the true detector error and the most
@@ -1065,66 +1075,86 @@ def refit_born_coeffs(model, niter, verbose=True):
     start, step, end = cfg["start_iter"], cfg["step"], cfg.get("end_iter")
     if niter < start or (end is not None and niter >= end) or (niter - start) % step != 0:
         return
-    _refit_born_coeffs_detector(model, niter, cfg, verbose=verbose)
+    _refit_born_coeffs_fourier(model, niter, cfg, verbose=verbose)
+
+
+def _born_refit_dp(model, field):
+    """Mode-weighted, fftshifted (and detector-blurred) intensity of a
+    detector field — the same quantity the loss compares, used both for the
+    hybrid target's Upsilon and for the refit's logged diagnostics."""
+    Ny, Nx = field.shape[-2:]
+    norm_weight = (model.omode_occu / (Nx * Ny)).view(1, 1, -1, 1, 1)
+    dp = torch.fft.fftshift(
+        torch.sum(field.abs().square() * norm_weight, dim=(1, 2)), dim=(-2, -1)
+    )
+    if model.detector_blur_std:
+        dp = gaussian_blur(dp, kernel_size=[5, 5], sigma=model.detector_blur_std)
+    return dp
 
 
 @torch._dynamo.disable
-def _refit_born_coeffs_detector(model, niter, cfg, verbose=True):
-    """Detector-space Born-coefficient update on the calibration views.
+def _refit_born_coeffs_fourier(model, niter, cfg, verbose=True):
+    """FOURIER-VIEW (volume + detector) Born-coefficient refit against the
+    exact multislice target: the remainder fit of born_remainder_coeffs extended
+    from the detector rows to the full wavefield, in the SAME norm the
+    per-position born_residual forward minimises (every block of Psi_hat at
+    unit weight — in the Fourier view the plane and exit rows already carry
+    the same fft2 factor, so no rescaling enters;
+    born_remainder.born_volume_remainder_rows
+    builds the rows). Shared coefficients over the calibration views,
+    solved for c DIRECTLY (zero prior, so an unresolved direction drops
+    its order rather than falling back on the plain series) by an
+    equilibrated complex128 Gram solve with split-k
+    moments — complex128 is mandatory and the ridge must act on the
+    unit-diagonal Gram (see born_residual for both convictions).
+    Comparison arm for the Fourier-view GMRES forward: same norm, same
+    multislice physics, but a SHARED fitted polynomial instead of a
+    per-position Krylov solve.
 
-    THE coefficient algorithm (no variants): least squares of the
-    truncation tail onto the retained orders, against the exact detector
-    field of the current object from one sequential multislice sweep per
-    calibration view — solved by thin QR + truncated SVD (TSVD) at the
-    numerical rank (born_helpers.born_detector_basis +
-    born_multislice_target + born_qr_coeffs). Linear in depth, one rolling
-    wavefield for the target; the QR/SVD works on the factor, so the solve
-    error scales with kappa rather than its square, and no Gram is ever
-    formed. The
-    full-depth parallel Born pass is NOT used: run to its nilpotent cutoff
-    it pays ~Nz^2 slice-FFTs through the same Nz-deep sequential bounce
-    chain to re-derive what one 2*Nz-FFT multislice sweep gives directly.
-    Convex, closed-form, deterministic; the measured data never enters, so
-    the coefficients track truncation error only and cannot absorb object
-    error (no gauge leak); the logged rel int error and rel data residual
-    are diagnostics. Basis and target fields are gathered chunk-wise and
-    concatenated over views. With cfg['grow_tol'] set, born_iterations
-    grows by 1 (up to n_limit, capped at Nz) whenever the fit residual at
-    the current order exceeds the tolerance; one extra basis order is
-    carried as lookahead so the growth probe needs no second recursion.
-    cfg['pin_first'] is ignored: c0 = 1 is implicit (D0 enters at unit
-    weight) and no gauge pin is required.
+    cfg['grow_tol'] promotes born_iterations by 1 (up to n_limit, capped
+    at Nz) whenever the fit residual at the current order exceeds the
+    tolerance, exactly as the removed detector refit did. Growth is free
+    of a second pass here: the moments are accumulated ONCE at the
+    lookahead order n_keep, and the fit at any order n <= n_keep is the
+    leading n-by-n block of the same Gram, so promotion is a resolve of an
+    (n, n) system with no new basis, target or reduction.
 
-    cfg['target'] = 'hybrid_amp' replaces the fit target with the hybrid
-    target: amplitude from the measured data, phase (and mode structure)
-    from multislice — T_hybrid = Upsilon * psi_MS with
-    Upsilon = sqrt(I_data / I_MS) per calibration view (I_MS is the blurred
-    model intensity, the same quantity the loss compares; Upsilon is shared
-    across probe/object modes). Same TSVD fit — only the right-hand side
-    changes. The pure multislice-target coefficients c_MS are recovered as
-    a second right-hand side of the SAME solve and logged as a diagnostic
-    of how far the data amplitude pulls the fit.
-    Default 'multislice' is bit-identical to the pure data-free fit.
+    cfg['target'] = 'hybrid_amp' replaces the DETECTOR rows' target with
+    the hybrid field Upsilon * psi_MS (amplitude from the measured data,
+    phase and mode structure from multislice, Upsilon = sqrt(I_data/I_MS)
+    per calibration view against the blurred model intensity the loss
+    compares). The plane rows keep the data-free multislice target — the
+    data only ever constrains the exit plane — so the data's pull on the
+    fit is diluted by the Nz plane rows relative to the old detector-only
+    hybrid fit; it is a weaker hybrid, not the same one. The pure
+    multislice coefficients c_MS come back from the same factorisation as
+    a second right-hand side and are logged as a diagnostic.
     WARNING: 'hybrid_amp' feeds measured intensities into the coefficient
-    update, deliberately reopening the gauge-leak channel the data-free fit
-    closed — an experiment to be judged on object metrics, not loss.
-    """
-    from ptyrad.forward_models.born_helpers import (
-        born_detector_basis,
+    update, deliberately reopening the gauge-leak channel the data-free
+    fit closed — an experiment to be judged on object metrics, not loss."""
+    from ptyrad.forward_models.born import born_detector_basis, born_volume_basis
+    from ptyrad.forward_models.born_coeff_fit import (
+        _born_residual_orders,
+        born_gram_moments,
+        born_gram_solve,
         born_multislice_target,
-        born_qr_coeffs,
+        born_multislice_volume_target,
+        born_residual_order_gram,
+        born_residual_solve_gram,
+        born_volume_remainder_rows,
     )
 
     n = model.born_iterations
     idx = model.born_refit_views
-    hybrid = cfg.get("target", "multislice") == "hybrid_amp"
+    dev = model.opt_born_coeffs.device
+    target = cfg.get("target", "multislice")
+    hybrid = target == "hybrid_amp"
+    residual = target == "residual"
     grow_tol = cfg.get("grow_tol")
     n_limit = min(int(cfg.get("n_limit") or model.n_slice), model.n_slice)
-    # one extra basis order when growth is possible: the growth probe then
-    # needs no second pass. grow_fast builds the basis to n_limit so a single
-    # refit can promote REPEATEDLY until the residual clears grow_tol —
-    # avoids spending a full epoch per order while under-ordered (an epoch at
-    # too-low order bakes an under-scattering model into the object).
+    # lookahead order: the moments are built once at n_keep and every
+    # promotion reads a leading submatrix of them. grow_fast goes straight
+    # to n_limit so one refit can promote repeatedly.
     if grow_tol is None:
         n_keep = n
     elif cfg.get("grow_fast"):
@@ -1134,129 +1164,139 @@ def _refit_born_coeffs_detector(model, niter, cfg, verbose=True):
     grew = False
     t_refit = perf_counter()
     with torch.no_grad():
-        d0n2 = 0.0
-        w64 = model.omode_occu.to(torch.float64).view(1, 1, -1)
-        D0_parts, D_parts, T_parts = [], [], []
-        for sl in idx.split(8):
+        K = n_keep
+        G = torch.zeros(K, K, dtype=torch.complex128, device=dev)
+        # row 0: the fitted target; row 1: (multislice - fitted) at the
+        # detector, which recovers c_MS by linearity when hybrid is on
+        gb = torch.zeros(2, K, dtype=torch.complex128, device=dev)
+        b2 = torch.zeros((), dtype=torch.float64, device=dev)
+        # residual target: the accumulable order Gram, summed over views
+        n_res = min(K + 1, model.n_slice)
+        P_res = torch.zeros(n_res, n_res, dtype=torch.complex128, device=dev)
+        D0_parts, D_parts, Tdet_parts, shift2 = [], [], [], 0.0
+        for sl in idx.split(2 if not residual else 4):  # volume targets are memory-heavy
             patches = model.get_obj_patches(sl)
             probes = model.get_probes(sl)
             H3 = model.get_propagators_3d(model.get_propagators(sl))
-            D0c, Dc = born_detector_basis(patches, probes, H3, n_keep)
-            # exact target: one sequential multislice sweep per view
-            T_parts.append(born_multislice_target(patches, probes, H3) - D0c)
-            D_parts.append(Dc)
-            D0_parts.append(D0c)
-            d0n2 += (
-                (D0c.abs().square().sum(dim=(-2, -1)).to(torch.float64) * w64).sum().item()
-            )
-            del D0c, Dc
-        assert D_parts  # idx is never empty: at least one chunk accumulated
-        D0 = torch.cat(D0_parts, dim=0)
-        Dn = torch.cat(D_parts, dim=1)
-        T = torch.cat(T_parts, dim=0)
-
-        meas = model.get_measurements(idx)
-        Ny, Nx = D0.shape[-2:]
-        norm_weight = (model.omode_occu / (Nx * Ny)).view(1, 1, -1, 1, 1)
-
-        def _dp_of(field):
-            dp = torch.fft.fftshift(
-                torch.sum(field.abs().square() * norm_weight, dim=(1, 2)), dim=(-2, -1)
-            )
-            if model.detector_blur_std:
-                dp = gaussian_blur(dp, kernel_size=[5, 5], sigma=model.detector_blur_std)
-            return dp
-
-        # The fit target. Default: T (exact multislice scattered field,
-        # data-free). 'hybrid_amp': amplitude from the measured data, phase
-        # from multislice — T_hybrid = Upsilon * psi_MS with
-        # Upsilon = sqrt(I_data / I_MS) shared across modes (I_MS is the
-        # blurred model intensity, the same quantity the loss compares).
-        # |T_hybrid| <= sqrt(I_data) per pixel regardless of the ratio, so
-        # the guards below are numerical only, not a reweighting.
-        psi_ms = D0 + T
-        dp_exact = _dp_of(psi_ms)
-
-        if hybrid:
-            floor = 1e-12 * dp_exact.amax(dim=(-2, -1), keepdim=True).clamp(min=1e-30)
-            ups = (meas.clamp(min=0) / dp_exact.clamp(min=0).maximum(floor)).sqrt()
-            ups = torch.fft.ifftshift(ups.clamp(max=1e3), dim=(-2, -1))
-            T_fit = ups[:, None, None] * psi_ms - D0
-            # linearity: c_MS = c_hybrid + x_extra with x_extra the
-            # zero-prior solve for (T - T_fit), same factorization
-            extra = T - T_fit
-        else:
-            T_fit, extra = T, None
-
-        if hybrid:
-            c, det_res, x_ms = born_qr_coeffs(
-                Dn[:n], T_fit, d0n2, omode_occu=model.omode_occu,
-                extra_rhs=extra,
-            )
-        else:
-            c, det_res = born_qr_coeffs(
-                Dn[:n], T_fit, d0n2, omode_occu=model.omode_occu,
-            )
-        # promotion loop: plain growth has basis for one extra order (single
-        # pass); grow_fast has the basis to n_limit and keeps promoting until
-        # the residual clears the tolerance
-        while grow_tol is not None and det_res > float(grow_tol) and n < n_keep:
-            n += 1
-            model.born_iterations = n
+            if residual:
+                # target-free: the fixed-point residual needs ONE order
+                # beyond those retained and NO multislice pass, so the
+                # whole sequential sweep is skipped here
+                Vw, dts = _born_residual_orders(patches, probes, H3,
+                                                min(K + 1, model.n_slice))
+                P_res += born_residual_order_gram(
+                    Vw, dts, min(K + 1, model.n_slice), model.omode_occu).sum(0)
+                D0c, Dc = born_detector_basis(patches, probes, H3, K)
+                T_det = born_multislice_target(patches, probes, H3)
+                D0_parts.append(D0c)
+                D_parts.append(Dc)
+                Tdet_parts.append(T_det)
+                del Vw, dts, D0c, Dc, T_det
+                continue
+            V, D0c, Dc = born_volume_basis(patches, probes, H3, K)
+            T_vol = born_multislice_volume_target(patches, probes, H3)
+            T_det = born_multislice_target(patches, probes, H3)
             if hybrid:
-                c, det_res, x_ms = born_qr_coeffs(
-                    Dn[:n], T_fit, d0n2, omode_occu=model.omode_occu,
-                    extra_rhs=extra,
+                # Upsilon = sqrt(I_data / I_MS) per view, shared across
+                # modes; |T_hybrid| <= sqrt(I_data) per pixel regardless of
+                # the ratio, so the guards are numerical only.
+                dp_ms = _born_refit_dp(model, T_det)
+                floor = 1e-12 * dp_ms.amax(dim=(-2, -1), keepdim=True).clamp(min=1e-30)
+                ups = (
+                    model.get_measurements(sl).clamp(min=0)
+                    / dp_ms.clamp(min=0).maximum(floor)
+                ).sqrt()
+                ups = torch.fft.ifftshift(ups.clamp(max=1e3), dim=(-2, -1))
+                T_fit_det = ups[:, None, None] * T_det
+                shift2 += float((T_fit_det - T_det).abs().square().sum())
+                A, b, b_ms = born_volume_remainder_rows(
+                    V, Dc, T_vol, T_fit_det, D0c, K,
+                    omode_occu=model.omode_occu, extra_det=T_det - T_fit_det,
                 )
             else:
-                c, det_res = born_qr_coeffs(
-                    Dn[:n], T_fit, d0n2, omode_occu=model.omode_occu,
+                A, b = born_volume_remainder_rows(
+                    V, Dc, T_vol, T_det, D0c, K, omode_occu=model.omode_occu
                 )
+                b_ms = torch.zeros_like(b)
+            # shared split-k complex128 kernel; the moments of each chunk
+            # simply add (occupancy weights are already in the rows)
+            Gc, gc = born_gram_moments(
+                A.T, torch.stack([b, b_ms]), k_block=D0c.shape[-2] * D0c.shape[-1]
+            )
+            G += Gc
+            gb += gc
+            b2 += b.to(torch.complex128).abs().square().sum().real
+            # small detector-space pieces for the standard diagnostics
+            D0_parts.append(D0c)
+            D_parts.append(Dc)
+            Tdet_parts.append(T_det)
+            del V, T_vol, A, b, b_ms, Gc, gc
+        D0 = torch.cat(D0_parts, dim=0)
+        Dn = torch.cat(D_parts, dim=1)
+        T = torch.cat(Tdet_parts, dim=0) - D0
+
+        # direct solve for c (zero prior, as in born_residual and
+        # born_remainder_coeffs): min_c ||A c - b||, on the leading n
+        # columns. Promotion re-reads a leading submatrix of the SAME
+        # moments — no second basis pass, no second reduction.
+        def _solve(n_cur):
+            if residual:  # target-free: solve from the summed order Gram
+                c_r, _beta, rel = born_residual_solve_gram(P_res, n_cur)
+                return c_r, torch.zeros_like(c_r), rel.item()
+            sol, rel = born_gram_solve(G[:n_cur, :n_cur], gb[:, :n_cur], b2)
+            return sol[0], sol[1], rel.item()
+
+        cc, x_ms, fit_res = _solve(n)
+        # promotion loop: the lookahead moments already cover n_keep
+        while grow_tol is not None and fit_res > float(grow_tol) and n < n_keep:
+            n += 1
+            model.born_iterations = n
+            cc, x_ms, fit_res = _solve(n)
             grew = True
         Dn = Dn[:n]
-        c = c.to(D0.device)
-        c_ms = c + x_ms.to(D0.device) if hybrid else c
+        c = cc.to(torch.complex64)
+        c_ms = (cc + x_ms).to(torch.complex64) if hybrid else c
+
         model.opt_born_coeffs.data = torch.stack([c.real, c.imag], -1).to(
             dtype=model.opt_born_coeffs.dtype, device=model.opt_born_coeffs.device
         )
 
-        # diagnostics for logging only — none of these feed back into the
-        # fit. delta_model: model error against the EXACT multislice field
-        # at the coefficients actually used, computed directly on fields
-        # (never by expanding the norm). eps_int: its intensity counterpart
-        # (the online tilde-epsilon). target_shift: how far the data
-        # amplitude moved the target; dc_rel: how far it moved the
+        # detector-space diagnostics for logging only — none of these feed
+        # back into the fit. delta_model: model error against the EXACT
+        # multislice field at the coefficients actually used, on fields.
+        # eps_int: its intensity counterpart. target_shift: how far the
+        # data amplitude moved the target; dc_rel: how far it moved the
         # coefficients off the pure multislice fit.
+        meas = model.get_measurements(idx)
         wf = model.omode_occu.to(torch.float32).clamp(min=0).view(1, 1, -1, 1, 1)
 
         def _fnorm(field):
             return (field.abs().square().to(torch.float64) * wf).sum().sqrt().item()
 
-        psi_norm = _fnorm(psi_ms)
+        dp_exact = _born_refit_dp(model, D0 + T)
         Fs = (c.view(-1, 1, 1, 1, 1, 1) * Dn).sum(dim=0)
+        psi_norm = _fnorm(D0 + T)
         delta_model = _fnorm(Fs - T) / psi_norm
-        target_shift = _fnorm(T_fit - T) / psi_norm if hybrid else 0.0
+        target_shift = (shift2**0.5) / psi_norm if hybrid else 0.0
         dc_rel = (
             (torch.linalg.vector_norm(c - c_ms) / torch.linalg.vector_norm(c_ms)).item()
             if hybrid
             else 0.0
         )
-
-        dp = _dp_of(D0 + Fs)
+        dp = _born_refit_dp(model, D0 + Fs)
         eps_int = ((dp - dp_exact).norm() / dp_exact.norm()).item()
         res = ((dp - meas).norm() / meas.norm()).item()
 
-    # sync so the logged time covers the async GPU basis/target work too
     if torch.cuda.is_available():
         torch.cuda.synchronize()
     t_refit = perf_counter() - t_refit
     coeff_str = " ".join(f"{a:+.3f}{b:+.3f}j" for a, b in model.opt_born_coeffs.tolist())
-    tag = "detector" if grow_tol is None else f"detector, n={n}{' grew' if grew else ''}"
+    tag = "fourier" if grow_tol is None else f"fourier, n={n}{' grew' if grew else ''}"
     if hybrid:
         tag += ", hybrid_amp"
     vprint(
         f"Refit born_coeffs at iter {niter} ({len(idx)} views, {tag}): "
-        f"rel det residual {det_res:.3e}, rel int error {eps_int:.3e}, "
+        f"rel fourier residual {fit_res:.3e}, rel int error {eps_int:.3e}, "
         f"rel data residual {res:.3e}, c = [{coeff_str}] ({t_refit:.2f} s)",
         verbose=verbose,
     )
@@ -1274,25 +1314,23 @@ def _refit_born_coeffs_detector(model, niter, cfg, verbose=True):
         ["iter", "loss", "n", "hybrid", "det_res", "delta_model", "eps_int",
          "data_res", "target_shift", "dc_rel"]
         + [f"cabs{m}" for m in range(1, ncols + 1)]
-        + [s for m in range(1, ncols + 1) for s in (f"c{m}_re", f"c{m}_im")]
-        + [s for m in range(1, ncols + 1) for s in (f"cms{m}_re", f"cms{m}_im")]
+        + [s2 for m in range(1, ncols + 1) for s2 in (f"c{m}_re", f"c{m}_im")]
+        + [s2 for m in range(1, ncols + 1) for s2 in (f"cms{m}_re", f"cms{m}_im")]
     )
     nan = float("nan")
     pad = [nan] * (ncols - n)
     c_cpu, cms_cpu = c.cpu(), c_ms.cpu()
     values = (
-        [niter, None, n, int(hybrid), det_res, delta_model, eps_int, res,
+        [niter, None, n, int(hybrid), fit_res, delta_model, eps_int, res,
          target_shift, dc_rel]
         + c_cpu.abs().tolist() + pad
         + [v for z in c_cpu.tolist() for v in (z.real, z.imag)] + pad + pad
         + [v for z in cms_cpu.tolist() for v in (z.real, z.imag)] + pad + pad
     )
     model.born_refit_csv_row = {"header": header, "values": values}
-    # in-memory refit-convergence history for plot_summary / checkpoints
     model.born_refit_iters.append(
-        (niter, det_res, delta_model, eps_int, res, target_shift, dc_rel)
+        (niter, fit_res, delta_model, eps_int, res, target_shift, dc_rel)
     )
-
 
 
 def toggle_grad_requires(model, niter, verbose=True):
@@ -1675,6 +1713,7 @@ def optuna_objective(trial, params, init, loss_fn, constraint_fn, device="cuda",
 
         for niter in range(1, NITER + 1):
             toggle_grad_requires(model, niter, verbose)
+
 
             if niter in model.compilation_iters:
                 vprint(f"Setting up PyTorch compiler with {compiler_configs}", verbose=verbose)

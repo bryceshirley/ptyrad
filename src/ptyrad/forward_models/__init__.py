@@ -1,4 +1,4 @@
-from .born import born_forward
+from .born import born_forward, born_forward_eager
 from .chebyshev import chebyshev_setup, multislice_forward_chebyshev
 from .multislice import (
     linduda_forward,
@@ -10,6 +10,7 @@ from .multislice import (
 
 __all__ = [
     "born_forward",
+    "born_forward_eager",
     "chebyshev_setup",
     "multislice_forward",
     "multislice_forward_chebyshev",

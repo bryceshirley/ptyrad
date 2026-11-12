@@ -1,13 +1,13 @@
-"""The Born-coefficient QR fit: born_detector_basis + born_multislice_target
-+ born_qr_coeffs.
+"""The Born-coefficient remainder fit: born_detector_basis +
+born_multislice_target + born_remainder_coeffs.
 
 The identities the algorithm rests on: the truncated basis plus the
 sequential multislice sweep reproduce the exact detector field at full order
-(nilpotent termination); the QR+TSVD solve equals the explicit
-least-squares solution in float64; and the fit satisfies its limits: c -> 1 for a
-weak object, c = 1 (zero residual) at M = Nz, and detector field error at
-fixed truncation no worse than the plain series (nothing in the span beats
-the projection).
+(nilpotent termination); the equilibrated Gram solve equals the explicit
+least-squares solution for c in float64; and the fit satisfies its limits:
+c -> 1 for a weak object, c = 1 (zero residual) at M = Nz, and detector
+field error at fixed truncation no worse than the plain series (nothing in
+the span beats the projection).
 """
 
 import os
@@ -20,10 +20,10 @@ torch._dynamo.config.disable = True
 
 from torch.fft import fft2, ifft2
 
-from ptyrad.forward_models.born_helpers import (
-    born_detector_basis,
+from ptyrad.forward_models.born import born_detector_basis
+from ptyrad.forward_models.born_coeff_fit import (
     born_multislice_target,
-    born_qr_coeffs,
+    born_remainder_coeffs,
 )
 
 
@@ -93,25 +93,23 @@ def test_basis_truncation_is_prefix():
     assert torch.allclose(D_tr, D_full[:3], rtol=1e-11, atol=1e-13)
 
 
-def test_qr_matches_explicit_normal_equations():
-    # the QR+TSVD solve equals the explicit least-squares solution
-    # (float64) — same maths, factor-stable route
+def test_gram_solve_matches_explicit_least_squares():
+    # the equilibrated Gram solve equals the explicit least-squares
+    # solution for c (float64, zero prior — NOT offset coordinates)
     patches, probe, H, occu = _setup(2, 2, 6, 16, 16, 2, 1, phase_scale=1.2)
     M = 4
     D0, D = born_detector_basis(patches, probe, H, M)
     T = born_multislice_target(patches, probe, H) - D0
     d0n2 = _d0_norm2(D0, occu)
-    c_qr, delta = born_qr_coeffs(D, T, d0n2, omode_occu=occu)
+    c_qr, delta = born_remainder_coeffs(D, T, d0n2, omode_occu=occu)
 
     w = occu.sqrt().view(1, 1, -1, 1, 1)
     A = (D * w).reshape(M, -1).T.to(torch.complex128)
-    b = (T * w).reshape(-1).to(torch.complex128) - A.sum(dim=1)
-    x = torch.linalg.lstsq(A, b[:, None]).solution[:, 0]
-    c_ref = 1.0 + x
+    b = (T * w).reshape(-1).to(torch.complex128)
+    c_ref = torch.linalg.lstsq(A, b[:, None]).solution[:, 0]
     # c is returned in complex64 (production dtype): compare at its precision
     assert torch.allclose(c_qr.to(torch.complex128), c_ref, rtol=1e-5, atol=1e-6)
-    t_norm = ((T * w).reshape(-1).to(torch.complex128)).norm()
-    delta_ref = ((A @ x - b).norm() / t_norm).item()
+    delta_ref = ((A @ c_ref - b).norm() / b.norm()).item()
     assert abs(delta - delta_ref) < 1e-9 * max(delta_ref, 1e-12)
 
 
@@ -120,7 +118,7 @@ def test_weak_object_coeffs_near_one():
     patches[..., 0] = 1.0  # pure weak-phase object
     D0, D = born_detector_basis(patches, probe, H, 3)
     T = born_multislice_target(patches, probe, H) - D0
-    c, _ = born_qr_coeffs(D, T, _d0_norm2(D0, occu), omode_occu=occu)
+    c, _ = born_remainder_coeffs(D, T, _d0_norm2(D0, occu), omode_occu=occu)
     assert torch.allclose(c, torch.ones_like(c), atol=1e-2)
 
 
@@ -128,23 +126,40 @@ def test_full_order_fit_is_exact():
     patches, probe, H, occu = _setup(2, 1, 4, 16, 16, 2, 1, phase_scale=1.2)
     D0, D = born_detector_basis(patches, probe, H, 4)
     T = born_multislice_target(patches, probe, H) - D0
-    c, delta = born_qr_coeffs(D, T, _d0_norm2(D0, occu), omode_occu=occu)
+    c, delta = born_remainder_coeffs(D, T, _d0_norm2(D0, occu), omode_occu=occu)
     assert torch.allclose(c, torch.ones_like(c), atol=1e-6)
     assert delta < 1e-6
 
 
 def test_fit_beats_plain_in_detector_norm():
-    # nothing in the span beats the projection
+    # nothing in the span beats the projection — in EITHER gauge
     patches, probe, H, occu = _setup(2, 1, 6, 16, 16, 1, 1, phase_scale=1.5)
     n = 3
-    D0, D = born_detector_basis(patches, probe, H, n)
-    T = born_multislice_target(patches, probe, H) - D0
-    c, _ = born_qr_coeffs(D, T, _d0_norm2(D0, occu), omode_occu=occu)
     F_ms = _multislice_detector_field(patches, probe, H)
-    err_fit = _field_err(c.to(torch.complex128), D0, D, F_ms)
-    err_plain = _field_err(torch.ones(n, dtype=torch.complex128), D0, D, F_ms)
-    assert err_fit <= err_plain * (1 + 1e-6)
-    assert err_fit < err_plain * 0.9  # it actually moved
+    err = {}
+    for centred in (False, True):
+        D0, D = born_detector_basis(patches, probe, H, n, centred=centred)
+        T = born_multislice_target(patches, probe, H) - D0
+        c, _ = born_remainder_coeffs(D, T, _d0_norm2(D0, occu), omode_occu=occu)
+        fit = _field_err(c.to(torch.complex128), D0, D, F_ms)
+        plain = _field_err(torch.ones(n, dtype=torch.complex128), D0, D, F_ms)
+        assert fit <= plain * (1 + 1e-6)  # the projection cannot be worse
+        err[centred] = (fit, plain)
+
+    # uncentred at strong scattering: the plain series OVERSHOOTS badly
+    # (the C(N,m) path count outgrows the per-path decay, Sec. 3.4) and the
+    # coefficients are what rescue it
+    fit_u, plain_u = err[False]
+    assert plain_u > 1.0            # >100% error: the overshoot is real
+    assert fit_u < plain_u * 0.1    # tuning rescues it by >10x
+
+    # centred: the background is already right, so the plain series is
+    # close and the fit has little left to do
+    fit_c, plain_c = err[True]
+    assert plain_c < 0.2
+    assert fit_c > plain_c * 0.9    # the fit gains only a few percent
+    # and the UNTUNED centred series beats the TUNED uncentred one
+    assert plain_c < fit_u
 
 
 def test_delta_is_the_detector_field_error():
@@ -154,7 +169,7 @@ def test_delta_is_the_detector_field_error():
     n = 3
     D0, D = born_detector_basis(patches, probe, H, n)
     T = born_multislice_target(patches, probe, H) - D0
-    c, delta = born_qr_coeffs(D, T, _d0_norm2(D0, occu), omode_occu=occu)
+    c, delta = born_remainder_coeffs(D, T, _d0_norm2(D0, occu), omode_occu=occu)
     model = (c.to(torch.complex128).view(-1, 1, 1, 1, 1, 1) * D).sum(dim=0)
     delta_direct = ((model - T).norm() / T.norm()).item()
     assert abs(delta - delta_direct) < 1e-9 * max(delta_direct, 1e-12)
@@ -165,7 +180,7 @@ def test_extra_rhs_two_return_backward_compat():
     patches, probe, H, occu = _setup(2, 1, 6, 16, 16, 1, 1, phase_scale=1.2)
     D0, D = born_detector_basis(patches, probe, H, 3)
     T = born_multislice_target(patches, probe, H) - D0
-    out = born_qr_coeffs(D, T, _d0_norm2(D0, occu), omode_occu=occu)
+    out = born_remainder_coeffs(D, T, _d0_norm2(D0, occu), omode_occu=occu)
     assert len(out) == 2
 
 
@@ -181,23 +196,24 @@ def test_extra_rhs_linearity_matches_shifted_target():
         T.shape, generator=g, dtype=torch.float64
     )
     d0n2 = _d0_norm2(D0, occu)
-    c_qr, det_res, c_del = born_qr_coeffs(
+    c_qr, det_res, c_del = born_remainder_coeffs(
         D, T, d0n2, omode_occu=occu, extra_rhs=delta_rhs
     )
-    # base solution and residual are untouched by the extra column (up to
-    # the last ulp: gelsd factors once but blocks over the RHS columns)
-    c_base, det_base = born_qr_coeffs(D, T, d0n2, omode_occu=occu)
+    # base solution and residual are untouched by the extra column (both
+    # right-hand sides go through the same Gram factorisation)
+    c_base, det_base = born_remainder_coeffs(D, T, d0n2, omode_occu=occu)
     assert torch.allclose(c_qr, c_base, rtol=0, atol=1e-12)
-    assert abs(det_res - det_base) < 1e-12 * max(det_base, 1e-12)
-    # reference: explicit least squares for the combined target,
-    # prior at 1 for the T part and 0 for the Delta part -> x_prior = c-1
+    # delta is evaluated from the (M, M) moments rather than from a tall
+    # product, so it is cancellation-limited to ~1e-11 relative when the
+    # fit residual is orders below ||T||; the solution itself is exact to
+    # the ulp above.
+    assert abs(det_res - det_base) < 1e-8 * max(det_base, 1e-12)
+    # reference: explicit least squares for the combined target. The solve
+    # is linear in the right-hand side and both parts are zero-prior, so
+    # fitting T + alpha*Delta must give c_T + alpha*c_Delta exactly.
     w = occu.sqrt().view(1, 1, -1, 1, 1)
     A = (D * w).reshape(M, -1).T.to(torch.complex128)
-    b = (
-        ((T + alpha * delta_rhs) * w).reshape(-1).to(torch.complex128)
-        - A.sum(dim=1)
-    )
-    x = torch.linalg.lstsq(A, b[:, None]).solution[:, 0]
-    c_ref = 1.0 + x
+    b = ((T + alpha * delta_rhs) * w).reshape(-1).to(torch.complex128)
+    c_ref = torch.linalg.lstsq(A, b[:, None]).solution[:, 0]
     c_alpha = (c_qr + alpha * c_del).to(torch.complex128)
     assert torch.allclose(c_alpha, c_ref, rtol=1e-5, atol=1e-6)

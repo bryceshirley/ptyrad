@@ -3,7 +3,6 @@ GMRES(M) forward model (born_gmres). Small synthetic cases, CPU, fast —
 mirrors the pre-reconstruction checks of the per-position coefficient
 study (~/born-perpos-fit)."""
 
-import math
 import sys
 from pathlib import Path
 
@@ -13,6 +12,7 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from ptyrad.forward_models.born_gmres import born_apply_E, born_gmres_forward
+
 from ptyrad.forward_models.born_helpers import (
     _born_init,
     born_multislice_target,
@@ -69,13 +69,9 @@ def test_unit_coeff_residual_telescopes():
     V, _, D = born_volume_basis(patches, probe, H, M + 1)
     A, b = born_volume_residual_rows(V, D, M)
     r_unit = b - A.sum(1)
-    Npix = V.shape[-1]
-    ref = torch.cat(
-        [
-            V[M + 1][..., 1:, :, :].reshape(-1),
-            (D[M] / math.sqrt(Npix * Npix)).reshape(-1),
-        ]
-    )
+    # Fourier view: plane and exit rows are blocks of the same Psi_hat and
+    # carry the same fft2 factor, so the exit block enters unscaled
+    ref = torch.cat([V[M + 1][..., 1:, :, :].reshape(-1), D[M].reshape(-1)])
     assert rel(r_unit, ref) < 1e-5
 
 

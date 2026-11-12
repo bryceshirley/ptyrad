@@ -60,7 +60,7 @@ import numpy as np
 import torch
 from torch.fft import fft2, ifft2
 
-from ptyrad.forward_models.born_helpers import _born_scatter, unscattered_illumination
+from ptyrad.forward_models.born import _born_scatter, unscattered_illumination
 from ptyrad.utils import fftshift2
 
 # §6: floors. DN_EPS is float32 eps, used on the preconditioner denominators.
@@ -85,7 +85,7 @@ def _compiled(fn):
 def _fields_from_complex(O, probe, H):
     """Detector-plane field from complex object O (B, omode, Nz, Ny, Nx).
 
-    The scatter is born_helpers._born_scatter, so the recursion physics lives
+    The scatter is born._born_scatter, so the recursion physics lives
     in one place: this is born_forward at n_max = 1 up to (and excluding) the
     intensity reduction. F is exactly affine in (O - 1) and exactly linear in
     the probe — the two facts the line search rests on (spec §1)."""
@@ -124,7 +124,7 @@ def direction_response(object_patches, d, probe, H):
     """Object direction response D = F(g + d) - F(g), exact for any d because
     F is affine in g (one extra forward half-pass, no adjoint) — the paper's
     detector update direction sum_j D_j[P_j d_j] (Eq. slice-step-field),
-    i.e. one born_helpers scatter of d under the unscattered illumination
+    i.e. one born-module scatter of d under the unscattered illumination
     (the identity path cancels in the difference).
 
     (`object_patches` is kept for API stability but only d and probe carry

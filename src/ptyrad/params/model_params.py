@@ -1,4 +1,5 @@
 import pathlib
+import warnings
 from typing import Any
 
 import torch.optim
@@ -295,16 +296,17 @@ class ModelParams(BaseModel):
         default=None,
         description="In-reconstruction refit of the Born coefficients on a fixed "
         "calibration view set (solver_type='born'). Dict with 'start_iter' (null "
-        "disables), 'step', 'end_iter', 'n_views', 'pin_first', 'method'. "
-        "method='detector' (recommended): closed-form least-squares fit of the "
-        "detector field against the exact detector field of the current object "
-        "— direct minimization of the detector error, still data-free (no "
-        "measured intensities, no reconstruction oracle). The exact field is "
+        "disables), 'step', 'end_iter', 'n_views', 'pin_first'. There is one "
+        "method: a closed-form least-squares fit of the retained Born orders "
+        "against the exact multislice field of the current object on the "
+        "FOURIER basis — all N+1 planes plus the exit block, the norm the "
+        "born_residual forward minimises — still data-free (no measured "
+        "intensities, no reconstruction oracle). The exact field is "
         "built by one sequential multislice sweep per calibration view "
-        "(~2*n*(Nz-n/2)+2*Nz slice-FFTs with the basis pass, linear in depth, "
-        "one rolling wavefield) and the coefficients solved by thin QR plus "
-        "truncated SVD at the numerical rank (born_qr_coeffs) — this IS the "
-        "algorithm, not an option; the TSVD cutoff is the only regularisation. "
+        "(linear in depth) and the coefficients solved directly (zero "
+        "prior) by a column-equilibrated complex128 Gram least squares with a "
+        "tiny relative ridge (born_remainder_coeffs, the same solver as "
+        "born_residual) — this IS the algorithm, not an option. "
         "The measured data never enters, so the coefficients track "
         "truncation error only and cannot absorb object error. "
         "'grow_tol' > 0 enables adaptive order growth: each "
@@ -316,39 +318,29 @@ class ModelParams(BaseModel):
     )
     """
     Defaults when enabled: {'start_iter': 1, 'step': 1, 'end_iter': null,
-    'n_views': 64, 'pin_first': true, 'method': 'detector',
-    'target': 'multislice'}.
+    'n_views': 64, 'pin_first': true, 'target': 'multislice'}.
     'target': 'multislice' (default) fits against
     the exact multislice-sweep field of the current object (data-free);
-    'hybrid_amp' fits against the hybrid target T_hybrid = Upsilon * psi_MS,
-    Upsilon = sqrt(I_data / I_MS) — amplitude from the measured data, phase
-    from multislice. The hybrid target is an EXPERIMENT that reopens the
-    data channel into the coefficients (judge on object metrics, not loss).
+    'hybrid_amp' swaps the DETECTOR rows' target for the hybrid field
+    T_hybrid = Upsilon * psi_MS, Upsilon = sqrt(I_data / I_MS) — amplitude
+    from the measured data, phase from multislice — while the plane rows
+    stay data-free, so the data's pull is diluted by the plane rows
+    relative to the old detector-only fit. The hybrid target is an
+    EXPERIMENT that reopens the data channel into the coefficients (judge
+    on object metrics, not loss).
     'pin_first' is accepted but ignored (no pin
     needed; c0 = 1 is implicit). Removed
-    methods: 'data' (multi-start L-BFGS against measured intensities —
+    methods: 'detector' (the same remainder fit on the detector rows only
+    — better in the detector norm but with far larger coefficients, a
+    wavefield up to 50x further from multislice inside the sample, and a
+    larger coefficient swing between refits), 'data' (multi-start L-BFGS
+    against measured intensities —
     data-fitted coefficients absorb object error, the gauge leak),
     'gmres' (Krylov-Gram equation-residual fit — 4-135x oblique to the true
     detector error; git history, commit 18a2d35), and the ridge/'lcurve'
     regularisation policies (benchmarked irrelevant at M<=8 and worse than
-    the unregularised solve at M=16; only the TSVD cutoff remains).
+    the unregularised solve at M=16).
     """
-
-    born_per_pos_fit: bool = Field(
-        default=False,
-        description="Refit the Born coefficients at EVERY forward pass from the "
-        "batch's own object patch and probe (solver_type='born'), by the "
-        "target-free volume-residual least squares "
-        "(born_helpers.born_position_residual_fit: born_volume_basis to order "
-        "M+1, born_volume_residual_rows, TSQR, TSVD solve for c directly — M "
-        "steps of GMRES on the fixed-point equation started from Psi^(0)). No "
-        "multislice target is formed and no measured data enters; the "
-        "coefficients are constants in the backward pass. Intended for batch "
-        "size 1 (a larger batch fits one shared c over the batch's rows). "
-        "Overrides opt_born_coeffs and born_coeffs_refit in the forward pass: "
-        "keep born_coeffs_refit null and update_params['born_coeffs'] lr at 0. "
-        "Per-step (rel_res, rank, cond, max|c|) land in born_perpos_stats.csv.",
-    )
 
     born_gmres_forward: bool = Field(
         default=False,
@@ -432,12 +424,27 @@ class ModelParams(BaseModel):
             "end_iter": None,
             "n_views": 64,
             "pin_first": True,
-            "method": "detector",
             "grow_tol": None,
             "grow_fast": False,
             "n_limit": None,
             "target": "multislice",
         }
+        # 'method' was removed (the remainder fit is always on the Fourier
+        # basis now). Accept and ignore it rather than breaking the ~90
+        # existing params files that pin the old default, but say so when
+        # it asks for a method that no longer exists.
+        v = dict(v)
+        legacy_method = v.pop("method", None)
+        if legacy_method is not None and legacy_method != "fourier":
+            warnings.warn(
+                f"born_coeffs_refit.method={legacy_method!r} is ignored: the "
+                "method option was removed and the remainder fit now always "
+                "runs on the FOURIER basis (all N+1 planes plus the exit "
+                "block, the norm born_residual minimises). The detector-rows "
+                "fit is gone; grow_tol and target 'hybrid_amp' were carried "
+                "over. Drop the key to silence this.",
+                stacklevel=2,
+            )
         unknown = set(v) - set(merged)
         if unknown:
             raise ValueError(f"born_coeffs_refit has unknown keys: {sorted(unknown)}")
@@ -448,14 +455,6 @@ class ModelParams(BaseModel):
             raise ValueError("born_coeffs_refit.step must be an integer >= 1")
         if not isinstance(merged["n_views"], int) or merged["n_views"] < 1:
             raise ValueError("born_coeffs_refit.n_views must be an integer >= 1")
-        if merged["method"] != "detector":
-            raise ValueError(
-                "born_coeffs_refit.method must be 'detector' (the only "
-                "method). Removed: 'data' (L-BFGS against measured "
-                "intensities — coefficients absorb object error) and 'gmres' "
-                "(Krylov-Gram equation-residual fit, superseded by the "
-                "detector fit; git history, commit 18a2d35)"
-            )
         if merged["grow_tol"] is not None:
             if not (isinstance(merged["grow_tol"], (int, float)) and merged["grow_tol"] > 0):
                 raise ValueError("born_coeffs_refit.grow_tol must be a positive number")
@@ -465,12 +464,18 @@ class ModelParams(BaseModel):
             raise ValueError("born_coeffs_refit.n_limit must be None or an integer >= 1")
         if merged["target"] is None:
             merged["target"] = "multislice"
-        if merged["target"] not in ("multislice", "hybrid_amp"):
+        if merged["target"] not in ("multislice", "hybrid_amp", "residual"):
             raise ValueError(
-                "born_coeffs_refit.target must be 'multislice' (default; the "
-                "exact multislice-sweep target, data-free) or 'hybrid_amp' "
-                "(amplitude from the measured data, phase from multislice — "
-                "an experiment that feeds data into the coefficients)"
+                "born_coeffs_refit.target must be 'multislice' (default; "
+                "the exact multislice-sweep target — the REMAINDER fit, "
+                "data-free), 'residual' (the target-free fixed-point "
+                "residual of the Lippmann-Schwinger system — the GMRES "
+                "minimiser; needs one Born order beyond those retained but "
+                "NO multislice sweep, so it is the cheapest of the three) "
+                "or 'hybrid_amp' (amplitude from the measured data, phase "
+                "from multislice — an experiment that feeds data into the "
+                "coefficients). All three are shared over the calibration "
+                "subsample and run on the Fourier basis."
             )
         return merged
 
