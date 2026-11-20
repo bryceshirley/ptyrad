@@ -13,7 +13,7 @@ from torch.fft import fft2, ifft2
 from torch.nn.functional import interpolate
 from torchvision.transforms.functional import gaussian_blur
 
-from ptyrad.core.forward import multislice_forward
+from ptyrad.core.forward import born_forward, multislice_forward
 from ptyrad.core.functional import imshift_batch, make_freq_grid_2d, make_real_grid_2d, torch_phasor
 from ptyrad.io.dataloader import MeasDataLoader
 from ptyrad.utils.image_proc import center_crop
@@ -78,6 +78,14 @@ class PtychoModel(torch.nn.Module):
             # Setup model behaviors
             self.device                 = device
             self.detector_blur_std      = model_params['detector_blur_std']
+            self.forward_model          = model_params.get('model', 'multislice')
+            forward_config              = model_params.get('model_config') or {}
+            self.born_order             = forward_config.get('order', 1)
+            self.born_background        = forward_config.get('background', 'mean')
+            self.born_refit_views       = forward_config.get('refit_views')
+            self.born_coeffs            = None # set by refresh_born_coeffs, (M,) complex
+            self.pie_update             = model_params['optimizer_params']['name'] == 'pie'
+            self.pie_configs            = model_params['optimizer_params'].get('configs') or {}
             self.preload_data           = model_params.get('preload_data', True)
             self.meas_loader            = MeasDataLoader(
                 init_variables['measurements'], 
@@ -365,11 +373,89 @@ class PtychoModel(torch.nn.Module):
     
     def get_forward_pattern(self, obja_patches, objp_patches, probes, propagators):
         # Returns the diffraction pattern at simulation precision before being corrupted by the detector
-        # In the future we may add a switch for different forward methods
         
-        dp_fwd = multislice_forward(obja_patches, objp_patches, probes, propagators, omode_occu=self.omode_occu)
-            
+        if self.forward_model == 'Born':
+            return born_forward(obja_patches, objp_patches, probes, propagators,
+                                self.born_order, self.born_background,
+                                coeffs=self.born_coeffs, omode_occu=self.omode_occu)
+        
+        return multislice_forward(obja_patches, objp_patches, probes, propagators, omode_occu=self.omode_occu)
+
+    @torch.no_grad()
+    def pie_batch_update(self, indices):
+        """ One closed-form PIE update: the modulus projection IS the step
+
+        No autograd and no optimizer. ePIE for the inter-slice Born series, 3PIE for
+        multislice; both are Gauss-Seidel over positions, so thickptycho refuses a batch
+        larger than one rather than racing this write-back. The data loss is not part of
+        the update — the returned pattern is for logging only.
+
+        The detector blur is not applied inside the projection, as in the engines this
+        follows: the modulus ratio is taken on the unblurred model.
+        """
+        from thickptycho import centre, cumulative_propagators, epie_born, pie3_multislice
+
+        obja_patches, objp_patches = self.get_obj_patches(indices)
+        probes = self.get_probes(indices)
+        H1 = self.get_propagators(indices)[:, None, None]
+        object_cplx = torch.polar(obja_patches, objp_patches)
+        measured = self.get_measurements(indices)
+        update_probe = self.opt_probe.requires_grad
+        beta_obj = self.pie_configs.get('beta_obj', 1.0)
+        beta_probe = self.pie_configs.get('beta_probe', 1.0)
+
+        if self.forward_model == 'Born':
+            powers = cumulative_propagators(H1, object_cplx.shape[2])
+            dp_fwd, object_new, dP = epie_born(
+                object_cplx, centre(object_cplx, self.born_background), probes, powers,
+                self.born_order, measured, beta_obj, beta_probe, self.omode_occu,
+                update_probe)
+        else:
+            dp_fwd, object_new, dP = pie3_multislice(
+                object_cplx, probes, H1, measured, beta_obj, beta_probe,
+                self.pie_configs.get('beta_wave'), self.omode_occu, update_probe)
+
+        if self.opt_obja.requires_grad or self.opt_objp.requires_grad:
+            grid_y = self.obj_ROI_grid[0] + self.crop_pos[indices[0], 0]
+            grid_x = self.obj_ROI_grid[1] + self.crop_pos[indices[0], 1]
+            self.opt_obja.data[:, :, grid_y, grid_x] = object_new[0].abs().clamp_min(1e-12)
+            self.opt_objp.data[:, :, grid_y, grid_x] = object_new[0].angle()
+        self._current_object_patches = (obja_patches, objp_patches)
+        if dP is not None:
+            # the probe was sub-pixel shifted onto this position, so the increment is
+            # shifted back before it lands on the stored, unshifted probe
+            shifts = -self.opt_probe_pos_shifts[indices]
+            unshifted = imshift_batch(dP, shifts=shifts, grid=self.shift_probes_grid)
+            torch.view_as_complex(self.opt_probe.data).add_(unshifted.mean(dim=0))
         return dp_fwd
+
+    @torch.no_grad()
+    def refresh_born_coeffs(self):
+        """ Refit the Born coefficients against the exact multislice field of the current object
+
+        The coefficients reweight the retained scattering orders so that the truncated series
+        tracks the exact multislice field; with unit coefficients the detector error of a
+        strongly scattering specimen grows with order before it comes back down. The fit is
+        data-free (the target is the current object's own multislice field, never the
+        measurement) and needs one sequential sweep per view, so it runs on an evenly spaced
+        calibration subsample and yields one shared vector per iteration.
+
+        The subsample is evenly spaced rather than random so that two runs of the same config
+        fit the same coefficients.
+        """
+        from thickptycho import centre, cumulative_propagators, remainder_coeffs
+
+        indices = torch.linspace(0, len(self.crop_pos) - 1, self.born_refit_views).long()
+        obja_patches, objp_patches = self.get_obj_patches(indices)
+        probes = self.get_probes(indices)
+        H = self.get_propagators(indices)[:, None, None]
+        object_cplx = torch.polar(obja_patches, objp_patches)
+        powers = cumulative_propagators(H, object_cplx.shape[2])
+        self.born_coeffs, delta = remainder_coeffs(
+            object_cplx, centre(object_cplx, self.born_background), probes, powers, H,
+            self.born_order, self.omode_occu)
+        self.born_coeffs = self.born_coeffs.to(probes.dtype)
+        return delta
 
     def get_detector_pattern(self, dp):
         # Returns the 'measured' diffraction pattern after being corrupted by the projection / detection related transformations, 

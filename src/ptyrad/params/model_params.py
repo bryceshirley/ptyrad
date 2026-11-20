@@ -11,13 +11,45 @@ from typing import Any, Dict, Literal, Optional, Union
 from pydantic import BaseModel, Field, FilePath, field_validator, model_serializer, model_validator
 
 
+class BornConfig(BaseModel):
+    """'model_config' of the inter-slice Born series."""
+
+    model_config = {"extra": "forbid"}
+
+    order: int = Field(default=1, ge=1, description="Truncation order M of the series")
+    """
+    1 is the inter-slice first Born model, which is the cheapest and models single scattering
+    only. Each extra order costs one more scatter-propagate pass over the slices.
+    """
+
+    background: Literal["vacuum", "mean"] = Field(
+        default="mean", description="Background the series expands about"
+    )
+    """
+    'vacuum' is a_j = 1, the plain series. 'mean' is a_j = <O_j>, the mean transmission of slice
+    j over the patch; the factorisation O_j = a_j (1 + dO_j) is exact, so the model is unchanged
+    once the series terminates, but centring lowers the overshoot of the truncated series about
+    three-fold.
+    """
+
+    refit_views: Optional[int] = Field(
+        default=None, ge=1, description="Calibration views for the per-iteration coefficient refit"
+    )
+    """
+    null runs the plain series. Otherwise the retained orders are least-squares projected onto
+    the exact multislice field of the current object at this many evenly spaced scan positions,
+    once per iteration, giving one shared complex weight per order. The fit is data-free, so the
+    coefficients cannot absorb object error. 32 is a usual value.
+    """
+
+
 class OptimizerParams(BaseModel):
     model_config = {"extra": "forbid"}
     
     name: Literal["Adadelta", "Adafactor", "Adagrad", "Adam",
                   "AdamW", "SparseAdam", "Adamax", "ASGD", 
                   "LBFGS", "Muon", "Nadam", "RAdam",
-                  "RMSprop", "Rprop", "SGD"] = Field(default="Adam", description="Optimizer name")
+                  "RMSprop", "Rprop", "SGD", "pie"] = Field(default="Adam", description="Optimizer name")
     configs: Dict[str, Any] = Field(default_factory=dict, description="Optimizer configurations")
     load_state: Optional[FilePath] = Field(
         default=None, description="Path str of a PtyRAD model file to load previous optimizer state"
@@ -141,7 +173,9 @@ class ModelParams(BaseModel):
     Typical learning rate is 1e-3 to 1e-4.
     """
 
-    model_config = {"extra": "forbid"}
+    # 'model_config' is pydantic's own attribute, so the field carrying the params key of
+    # that name reaches it by alias; populate_by_name lets a dumped params dict load again
+    model_config = {"extra": "forbid", "populate_by_name": True}
     
     
     detector_blur_std: Optional[float] = Field(
@@ -152,6 +186,27 @@ class ModelParams(BaseModel):
     """
     This applies Gaussian blur to the forward model simulated diffraction patterns to emulate the PSF of high-energy electrons on detector for experimental data. 
     Typical value is 0-1 px (std) based on the acceleration voltage
+    """
+
+    model: Literal["multislice", "Born"] = Field(
+        default="multislice",
+        description="Forward model: sequential multislice, or the inter-slice Born series",
+    )
+    """
+    'multislice' is the Lie-Trotter split step, sequential in depth, and takes no 'model_config'.
+    'Born' expands it into a Born series in the Fourier view, where the only operation coupling
+    the slices is a cumulative sum, so the sequential depth is the truncation order rather than
+    the number of slices. The series is nilpotent: an order equal to the slice count reproduces
+    multislice exactly, and anything beyond adds nothing.
+    Requires the optional `thickptycho` dependency, which supplies the propagation.
+    """
+
+    forward_config: Optional[BornConfig] = Field(
+        default=None, alias="model_config", description="Settings of the chosen 'model'"
+    )
+    """
+    null for multislice, which has nothing to configure. For 'Born' it is
+    {'order': 1, 'refit_views': null, 'background': 'mean'}; null takes those defaults.
     """
 
     preload_data: Optional[bool] = Field(
@@ -177,6 +232,15 @@ class ModelParams(BaseModel):
     You can load the previous optimizer state by passing the path of `model.hdf5` to `load_state`, this way you can continue previous reconstruciton smoothly without abrupt gradients. 
     (Because lots of the optimizers are adaptive and have history-dependent learning rate manipulation, so loading the optimizer state is necessary if you want to continue the previous optimization trajectory). 
     However, the optimizer state must be coming from previous reconstructions with the same set of optimization variables with identical size of the dimensions otherwise it won't run.
+    'pie' is not a gradient optimizer: it replaces the loss, the backward pass and the step with
+    the closed-form projection at the detector, which is ePIE for 'Born' and 3PIE for
+    'multislice'. Its 'configs' are the step sizes {'beta_obj': 1.0, 'beta_probe': 1.0,
+    'beta_wave': 1.0}; 'beta_wave' is 3PIE only and defaults to 'beta_probe', which is the usual
+    coupling - one coefficient both revises the waves and damps the inter-slice transport by a
+    factor per hop, and setting it to 1.0 keeps the transport undamped, which deep stacks need.
+    The projection is Gauss-Seidel over positions, so it requires BATCH_SIZE 1 and will refuse
+    anything larger rather than racing its own write-back, and the learning rates play no part.
+    Requires the optional `thickptycho` dependency.
     """
 
     scheduler_params: Optional[SchedulerParams] = Field(
@@ -197,8 +261,15 @@ class ModelParams(BaseModel):
         default_factory=UpdateParams, description="Update parameters for optimizable tensors"
     )
 
+    @model_validator(mode="after")
+    def validate_forward_config(self):
+        if self.model == "multislice" and self.forward_config is not None:
+            raise ValueError("'multislice' takes no 'model_config'; it must be null")
+        return self
+
 # Make explicit list so autodoc_pydantic can sort by this when go by `autodoc_pydantic_model_member_order = 'bysource'` in conf.py
 __all__ = [
+    "BornConfig",
     "ModelParams",
     "OptimizerParams",
     "SchedulerParams",

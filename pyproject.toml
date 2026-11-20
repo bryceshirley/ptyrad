@@ -37,6 +37,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+born = [
+  "thickptycho",  # supplies the inter-slice Born series behind solver_type: 'born'
+]
 test = [
   "pytest",
 ]

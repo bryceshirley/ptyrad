@@ -59,7 +59,9 @@ def load_params(file_path: str, validate: bool = True):
     if validate:
         from .ptyrad_params import PtyRADParams
         logger.info("validate = True: Filling defaults and validating the params file...")
-        params_dict = PtyRADParams(**params_dict).model_dump()
+        # by_alias so the validated dict stays keyed as the params file is; the forward model's
+        # settings reach model_params under 'model_config', a name pydantic owns itself
+        params_dict = PtyRADParams(**params_dict).model_dump(by_alias=True)
         logger.info("Success! Params file validated and defaults applied.")
     else:
         logger.warning("WARNING: validate = False: Skipping validation and default filling.")

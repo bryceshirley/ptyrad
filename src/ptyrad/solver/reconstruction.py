@@ -50,6 +50,21 @@ logger = logging.getLogger(__name__)
 # SECTION 1: SETUP & INITIALIZATION
 # ==============================================================================
 
+class ProjectionUpdate(torch.optim.Optimizer):
+    """The optimizer named 'pie', which does not step.
+
+    PIE updates the object and the probe by projecting at the detector inside the model, so
+    there is no gradient to apply here. This exists so the param groups, the LR logging, the
+    scheduler and the checkpoint keep working on the one code path.
+    """
+
+    def __init__(self, params):
+        super().__init__(params, defaults={})
+
+    def step(self, closure=None):
+        pass
+
+
 def create_optimizer(optimizer_params, optimizable_params):
     
     def _fix_optimizer_state_dict_format(optim_state_dict: dict) -> dict:
@@ -107,6 +122,10 @@ def create_optimizer(optimizer_params, optimizable_params):
 
     logger.info(f"### Creating PyTorch '{optimizer_name}' optimizer with configs = {optimizer_configs} ###")
     
+    if optimizer_name == 'pie':
+        logger.info("Note: 'pie' is the closed-form projection at the detector, not a gradient step, so the learning rates and the scheduler play no part")
+        return ProjectionUpdate(optimizable_params)
+
     # Get the optimizer class from torch.optim
     optimizer_class = getattr(torch.optim, optimizer_name, None)
     
@@ -517,6 +536,7 @@ def recon_loop(model, init, params, optimizer, scheduler, loss_fn, constraint_fn
         # Toggle the grad calculation to enable or disable AD update on tensors at certain iterations
         toggle_grad_requires(model_instance, niter)
 
+
         # Apply torch.compile
         if niter in model_instance.compilation_iters: # compilation_iters always contain niter=1
             logger.info(f"Setting up PyTorch compiler with {compiler_configs}")
@@ -527,6 +547,12 @@ def recon_loop(model, init, params, optimizer, scheduler, loss_fn, constraint_fn
                 optimizer.step = torch.compile(optim_step_fn, **optim_compiler_configs)
         
         batch_losses = recon_step(batches, grad_accumulation, model, optimizer, scheduler, loss_fn, constraint_fn, niter, acc=acc, compute_loss_fn=compute_loss_fn, scheduler_step_unit=scheduler_step_unit)
+
+        # Refit the Born coefficients against the object this iteration produced, after the
+        # constraints, so the next iteration's forward uses coefficients fitted to the object
+        # it will actually evaluate
+        if model_instance.born_refit_views:
+            logger.debug(f"Iter: {niter}, Born coefficient refit residual: {model_instance.refresh_born_coeffs():.4e}")
 
         # Only log the main process
         if acc is None or acc.is_main_process:
@@ -683,6 +709,19 @@ def recon_step(batches, grad_accumulation, model, optimizer, scheduler, loss_fn,
             torch.compiler.cudagraph_mark_step_begin() # Marks the start of a new compiled step to prevent CUDA Graph memory overwrite errors.
             
             measured_DP = model_instance.get_measurements(batch)
+            
+            # Closed-form PIE: the projection at the detector is the whole update, so there
+            # is no loss to differentiate and no optimizer step. The loss is still evaluated
+            # afterwards, on the model pattern the projection started from, for logging.
+            if model_instance.pie_update:
+                model_DP = model_instance.pie_batch_update(batch)
+                obja_patches, objp_patches = model_instance._current_object_patches
+                _, losses = loss_fn(model_instance.get_detector_pattern(model_DP), measured_DP,
+                                    obja_patches, objp_patches, model_instance.omode_occu)
+                for loss_name, loss_value in zip(loss_names, losses):
+                    loss_accum[loss_name][batch_count] = loss_value.detach()
+                batch_count += 1
+                continue
             
             # Compute forward pass and loss
             loss_batch, losses = compute_loss_fn(batch, model, model_instance, measured_DP, loss_fn)
