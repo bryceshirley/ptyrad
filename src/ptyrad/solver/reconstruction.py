@@ -542,7 +542,10 @@ def recon_loop(model, init, params, optimizer, scheduler, loss_fn, constraint_fn
             logger.info(f"Setting up PyTorch compiler with {compiler_configs}")
             torch._dynamo.reset()
             compute_loss_fn = torch.compile(compute_loss, **compiler_configs)
-            
+
+            if model_instance.pie_update: # the projection, not the loss, is the whole of a PIE update
+                model_instance.set_pie_step(compiler_configs)
+
             if not isinstance(optimizer, torch.optim.LBFGS): # Only compile first-order optimizers (like Adam), L-BFGS relies on dynamic closures that cannot be safely traced.
                 optimizer.step = torch.compile(optim_step_fn, **optim_compiler_configs)
         

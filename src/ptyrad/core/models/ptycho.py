@@ -25,7 +25,7 @@ from ptyrad.utils.image_proc import center_crop
 # obj optimization is now split into objp and obja
 # mixed object modes are normalized by the init_omode_occu. By design this is a fixed value because optimizing omode_occu with obj simultaneously could be unstable
 # obj_ROI cropping is done with vectorization and the obj_ROI_grid is only generated once
-# probe is always sub-px shifted by opt_probe_pos_shifts so the forward model uses exact positions, not the rounded integer crop_pos
+# probe is sub-px shifted by opt_probe_pos_shifts so the forward model uses exact positions, not the rounded integer crop_pos, unless shift_probes turns that off
 # All the sub-px shifted probes in a batch are processed together with vectorizaiton
 # Likewise, the multislice forward model is also fully vectorized across samples (in batch), pmode, and omode
 # Note that it's possible to reduce the peak-memory consumption by reducing the level of vectorizaiton and roll back to for loops
@@ -86,6 +86,8 @@ class PtychoModel(torch.nn.Module):
             self.born_coeffs            = None # set by refresh_born_coeffs, (M,) complex
             self.pie_update             = model_params['optimizer_params']['name'] == 'pie'
             self.pie_configs            = model_params['optimizer_params'].get('configs') or {}
+            if self.pie_update:
+                self.set_pie_step() # eager until recon_loop hands over the compiler configs
             self.preload_data           = model_params.get('preload_data', True)
             self.meas_loader            = MeasDataLoader(
                 init_variables['measurements'], 
@@ -134,6 +136,7 @@ class PtychoModel(torch.nn.Module):
             self.scan_affine            = init_variables['scan_affine']                                                           # Saving this for reference
             self.tilt_obj               = bool(self.lr_params['obj_tilts']        != 0 or torch.any(self.opt_obj_tilts))          # Set tilt_obj to True if lr_params['obj_tilts'] is not 0 or we have any none-zero tilt values
             self.change_thickness       = bool(self.lr_params['slice_thickness']  != 0)
+            self.shift_probes           = bool(self.lr_params['probe_pos_shifts'] != 0)                                          # See get_probes: optimizing the shifts needs a probe per position, and a shared one is what makes the Born series cheaper than multislice
             self.meas_Npix              = init_variables['meas_Npix']
             self.simu_Npix              = init_variables['simu_Npix']
             self.simu_match_mode        = init_variables['simu_match_mode']
@@ -292,11 +295,22 @@ class PtychoModel(torch.nn.Module):
         return obja_patches, objp_patches
         
     def get_probes(self, indices):
-        """ Get probes for each position """
-        # Always apply sub-px shifts from opt_probe_pos_shifts so the forward model uses the exact
-        # position (crop_pos is integer; opt_probe_pos_shifts carries the fractional residual).
+        """ Get probes for each position, (N, pmode, Ny, Nx), or (1, pmode, Ny, Nx) shared
 
+        The sub-px shifts in opt_probe_pos_shifts carry the fractional residual of each scan
+        position, crop_pos being integer, so applying them is what makes the forward model see
+        the exact positions. Doing so also gives every position its own probe, and that costs
+        the Born series its advantage: at order one the incident stack costs Nz transforms for
+        a shared probe but Nz per position for a batch of them, against multislice's 2*Nz
+        either way. Measured compiled at 128^2, Nz = 12, 6 pmodes, batch 32, forward and
+        backward: 10.2 ms against multislice's 9.2 with a probe per position, 6.8 with one
+        shared.
+        So the shared probe is worth a residual of up to half a pixel when the Born series is
+        the model, and shift_probes is how that trade is made.
+        """
         probe = self.get_complex_probe_view()
+        if not self.shift_probes:
+            return probe.unsqueeze(0).contiguous()
         probes = imshift_batch(probe, shifts=self.opt_probe_pos_shifts[indices], grid=self.shift_probes_grid)
 
         return probes.contiguous()
@@ -381,6 +395,20 @@ class PtychoModel(torch.nn.Module):
         
         return multislice_forward(obja_patches, objp_patches, probes, propagators, omode_occu=self.omode_occu)
 
+    def set_pie_step(self, compiler_configs=None):
+        """ Bind the projection engine the PIE update calls, compiled or not
+
+        The projection IS the update, so it is the whole of the work a PIE iteration does
+        and it has to sit inside the compiled region: at batch 1 the sweep is kernel-launch
+        bound (~200 launches for 3PIE) and CUDA graph replay is what collapses that. Both
+        engines are written to compile in one graph with fullgraph=True, which thickptycho
+        asserts, so the host's own compiler configs apply unchanged.
+        """
+        from thickptycho import epie_born, pie3_multislice
+
+        engine = epie_born if self.forward_model == 'Born' else pie3_multislice
+        self.pie_step = torch.compile(engine, **compiler_configs) if compiler_configs else engine
+
     @torch.no_grad()
     def pie_batch_update(self, indices):
         """ One closed-form PIE update: the modulus projection IS the step
@@ -393,7 +421,7 @@ class PtychoModel(torch.nn.Module):
         The detector blur is not applied inside the projection, as in the engines this
         follows: the modulus ratio is taken on the unblurred model.
         """
-        from thickptycho import centre, cumulative_propagators, epie_born, pie3_multislice
+        from thickptycho import centre, cumulative_propagators
 
         obja_patches, objp_patches = self.get_obj_patches(indices)
         probes = self.get_probes(indices)
@@ -406,12 +434,12 @@ class PtychoModel(torch.nn.Module):
 
         if self.forward_model == 'Born':
             powers = cumulative_propagators(H1, object_cplx.shape[2])
-            dp_fwd, object_new, dP = epie_born(
+            dp_fwd, object_new, dP = self.pie_step(
                 object_cplx, centre(object_cplx, self.born_background), probes, powers,
                 self.born_order, measured, beta_obj, beta_probe, self.omode_occu,
                 update_probe)
         else:
-            dp_fwd, object_new, dP = pie3_multislice(
+            dp_fwd, object_new, dP = self.pie_step(
                 object_cplx, probes, H1, measured, beta_obj, beta_probe,
                 self.pie_configs.get('beta_wave'), self.omode_occu, update_probe)
 
@@ -422,11 +450,14 @@ class PtychoModel(torch.nn.Module):
             self.opt_objp.data[:, :, grid_y, grid_x] = object_new[0].angle()
         self._current_object_patches = (obja_patches, objp_patches)
         if dP is not None:
-            # the probe was sub-pixel shifted onto this position, so the increment is
-            # shifted back before it lands on the stored, unshifted probe
-            shifts = -self.opt_probe_pos_shifts[indices]
-            unshifted = imshift_batch(dP, shifts=shifts, grid=self.shift_probes_grid)
-            torch.view_as_complex(self.opt_probe.data).add_(unshifted.mean(dim=0))
+            if self.shift_probes:
+                # the probe was sub-pixel shifted onto this position, so the increment is
+                # shifted back before it lands on the stored, unshifted probe. imshift_batch
+                # ADDS the batch axis, so it takes the (pmode, Ny, Nx) increment of the one
+                # position this update is for, not the batch of one it arrives in
+                shifts = -self.opt_probe_pos_shifts[indices]
+                dP = imshift_batch(dP[0], shifts=shifts, grid=self.shift_probes_grid)
+            torch.view_as_complex(self.opt_probe.data).add_(dP.mean(dim=0))
         return dp_fwd
 
     @torch.no_grad()

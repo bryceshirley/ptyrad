@@ -177,7 +177,7 @@ def plot_forward_pass(model, indices, dp_power, plot_raw=False, show_fig=True, p
     
     with torch.no_grad():
         probes      = model.get_probes(indices)
-        probes_int  = probes.abs().pow(2).sum(1)
+        probes_int  = probes.abs().pow(2).sum(1).expand(len(indices), -1, -1) # get_probes returns one shared probe when the sub-px shifts are off, and there is a row per index to fill
         model_DP    = model(indices, return_raw=plot_raw) # We can return the raw simulated DP for debugging and development
         obj_patches = model.get_obj_patches(indices) # The cache would be cleared right after the mini-batch update so we have to re-calculate it here
         omode_occu  = model.omode_occu
