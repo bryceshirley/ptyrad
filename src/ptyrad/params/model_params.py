@@ -198,7 +198,7 @@ class ModelParams(BaseModel):
     the slices is a cumulative sum, so the sequential depth is the truncation order rather than
     the number of slices. The series is nilpotent: an order equal to the slice count reproduces
     multislice exactly, and anything beyond adds nothing.
-    Requires the optional `thickptycho` dependency, which supplies the propagation.
+    Requires the optional `ptychomodels` dependency, which supplies the propagation.
     """
 
     forward_config: Optional[BornConfig] = Field(
@@ -238,7 +238,7 @@ class ModelParams(BaseModel):
     'beta_wave': 1.0}; 'beta_wave' is 3PIE only and defaults to 'beta_probe', the usual
     coupling, while 1.0 leaves the inter-slice transport undamped as deep stacks need.
     The projection is Gauss-Seidel over positions, so it requires BATCH_SIZE 1 and the
-    learning rates play no part. Requires the optional `thickptycho` dependency.
+    learning rates play no part. Requires the optional `ptychomodels` dependency.
     """
 
     scheduler_params: Optional[SchedulerParams] = Field(

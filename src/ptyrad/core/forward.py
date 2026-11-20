@@ -100,7 +100,7 @@ def born_gauge(object_cplx, H1, background):
     rather than the step, the Fourier view referring every slice block
     to the entrance plane.
     """
-    from thickptycho import centre, cumulative_propagators
+    from ptychomodels import centre, cumulative_propagators
 
     return centre(object_cplx, cumulative_propagators(H1, object_cplx.shape[2]), background)
 
@@ -114,7 +114,7 @@ def born_forward(obja_patches, objp_patches, probe, H, n_max, background="mean",
     is a cumulative sum, so the sequential depth becomes ``n_max`` instead of
     ``n_slices``. The series is nilpotent, so ``n_max = n_slices`` reproduces
     ``multislice_forward`` exactly. The propagation itself lives in the optional
-    ``thickptycho`` dependency; this function is the change of layout.
+    ``ptychomodels`` dependency; this function is the change of layout.
 
     Args:
         obja_patches, objp_patches, probe, H, omode_occu, eps: as in
@@ -129,8 +129,8 @@ def born_forward(obja_patches, objp_patches, probe, H, n_max, background="mean",
     Returns:
         torch.Tensor: Tensor of shape (N, Ky, Kx), as ``multislice_forward``.
     """
-    from thickptycho import born_forward as born_series
-    from thickptycho import intensity
+    from ptychomodels import born_forward as born_series
+    from ptychomodels import intensity
 
     object_cplx = torch.polar(obja_patches, objp_patches)
     gauge = born_gauge(object_cplx, H[:, None, None], background)

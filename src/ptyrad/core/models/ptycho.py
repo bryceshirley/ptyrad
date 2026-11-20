@@ -403,7 +403,7 @@ class PtychoModel(torch.nn.Module):
         graph replay is what collapses that. Both engines compile in one graph, so the
         host's own compiler configs apply unchanged.
         """
-        from thickptycho import epie_born, pie3_multislice
+        from ptychomodels import epie_born, pie3_multislice
 
         engine = epie_born if self.forward_model == 'Born' else pie3_multislice
         self.pie_step = torch.compile(engine, **compiler_configs) if compiler_configs else engine
@@ -413,7 +413,7 @@ class PtychoModel(torch.nn.Module):
         """ One closed-form PIE update: the modulus projection is the step
 
         No autograd and no optimizer. ePIE for the inter-slice Born series, 3PIE for
-        multislice; both are Gauss-Seidel over positions, so thickptycho refuses a batch
+        multislice; both are Gauss-Seidel over positions, so ptychomodels refuses a batch
         larger than one. The returned pattern is for logging only.
 
         The detector blur is not applied inside the projection, as in the engines this
@@ -463,7 +463,7 @@ class PtychoModel(torch.nn.Module):
         sweep per view, so it runs on an evenly spaced calibration subsample - evenly spaced
         rather than random, so that two runs of a config fit the same coefficients.
         """
-        from thickptycho import remainder_coeffs
+        from ptychomodels import remainder_coeffs
 
         indices = torch.linspace(0, len(self.crop_pos) - 1, self.born_refit_views).long()
         obja_patches, objp_patches = self.get_obj_patches(indices)
