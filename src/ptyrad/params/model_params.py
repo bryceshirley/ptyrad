@@ -235,12 +235,10 @@ class ModelParams(BaseModel):
     'pie' is not a gradient optimizer: it replaces the loss, the backward pass and the step with
     the closed-form projection at the detector, which is ePIE for 'Born' and 3PIE for
     'multislice'. Its 'configs' are the step sizes {'beta_obj': 1.0, 'beta_probe': 1.0,
-    'beta_wave': 1.0}; 'beta_wave' is 3PIE only and defaults to 'beta_probe', which is the usual
-    coupling - one coefficient both revises the waves and damps the inter-slice transport by a
-    factor per hop, and setting it to 1.0 keeps the transport undamped, which deep stacks need.
-    The projection is Gauss-Seidel over positions, so it requires BATCH_SIZE 1 and will refuse
-    anything larger rather than racing its own write-back, and the learning rates play no part.
-    Requires the optional `thickptycho` dependency.
+    'beta_wave': 1.0}; 'beta_wave' is 3PIE only and defaults to 'beta_probe', the usual
+    coupling, while 1.0 leaves the inter-slice transport undamped as deep stacks need.
+    The projection is Gauss-Seidel over positions, so it requires BATCH_SIZE 1 and the
+    learning rates play no part. Requires the optional `thickptycho` dependency.
     """
 
     scheduler_params: Optional[SchedulerParams] = Field(

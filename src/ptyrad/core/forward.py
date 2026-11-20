@@ -91,6 +91,19 @@ def multislice_forward(obja_patches, objp_patches, probe, H, omode_occu=None, ep
     )  # Add eps for numerical stability
     return dp_fwd
 
+def born_gauge(object_cplx, H1, background):
+    """
+    The Born background gauge of these object patches.
+
+    H1 is the single-step propagator as the models take it,
+    (N, 1, 1, Ky, Kx). The gauge carries the cumulative powers H^{z_j}
+    rather than the step, the Fourier view referring every slice block
+    to the entrance plane.
+    """
+    from thickptycho import centre, cumulative_propagators
+
+    return centre(object_cplx, cumulative_propagators(H1, object_cplx.shape[2]), background)
+
 def born_forward(obja_patches, objp_patches, probe, H, n_max, background="mean",
                  coeffs=None, omode_occu=None, eps=1e-10):
     """
@@ -98,14 +111,10 @@ def born_forward(obja_patches, objp_patches, probe, H, n_max, background="mean",
 
     The sequential depth loop of ``multislice_forward`` is replaced by a Born
     expansion in the Fourier view, where the only operation coupling the slices
-    is a cumulative sum: the sequential depth becomes ``n_max`` instead of
+    is a cumulative sum, so the sequential depth becomes ``n_max`` instead of
     ``n_slices``. The series is nilpotent, so ``n_max = n_slices`` reproduces
-    ``multislice_forward`` exactly and anything beyond adds nothing.
-
-    The wave propagation, the background gauge and the truncation live in
-    ``thickptycho``, which is an optional dependency; this function is only the
-    change of layout between PtyRAD's amplitude/phase patches and that package's
-    complex ones.
+    ``multislice_forward`` exactly. The propagation itself lives in the optional
+    ``thickptycho`` dependency; this function is the change of layout.
 
     Args:
         obja_patches, objp_patches, probe, H, omode_occu, eps: as in
@@ -114,8 +123,6 @@ def born_forward(obja_patches, objp_patches, probe, H, n_max, background="mean",
             first Born model.
         background (str): the background a_j the series expands about,
             'vacuum' (a_j = 1) or 'mean' (a_j = <O_j> over the patch).
-            Centring on the window means lowers the overshoot of the truncated
-            series about three-fold.
         coeffs (torch.Tensor, optional): complex weight per retained order,
             reweighting only the exit-block sum, from a coefficient refit.
 
@@ -123,9 +130,8 @@ def born_forward(obja_patches, objp_patches, probe, H, n_max, background="mean",
         torch.Tensor: Tensor of shape (N, Ky, Kx), as ``multislice_forward``.
     """
     from thickptycho import born_forward as born_series
-    from thickptycho import centre, cumulative_propagators, intensity
+    from thickptycho import intensity
 
     object_cplx = torch.polar(obja_patches, objp_patches)
-    powers = cumulative_propagators(H[:, None, None], object_cplx.shape[2])
-    gauge = centre(object_cplx, background)
-    return intensity(born_series(gauge, probe, powers, n_max, coeffs), omode_occu, eps)
+    gauge = born_gauge(object_cplx, H[:, None, None], background)
+    return intensity(born_series(gauge, probe, n_max, coeffs), omode_occu, eps)

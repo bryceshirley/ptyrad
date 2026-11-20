@@ -13,7 +13,7 @@ from torch.fft import fft2, ifft2
 from torch.nn.functional import interpolate
 from torchvision.transforms.functional import gaussian_blur
 
-from ptyrad.core.forward import born_forward, multislice_forward
+from ptyrad.core.forward import born_forward, born_gauge, multislice_forward
 from ptyrad.core.functional import imshift_batch, make_freq_grid_2d, make_real_grid_2d, torch_phasor
 from ptyrad.io.dataloader import MeasDataLoader
 from ptyrad.utils.image_proc import center_crop
@@ -398,11 +398,10 @@ class PtychoModel(torch.nn.Module):
     def set_pie_step(self, compiler_configs=None):
         """ Bind the projection engine the PIE update calls, compiled or not
 
-        The projection IS the update, so it is the whole of the work a PIE iteration does
-        and it has to sit inside the compiled region: at batch 1 the sweep is kernel-launch
-        bound (~200 launches for 3PIE) and CUDA graph replay is what collapses that. Both
-        engines are written to compile in one graph with fullgraph=True, which thickptycho
-        asserts, so the host's own compiler configs apply unchanged.
+        The projection is the whole of the work a PIE iteration does, so it has to sit
+        inside the compiled region: at batch 1 the sweep is kernel-launch bound and CUDA
+        graph replay is what collapses that. Both engines compile in one graph, so the
+        host's own compiler configs apply unchanged.
         """
         from thickptycho import epie_born, pie3_multislice
 
@@ -411,18 +410,15 @@ class PtychoModel(torch.nn.Module):
 
     @torch.no_grad()
     def pie_batch_update(self, indices):
-        """ One closed-form PIE update: the modulus projection IS the step
+        """ One closed-form PIE update: the modulus projection is the step
 
         No autograd and no optimizer. ePIE for the inter-slice Born series, 3PIE for
         multislice; both are Gauss-Seidel over positions, so thickptycho refuses a batch
-        larger than one rather than racing this write-back. The data loss is not part of
-        the update — the returned pattern is for logging only.
+        larger than one. The returned pattern is for logging only.
 
         The detector blur is not applied inside the projection, as in the engines this
         follows: the modulus ratio is taken on the unblurred model.
         """
-        from thickptycho import centre, cumulative_propagators
-
         obja_patches, objp_patches = self.get_obj_patches(indices)
         probes = self.get_probes(indices)
         H1 = self.get_propagators(indices)[:, None, None]
@@ -433,9 +429,8 @@ class PtychoModel(torch.nn.Module):
         beta_probe = self.pie_configs.get('beta_probe', 1.0)
 
         if self.forward_model == 'Born':
-            powers = cumulative_propagators(H1, object_cplx.shape[2])
             dp_fwd, object_new, dP = self.pie_step(
-                object_cplx, centre(object_cplx, self.born_background), probes, powers,
+                object_cplx, born_gauge(object_cplx, H1, self.born_background), probes,
                 self.born_order, measured, beta_obj, beta_probe, self.omode_occu,
                 update_probe)
         else:
@@ -451,10 +446,9 @@ class PtychoModel(torch.nn.Module):
         self._current_object_patches = (obja_patches, objp_patches)
         if dP is not None:
             if self.shift_probes:
-                # the probe was sub-pixel shifted onto this position, so the increment is
-                # shifted back before it lands on the stored, unshifted probe. imshift_batch
-                # ADDS the batch axis, so it takes the (pmode, Ny, Nx) increment of the one
-                # position this update is for, not the batch of one it arrives in
+                # the increment is shifted back before it lands on the stored, unshifted
+                # probe; imshift_batch adds the batch axis, so it takes the (pmode, Ny, Nx)
+                # increment of the one position this update is for
                 shifts = -self.opt_probe_pos_shifts[indices]
                 dP = imshift_batch(dP[0], shifts=shifts, grid=self.shift_probes_grid)
             torch.view_as_complex(self.opt_probe.data).add_(dP.mean(dim=0))
@@ -465,25 +459,19 @@ class PtychoModel(torch.nn.Module):
         """ Refit the Born coefficients against the exact multislice field of the current object
 
         The coefficients reweight the retained scattering orders so that the truncated series
-        tracks the exact multislice field; with unit coefficients the detector error of a
-        strongly scattering specimen grows with order before it comes back down. The fit is
-        data-free (the target is the current object's own multislice field, never the
-        measurement) and needs one sequential sweep per view, so it runs on an evenly spaced
-        calibration subsample and yields one shared vector per iteration.
-
-        The subsample is evenly spaced rather than random so that two runs of the same config
-        fit the same coefficients.
+        tracks the exact multislice field. The fit is data-free and needs one sequential
+        sweep per view, so it runs on an evenly spaced calibration subsample - evenly spaced
+        rather than random, so that two runs of a config fit the same coefficients.
         """
-        from thickptycho import centre, cumulative_propagators, remainder_coeffs
+        from thickptycho import remainder_coeffs
 
         indices = torch.linspace(0, len(self.crop_pos) - 1, self.born_refit_views).long()
         obja_patches, objp_patches = self.get_obj_patches(indices)
         probes = self.get_probes(indices)
-        H = self.get_propagators(indices)[:, None, None]
+        H1 = self.get_propagators(indices)[:, None, None]
         object_cplx = torch.polar(obja_patches, objp_patches)
-        powers = cumulative_propagators(H, object_cplx.shape[2])
         self.born_coeffs, delta = remainder_coeffs(
-            object_cplx, centre(object_cplx, self.born_background), probes, powers, H,
+            object_cplx, born_gauge(object_cplx, H1, self.born_background), probes, H1,
             self.born_order, self.omode_occu)
         self.born_coeffs = self.born_coeffs.to(probes.dtype)
         return delta
