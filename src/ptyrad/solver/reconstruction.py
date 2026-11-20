@@ -65,53 +65,75 @@ class ProjectionUpdate(torch.optim.Optimizer):
         pass
 
 
+def _recover_int_keys(mapping: dict) -> dict:
+    """Recover the integer keys of a loaded state dict; HDF5 forces strings as keys."""
+    recovered = {}
+    for key, val in mapping.items():
+        try:
+            key = int(key)  # Convert '0', '1' etc. to 0, 1
+        except (ValueError, TypeError):
+            pass  # Keep string keys as-is
+        recovered[key] = val
+    return recovered
+
+def _fix_optimizer_state_dict_format(optim_state_dict: dict) -> dict:
+    """
+    Fix HDF5-loaded optimizer state dict by:
+    - Recovering integer keys (HDF5 forces strings as keys).
+    - Converting param_groups from dicts back to list format, if needed.
+    - Converting any remaining param indices to lists.
+
+    Args:
+        op_state_dict (dict): Loaded optimizer state dict (e.g. from HDF5).
+
+    Returns:
+        dict: Fixed optimizer state dict.
+    """
+    # The value of a key like 'state' is itself a dict whose keys need recovering
+    fixed = {
+        key: _recover_int_keys(val) if isinstance(val, dict) else val
+        for key, val in optim_state_dict.items()
+    }
+
+    # Fix param_groups format if it was accidentally stored as a dict
+    if isinstance(fixed.get("param_groups"), dict):
+        param_groups_dict = fixed["param_groups"]
+        # Convert {0: {...}, 1: {...}} -> [{...}, {...}]
+        fixed["param_groups"] = [
+            param_groups_dict[k] for k in sorted(param_groups_dict, key=lambda x: int(x))
+        ]
+
+    # Ensure 'params' field is a list of ints, not tensors or ndarrays
+    for group in fixed.get("param_groups", []):
+        if isinstance(group.get("params"), torch.Tensor):
+            group["params"] = group["params"].tolist()
+        elif isinstance(group.get("params"), np.ndarray):
+            group["params"] = group["params"].tolist()
+
+    return fixed
+
+def _lbfgs_params(optimizable_params, optimizer_configs):
+    """LBFGS takes one iterable of params and one learning rate, so collapse the groups."""
+    logger.info("Note: LBFGS optimizer is a quasi-Newton 2nd order optimizer that will run multiple forward passes (default: 20) for 1 update step")
+    logger.info("Note: LBFGS usually converges faster for convex problem with full-batch non-noisy gradients, but each update step is computationally slower")
+    non_zero_lr = [p['lr'] for p in optimizable_params if p['lr'] != 0]
+    optimizer_configs['lr'] = min(non_zero_lr)
+    logger.info(f"Note: LBFGS optimizer does not support per parameter learning rate so it'll be set to the minimal non-zero learning rate = {min(non_zero_lr)}")
+    return [p['params'][0] for p in optimizable_params if p['params'][0].requires_grad]
+
+def _load_optimizer_state(optimizer, ptyrad_path, device):
+    try:
+        from ptyrad.io.load import load_ptyrad
+        optim_state_dict = load_ptyrad(ptyrad_path)['optim_state_dict']
+        optim_state_dict = _fix_optimizer_state_dict_format(optim_state_dict)
+        # Convert 'state' to tensors on the right device, while 'param_groups' are kept as generic scalars/arrays/boolean/None/list of int
+        optim_state_dict['state'] = ndarrays_to_tensors(optim_state_dict['state'], device=device) 
+        optimizer.load_state_dict(optim_state_dict)
+        logger.info(f"Loaded optimizer state from '{ptyrad_path}'")
+    except Exception as e:
+        logger.info(f"Failed to load optimizer state from '{ptyrad_path}': {e}. Using fresh optimizer.")
+
 def create_optimizer(optimizer_params, optimizable_params):
-    
-    def _fix_optimizer_state_dict_format(optim_state_dict: dict) -> dict:
-        """
-        Fix HDF5-loaded optimizer state dict by:
-        - Recovering integer keys (HDF5 forces strings as keys).
-        - Converting param_groups from dicts back to list format, if needed.
-        - Converting any remaining param indices to lists.
-
-        Args:
-            op_state_dict (dict): Loaded optimizer state dict (e.g. from HDF5).
-
-        Returns:
-            dict: Fixed optimizer state dict.
-        """
-        fixed = {}
-
-        for key, val in optim_state_dict.items():
-            # If the value is a dict (like 'state'), fix its integer keys
-            if isinstance(val, dict):
-                fixed_val = {}
-                for nested_key, nested_val in val.items():
-                    try:
-                        fixed_nested_key = int(nested_key)  # Convert '0', '1' etc. to 0, 1
-                    except (ValueError, TypeError):
-                        fixed_nested_key = nested_key  # Keep string keys as-is
-                    fixed_val[fixed_nested_key] = nested_val
-                fixed[key] = fixed_val
-            else:
-                fixed[key] = val
-
-        # Fix param_groups format if it was accidentally stored as a dict
-        if isinstance(fixed.get("param_groups"), dict):
-            param_groups_dict = fixed["param_groups"]
-            # Convert {0: {...}, 1: {...}} -> [{...}, {...}]
-            fixed["param_groups"] = [
-                param_groups_dict[k] for k in sorted(param_groups_dict, key=lambda x: int(x))
-            ]
-
-        # Ensure 'params' field is a list of ints, not tensors or ndarrays
-        for group in fixed.get("param_groups", []):
-            if isinstance(group.get("params"), torch.Tensor):
-                group["params"] = group["params"].tolist()
-            elif isinstance(group.get("params"), np.ndarray):
-                group["params"] = group["params"].tolist()
-
-        return fixed
     
     # Extract the optimizer name and configs
     optimizer_name = optimizer_params['name']
@@ -132,26 +154,12 @@ def create_optimizer(optimizer_params, optimizable_params):
     if optimizer_class is None:
         raise ValueError(f"Optimizer '{optimizer_name}' is not supported.")
     if optimizer_name == 'LBFGS':
-        logger.info("Note: LBFGS optimizer is a quasi-Newton 2nd order optimizer that will run multiple forward passes (default: 20) for 1 update step")
-        logger.info("Note: LBFGS usually converges faster for convex problem with full-batch non-noisy gradients, but each update step is computationally slower")
-        non_zero_lr = [p['lr'] for p in optimizable_params if p['lr'] != 0]
-        optimizer_configs['lr'] = min(non_zero_lr)
-        logger.info(f"Note: LBFGS optimizer does not support per parameter learning rate so it'll be set to the minimal non-zero learning rate = {min(non_zero_lr)}")
-        optimizable_params = [p['params'][0] for p in optimizable_params if p['params'][0].requires_grad] # LBFGS only takes 1 params group as an iterable
+        optimizable_params = _lbfgs_params(optimizable_params, optimizer_configs)
 
     optimizer = optimizer_class(optimizable_params, **optimizer_configs)
     
     if ptyrad_path is not None and isinstance(ptyrad_path, str):
-        try:
-            from ptyrad.io.load import load_ptyrad
-            optim_state_dict = load_ptyrad(ptyrad_path)['optim_state_dict']
-            optim_state_dict = _fix_optimizer_state_dict_format(optim_state_dict)
-            # Convert 'state' to tensors on the right device, while 'param_groups' are kept as generic scalars/arrays/boolean/None/list of int
-            optim_state_dict['state'] = ndarrays_to_tensors(optim_state_dict['state'], device=device) 
-            optimizer.load_state_dict(optim_state_dict)
-            logger.info(f"Loaded optimizer state from '{ptyrad_path}'")
-        except Exception as e:
-            logger.info(f"Failed to load optimizer state from '{ptyrad_path}': {e}. Using fresh optimizer.")
+        _load_optimizer_state(optimizer, ptyrad_path, device)
     logger.info(" ")
     return optimizer
 
